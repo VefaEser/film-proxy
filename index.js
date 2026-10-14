@@ -32,7 +32,7 @@ export default {
       if (method === "GET" && (path === "/" || path === "/health")) {
         return jsonResponse({
           ok: true,
-          service: "film-api-proxy",
+          service: "film-proxy",
           tmdbConfigured: Boolean(env.TMDB_API_KEY),
           geminiConfigured: Boolean(env.GEMINI_API_KEY)
         });
@@ -146,6 +146,7 @@ export default {
             body: JSON.stringify({
               model: "gemini-3.8-flash",
               input: prompt.trim()
+              tools: [{ type: "google_search" }]
             })
           }
         );

@@ -1,4 +1,3 @@
-
 const CORS_HEADERS = {
   "Access-Control-Allow-Origin": "*",
   "Access-Control-Allow-Methods": "GET, POST, OPTIONS",
@@ -12,6 +11,9 @@ function jsonResponse(data, status = 200) {
     headers: CORS_HEADERS
   });
 }
+
+// Yardımcı gecikme (sleep) fonksiyonu
+const delay = (ms) => new Promise((resolve) => resolve(setTimeout));
 
 export default {
   async fetch(request, env) {
@@ -134,24 +136,44 @@ export default {
           }, 400);
         }
 
-        // Model adı sabit tutulur; istemciden gelen model adı kullanılmaz.
-        const geminiResponse = await fetch(
-          "https://generativelanguage.googleapis.com/v1beta/interactions",
-          {
-            method: "POST",
-            headers: {
-              "Content-Type": "application/json",
-              "x-goog-api-key": env.GEMINI_API_KEY
-            },
-            body: JSON.stringify({
-              model: "gemini-3.8-flash",
-              input: prompt.trim()
-              tools: [{ type: "google_search" }]
-            })
-          }
-        );
+        // Yeniden deneme parametreleri
+        const maxRetries = 3;
+        let currentRetry = 0;
+        let currentDelay = 2000;
+        let geminiResponse;
+        let geminiData;
 
-        const geminiData = await geminiResponse.json();
+        while (currentRetry < maxRetries) {
+          geminiResponse = await fetch(
+            "https://generativelanguage.googleapis.com/v1beta/interactions",
+            {
+              method: "POST",
+              headers: {
+                "Content-Type": "application/json",
+                "x-goog-api-key": env.GEMINI_API_KEY
+              },
+              body: JSON.stringify({
+                model: "gemini-3.8-flash",
+                input: prompt.trim(),
+                tools: [{ type: "google_search" }]
+              })
+            }
+          );
+
+          geminiData = await geminiResponse.json();
+
+          // Eğer HTTP 429 alırsak ve deneme hakkımız varsa bekle ve tekrar dene
+          if (geminiResponse.status === 429 && currentRetry < maxRetries - 1) {
+            currentRetry++;
+            console.warn(`Gemini 429 alındı. ${currentDelay}ms sonra tekrar deneniyor...`);
+            await new Promise((resolve) => setTimeout(resolve, currentDelay));
+            currentDelay *= 2; // Üstel geri çekilme
+            continue;
+          }
+
+          // 429 değilse veya deneme hakkı bittiyse döngüden çık
+          break;
+        }
 
         if (!geminiResponse.ok) {
           console.error("Gemini API hatası:", geminiResponse.status);
@@ -174,14 +196,16 @@ export default {
             .flatMap(step => step.content || [])
             .filter(item => item.type === "text")
             .map(item => item.text || "")
-            .join("\n");
+            .join("
+");
         }
 
         if (!outputText && Array.isArray(geminiData.outputs)) {
           outputText = geminiData.outputs
             .map(item => item.text || "")
             .filter(Boolean)
-            .join("\n");
+            .join("
+");
         }
 
         // app.js içindeki data.interaction.outputText alanıyla uyumlu.

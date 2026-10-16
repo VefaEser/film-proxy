@@ -14,7 +14,7 @@ function jsonResponse(data, status = 200) {
 }
 
 function getGeminiKeys(env) {
-  const candidates = [
+  const list = [
     ["GEMINI_API_KEY_1", env.GEMINI_API_KEY_1],
     ["GEMINI_API_KEY_2", env.GEMINI_API_KEY_2],
     ["GEMINI_API_KEY_3", env.GEMINI_API_KEY_3],
@@ -23,11 +23,13 @@ function getGeminiKeys(env) {
 
   const seen = new Set();
 
-  return candidates.filter(([name, value]) => {
-    if (!value || seen.has(value)) return false;
-    seen.add(value);
-    return true;
-  }).map(([name, value]) => ({ name, value }));
+  return list
+    .filter(([name, value]) => {
+      if (!value || seen.has(value)) return false;
+      seen.add(value);
+      return true;
+    })
+    .map(([name, value]) => ({ name, value }));
 }
 
 function extractText(data) {
@@ -39,51 +41,72 @@ function extractText(data) {
     return data.outputText;
   }
 
-  const pieces = [];
+  const parts = [];
 
-  function walk(value) {
-    if (!value) return;
+  function walk(items) {
+    if (!Array.isArray(items)) return;
 
-    if (Array.isArray(value)) {
-      for (const item of value) walk(item);
-      return;
-    }
-
-    if (typeof value !== "object") return;
-
-    if (
-      value.type === "text" &&
-      typeof value.text === "string"
-    ) {
-      pieces.push(value.text);
-      return;
-    }
-
-    if (
-      typeof value.text === "string" &&
-      !value.type
-    ) {
-      pieces.push(value.text);
-    }
-
-    for (const [key, child] of Object.entries(value)) {
-      if (key === "text") continue;
-      if (
-        key === "content" ||
-        key === "steps" ||
-        key === "outputs" ||
-        key === "output"
-      ) {
-        walk(child);
+    for (const item of items) {
+      if (typeof item?.text === "string") {
+        parts.push(item.text);
+      } else if (Array.isArray(item?.content)) {
+        walk(item.content);
       }
     }
   }
 
-  walk(data?.steps);
-  walk(data?.outputs);
-  walk(data?.output);
+  if (Array.isArray(data?.steps)) {
+    for (const step of data.steps) {
+      if (step.type === "model_output") {
+        walk(step.content);
+      }
+    }
+  }
 
-  return pieces.join("\n").trim();
+  if (!parts.length && Array.isArray(data?.outputs)) {
+    walk(data.outputs);
+  }
+
+  if (!parts.length && Array.isArray(data?.output)) {
+    walk(data.output);
+  }
+
+  return parts.join("\n").trim();
+}
+
+async function tmdbRequest(env, upstreamPath, params) {
+  if (!env.TMDB_API_KEY) {
+    return jsonResponse({
+      error: "TMDB_API_KEY tanımlanmamış."
+    }, 500);
+  }
+
+  const target = new URL(
+    "https://api.themoviedb.org/3" + upstreamPath
+  );
+
+  for (const [key, value] of params.entries()) {
+    if (key !== "id") {
+      target.searchParams.set(key, value);
+    }
+  }
+
+  target.searchParams.set("api_key", env.TMDB_API_KEY);
+
+  const response = await fetch(target.toString(), {
+    headers: { Accept: "application/json" }
+  });
+
+  const data = await response.json().catch(() => ({}));
+
+  if (!response.ok) {
+    return jsonResponse({
+      error: "TMDB isteği başarısız.",
+      details: data
+    }, response.status);
+  }
+
+  return jsonResponse(data);
 }
 
 export default {
@@ -100,8 +123,11 @@ export default {
         });
       }
 
-      // Sağlık kontrolü
-      if (method === "GET" && (path === "/" || path === "/health")) {
+      // Worker sağlık kontrolü
+      if (
+        method === "GET" &&
+        (path === "/" || path === "/health")
+      ) {
         const keys = getGeminiKeys(env);
 
         return jsonResponse({
@@ -113,82 +139,80 @@ export default {
         });
       }
 
-      // TMDB film keşfetme
-      if (method === "GET" && path === "/tmdb/discover/movie") {
-        if (!env.TMDB_API_KEY) {
-          return jsonResponse({
-            error: "TMDB_API_KEY tanımlanmamış."
-          }, 500);
+      if (method === "GET") {
+        // Film keşfetme
+        if (path === "/tmdb/discover/movie") {
+          return tmdbRequest(
+            env,
+            "/discover/movie",
+            url.searchParams
+          );
         }
 
-        const tmdbUrl = new URL(
-          "https://api.themoviedb.org/3/discover/movie"
-        );
-
-        for (const [key, value] of url.searchParams.entries()) {
-          tmdbUrl.searchParams.set(key, value);
+        // Film arama
+        if (path === "/tmdb/search/movie") {
+          return tmdbRequest(
+            env,
+            "/search/movie",
+            url.searchParams
+          );
         }
 
-        tmdbUrl.searchParams.set("api_key", env.TMDB_API_KEY);
-
-        const response = await fetch(tmdbUrl.toString(), {
-          headers: { Accept: "application/json" }
-        });
-
-        const data = await response.json();
-
-        if (!response.ok) {
-          return jsonResponse({
-            error: "TMDB film keşfetme isteği başarısız.",
-            details: data
-          }, response.status);
+        // Film türleri
+        if (path === "/tmdb/genre/movie/list") {
+          return tmdbRequest(
+            env,
+            "/genre/movie/list",
+            url.searchParams
+          );
         }
 
-        return jsonResponse(data);
+        // TMDB dil listesi
+        if (path === "/tmdb/configuration/languages") {
+          return tmdbRequest(
+            env,
+            "/configuration/languages",
+            url.searchParams
+          );
+        }
+
+        // TMDB ülke listesi
+        if (path === "/tmdb/configuration/countries") {
+          return tmdbRequest(
+            env,
+            "/configuration/countries",
+            url.searchParams
+          );
+        }
+
+        // Film ayrıntıları
+        if (path === "/tmdb/movie/details") {
+          const id = url.searchParams.get("id");
+
+          if (!id || !/^\d+$/.test(id)) {
+            return jsonResponse({
+              error: "Film ayrıntısı için geçerli bir TMDB ID gerekli."
+            }, 400);
+          }
+
+          return tmdbRequest(
+            env,
+            `/movie/${id}`,
+            url.searchParams
+          );
+        }
       }
 
-      // TMDB film arama
-      if (method === "GET" && path === "/tmdb/search/movie") {
-        if (!env.TMDB_API_KEY) {
-          return jsonResponse({
-            error: "TMDB_API_KEY tanımlanmamış."
-          }, 500);
-        }
-
-        const tmdbUrl = new URL(
-          "https://api.themoviedb.org/3/search/movie"
-        );
-
-        for (const [key, value] of url.searchParams.entries()) {
-          tmdbUrl.searchParams.set(key, value);
-        }
-
-        tmdbUrl.searchParams.set("api_key", env.TMDB_API_KEY);
-
-        const response = await fetch(tmdbUrl.toString(), {
-          headers: { Accept: "application/json" }
-        });
-
-        const data = await response.json();
-
-        if (!response.ok) {
-          return jsonResponse({
-            error: "TMDB film arama isteği başarısız.",
-            details: data
-          }, response.status);
-        }
-
-        return jsonResponse(data);
-      }
-
-      // Gemini Interactions API ve anahtar yedekleme
-      if (method === "POST" && path === "/gemini-interactions") {
+      // Gemini Interactions API
+      if (
+        method === "POST" &&
+        path === "/gemini-interactions"
+      ) {
         const keys = getGeminiKeys(env);
 
         if (!keys.length) {
           return jsonResponse({
-            error: "Gemini API anahtarı tanımlanmamış.",
-            hint: "Cloudflare Secrets bölümünü kontrol et."
+            error: "Gemini API anahtarı tanımlanmamış."
           }, 500);
         }
 
@@ -241,16 +265,21 @@ export default {
               }
             );
 
-            data = await response.json();
+            data = await response.json().catch(() => ({}));
           } catch (error) {
+            lastStatus = 502;
+            lastData = {
+              error: {
+                message: error?.message || "Bağlantı hatası."
+              }
+            };
+
             attempts.push({
               key: key.name,
               status: 502,
-              message: error?.message || "Bağlantı hatası."
+              message: lastData.error.message
             });
 
-            lastStatus = 502;
-            lastData = { error: "Gemini bağlantısı kurulamadı." };
             continue;
           }
 
@@ -285,25 +314,33 @@ export default {
             message
           });
 
-          // 429 veya geçici sunucu hatalarında sıradaki anahtarı dene.
+          // Kota veya geçici sunucu hatasında sonraki anahtarı dene.
           if (
-            response.status !== 429 &&
-            response.status < 500
+            response.status === 429 ||
+            response.status >= 500
           ) {
-            break;
+            continue;
           }
+
+          // Diğer 4xx hatalarında anahtar değiştirmek genellikle çözmez.
+          break;
         }
+
+        const lastMessage =
+          lastData?.error?.message ||
+          lastData?.message ||
+          "Ayrıntı alınamadı.";
 
         return jsonResponse({
           ok: false,
-          error: "Gemini API isteği başarısız.",
+          error: `Gemini başarısız (HTTP ${lastStatus}): ${lastMessage}`,
           details: lastData,
           attempts,
           keysAvailable: keys.length,
           hint:
             lastStatus === 429
-              ? "Kullanılabilir anahtarların kotası dolmuş olabilir. Google AI Studio proje kotasını ve faturalandırmayı kontrol et."
-              : "Cloudflare dağıtımını, Gemini model adını ve API erişimini kontrol et."
+              ? "Tüm denenmiş anahtarlar kota sınırına takılmış olabilir. Google AI Studio'da proje kotasını, model limitlerini ve faturalandırmayı kontrol et."
+              : "Gemini model adını, API erişimini ve Cloudflare dağıtımını kontrol et."
         }, lastStatus);
       }
 
@@ -311,10 +348,13 @@ export default {
         error: "Endpoint bulunamadı.",
         path,
         availableEndpoints: [
-          "GET /",
           "GET /health",
           "GET /tmdb/discover/movie",
           "GET /tmdb/search/movie",
+          "GET /tmdb/genre/movie/list",
+          "GET /tmdb/configuration/languages",
+          "GET /tmdb/configuration/countries",
+          "GET /tmdb/movie/details?id=123",
           "POST /gemini-interactions"
         ]
       }, 404);
@@ -326,7 +366,7 @@ export default {
       );
 
       return jsonResponse({
-        error: "Worker içinde beklenmeyen bir hata oluştu.",
+        error: "Worker içinde beklenmeyen hata.",
         details: error?.message || String(error)
       }, 500);
     }

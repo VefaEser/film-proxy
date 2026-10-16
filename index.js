@@ -34,7 +34,7 @@ export default {
           ok: true,
           service: "film-proxy",
           tmdbConfigured: Boolean(env.TMDB_API_KEY),
-          geminiConfigured: Boolean(env.GEMINI_API_KEY)
+          geminiConfigured: Boolean(env.GEMINI_API_KEY_2)
         });
       }
 
@@ -110,9 +110,9 @@ export default {
 
       // Gemini 3.8 Flash: Interactions API
       if (method === "POST" && path === "/gemini-interactions") {
-        if (!env.GEMINI_API_KEY_3) {
+        if (!env.GEMINI_API_KEY_2) {
           return jsonResponse({
-            error: "GEMINI_API_KEY_3 tanımlanmamış."
+            error: "GEMINI_API_KEY_2 tanımlanmamış."
           }, 500);
         }
 
@@ -141,7 +141,7 @@ export default {
             method: "POST",
             headers: {
               "Content-Type": "application/json",
-              "x-goog-api-key": env.GEMINI_API_KEY_3
+              "x-goog-api-key": env.GEMINI_API_KEY_2
             },
             body: JSON.stringify({
               model: "gemini-3.8-flash",

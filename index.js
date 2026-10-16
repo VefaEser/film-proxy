@@ -3,34 +3,58 @@ const CORS_HEADERS = {
   "Access-Control-Allow-Origin": "*",
   "Access-Control-Allow-Methods": "GET, POST, OPTIONS",
   "Access-Control-Allow-Headers": "Content-Type, Authorization",
+  "Access-Control-Expose-Headers": "X-Gemini-Diagnostics",
   "Content-Type": "application/json; charset=utf-8"
 };
 
-function jsonResponse(data, status = 200) {
+function jsonResponse(data, status = 200, extraHeaders = {}) {
   return new Response(JSON.stringify(data), {
     status,
-    headers: CORS_HEADERS
+    headers: {
+      ...CORS_HEADERS,
+      ...extraHeaders
+    }
   });
 }
 
 function getGeminiKeys(env) {
   return [
-    env.GEMINI_API_KEY_1,
-    env.GEMINI_API_KEY_2,
-    env.GEMINI_API_KEY_3
-  ].filter((key, index, all) =>
-    typeof key === "string" &&
-    key.trim() !== "" &&
-    all.indexOf(key) === index
+    { name: "KEY_1", value: env.GEMINI_API_KEY_1 },
+    { name: "KEY_2", value: env.GEMINI_API_KEY_2 },
+    { name: "KEY_3", value: env.GEMINI_API_KEY_3 }
+  ].filter((item, index, all) =>
+    typeof item.value === "string" &&
+    item.value.trim() !== "" &&
+    all.findIndex(other => other.value === item.value) === index
   );
+}
+
+function errorMessage(data) {
+  if (typeof data?.error?.message === "string") {
+    return data.error.message;
+  }
+
+  if (typeof data?.message === "string") {
+    return data.message;
+  }
+
+  if (typeof data?.error === "string") {
+    return data.error;
+  }
+
+  return "Google ayrıntılı hata mesajı döndürmedi.";
 }
 
 async function tmdbRequest(path, params, env) {
   if (!env.TMDB_API_KEY) {
-    throw new Error("TMDB_API_KEY Cloudflare gizli değişkeni tanımlanmamış.");
+    throw new Error(
+      "TMDB_API_KEY Cloudflare Secret alanında tanımlanmamış."
+    );
   }
 
-  const target = new URL("https://api.themoviedb.org/3" + path);
+  const target = new URL(
+    "https://api.themoviedb.org/3" + path
+  );
 
   for (const [key, value] of params.entries()) {
     if (key !== "api_key") {
@@ -71,9 +95,11 @@ export default {
     }
 
     try {
-      // Worker ve API ayarlarını kontrol et.
-      if (method === "GET" &&
-          (path === "/" || path === "/health")) {
+      // Sağlık kontrolü
+      if (
+        method === "GET" &&
+        (path === "/" || path === "/health")
+      ) {
         return jsonResponse({
           ok: true,
           service: "film-proxy",
@@ -82,9 +108,11 @@ export default {
         });
       }
 
-      // TMDB film keşfetme.
-      if (method === "GET" &&
-          path === "/tmdb/discover/movie") {
+      // TMDB: film keşfetme
+      if (
+        method === "GET" &&
+        path === "/tmdb/discover/movie"
+      ) {
         return await tmdbRequest(
           "/discover/movie",
           url.searchParams,
@@ -92,9 +120,11 @@ export default {
         );
       }
 
-      // TMDB film arama.
-      if (method === "GET" &&
-          path === "/tmdb/search/movie") {
+      // TMDB: film arama
+      if (
+        method === "GET" &&
+        path === "/tmdb/search/movie"
+      ) {
         return await tmdbRequest(
           "/search/movie",
           url.searchParams,
@@ -102,23 +132,26 @@ export default {
         );
       }
 
-      // Bütün film türlerini getir.
-      if (method === "GET" &&
-          path === "/tmdb/genre/movie/list") {
-        const params = new URLSearchParams({
-          language: url.searchParams.get("language") || "tr-TR"
-        });
-
+      // TMDB: türler
+      if (
+        method === "GET" &&
+        path === "/tmdb/genre/movie/list"
+      ) {
         return await tmdbRequest(
           "/genre/movie/list",
-          params,
+          new URLSearchParams({
+            language:
+              url.searchParams.get("language") || "tr-TR"
+          }),
           env
         );
       }
 
-      // Bütün orijinal dil seçeneklerini getir.
-      if (method === "GET" &&
-          path === "/tmdb/configuration/languages") {
+      // TMDB: diller
+      if (
+        method === "GET" &&
+        path === "/tmdb/configuration/languages"
+      ) {
         return await tmdbRequest(
           "/configuration/languages",
           new URLSearchParams(),
@@ -126,9 +159,11 @@ export default {
         );
       }
 
-      // Ülke seçeneklerini getir.
-      if (method === "GET" &&
-          path === "/tmdb/configuration/countries") {
+      // TMDB: ülkeler
+      if (
+        method === "GET" &&
+        path === "/tmdb/configuration/countries"
+      ) {
         return await tmdbRequest(
           "/configuration/countries",
           new URLSearchParams({
@@ -138,9 +173,11 @@ export default {
         );
       }
 
-      // Film ayrıntıları: ülke ve süre filtreleri için.
-      if (method === "GET" &&
-          path === "/tmdb/movie/details") {
+      // TMDB: film ayrıntıları
+      if (
+        method === "GET" &&
+        path === "/tmdb/movie/details"
+      ) {
         const id = url.searchParams.get("id");
 
         if (!id || !/^\d+$/.test(id)) {
@@ -151,19 +188,26 @@ export default {
 
         return await tmdbRequest(
           `/movie/${id}`,
-          new URLSearchParams({ language: "tr-TR" }),
+          new URLSearchParams({
+            language: "tr-TR"
+          }),
           env
         );
       }
 
-      // Gemini Interactions API.
-      if (method === "POST" &&
-          path === "/gemini-interactions") {
+      // Gemini Interactions API
+      if (
+        method === "POST" &&
+        path === "/gemini-interactions"
+      ) {
         const keys = getGeminiKeys(env);
 
         if (keys.length === 0) {
           return jsonResponse({
-            error: "Gemini API anahtarı bulunamadı. Cloudflare üzerinde GEMINI_API_KEY_1, GEMINI_API_KEY_2 veya GEMINI_API_KEY_3 tanımla."
+            error:
+              "Gemini anahtarı bulunamadı. " +
+              "GEMINI_API_KEY_1, GEMINI_API_KEY_2 " +
+              "veya GEMINI_API_KEY_3 tanımlanmalı."
           }, 500);
         }
 
@@ -179,18 +223,21 @@ export default {
 
         const prompt = inputData?.input;
 
-        if (typeof prompt !== "string" || !prompt.trim()) {
+        if (
+          typeof prompt !== "string" ||
+          !prompt.trim()
+        ) {
           return jsonResponse({
             error: "input alanında metin gönderilmelidir."
           }, 400);
         }
 
+        const attempts = [];
         let lastStatus = 502;
         let lastDetails = null;
 
-        // Her tanımlı anahtarı en fazla bir kez dene.
-        // Kota hatasında diğer anahtara geç.
-        for (let i = 0; i < keys.length; i++) {
+        // Her farklı anahtarı sırayla dene.
+        for (const key of keys) {
           let response;
           let data;
 
@@ -201,7 +248,7 @@ export default {
                 method: "POST",
                 headers: {
                   "Content-Type": "application/json",
-                  "x-goog-api-key": keys[i]
+                  "x-goog-api-key": key.value
                 },
                 body: JSON.stringify({
                   model: "gemini-3.8-flash",
@@ -217,10 +264,28 @@ export default {
           } catch (error) {
             lastStatus = 502;
             lastDetails = {
-              message: error?.message || "Gemini bağlantı hatası."
+              message:
+                error?.message ||
+                "Gemini bağlantı hatası."
             };
+
+            attempts.push({
+              key: key.name,
+              status: 502,
+              message: lastDetails.message
+            });
+
+            // Bağlantı hatasında sıradaki anahtarı dene.
             continue;
           }
+
+          attempts.push({
+            key: key.name,
+            status: response.status,
+            message: response.ok
+              ? "Başarılı"
+              : errorMessage(data)
+          });
 
           if (response.ok) {
             let outputText =
@@ -244,38 +309,60 @@ export default {
                 .join("\n");
             }
 
+            const diagnosticHeader = attempts
+              .map(item => `${item.key}:${item.status}`)
+              .join(",");
+
             return jsonResponse({
               ok: true,
               model: "gemini-3.8-flash",
               text: outputText,
               outputText,
+              attempts,
               interaction: {
                 ...data,
                 outputText
               }
+            }, 200, {
+              "X-Gemini-Diagnostics": diagnosticHeader
             });
           }
 
           lastStatus = response.status;
           lastDetails = data;
 
-          // Kimlik doğrulama, kota veya sunucu hatasında
-          // sıradaki anahtarı dene. Diğer 4xx hatalarında dur.
+          // Kota, erişim veya geçici sunucu hatasında
+          // sıradaki farklı anahtara geç.
           const retryable = [
             401, 403, 408, 429, 500, 502, 503, 504
           ].includes(response.status);
 
-          if (!retryable) break;
+          if (!retryable) {
+            break;
+          }
         }
 
+        const attemptSummary = attempts
+          .map(item =>
+            `${item.key}: HTTP ${item.status} — ${item.message}`
+          )
+          .join(" | ");
+
         return jsonResponse({
-          error: "Gemini isteği başarısız oldu. Anahtarları, model erişimini ve proje kotalarını kontrol et.",
-          details: lastDetails,
-          attemptedKeys: keys.length,
-          status: lastStatus
+          ok: false,
+          error:
+            "Gemini isteği başarısız oldu. " +
+            "Anahtar denemeleri: " + attemptSummary,
+          status: lastStatus,
+          attempts,
+          details: lastDetails
         }, lastStatus >= 400 && lastStatus <= 599
           ? lastStatus
-          : 502);
+          : 502, {
+          "X-Gemini-Diagnostics": attempts
+            .map(item => `${item.key}:${item.status}`)
+            .join(",")
+        });
       }
 
       return jsonResponse({
@@ -300,7 +387,8 @@ export default {
       );
 
       return jsonResponse({
-        error: error?.message ||
+        error:
+          error?.message ||
           "Worker içinde beklenmeyen hata oluştu."
       }, 500);
     }

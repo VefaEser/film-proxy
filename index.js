@@ -1,3 +1,5 @@
+import { FIELD_DEFS, GEMINI_FIELDS } from "./fields.config.js";
+
 const MODEL_DEFAULT = "gemini-3.8-flash";
 const TMDB_BASE = "https://api.themoviedb.org/3";
 const GOOGLE_INTERACTIONS = "https://generativelanguage.googleapis.com/v1beta/interactions";
@@ -23,32 +25,6 @@ function wait(ms) { return new Promise(r => setTimeout(r, ms)); }
 function norm(s) { return String(s || "").trim().toLowerCase().replace(/\s+/g, " "); }
 function yearOf(m) { return Number(String(m.release_date || "").slice(0, 4)) || Number(m.year) || 0; }
 function movieKey(m) { return String(m.id || m.tmdb_id || ""); }
-function cacheKey(prefix, value) {
-  return `${prefix}:${encodeURIComponent(String(value)).slice(0, 450)}`;
-}
-
-// ---------- Alan tanımları ----------
-const FIELD_DEFS = {
-  night_ratio:       { source: "gemini",   ttl: null },
-  day_ratio:         { source: "gemini",   ttl: null },
-  indoor_ratio:      { source: "gemini",   ttl: null },
-  location_count:    { source: "gemini",   ttl: null },
-  dialogue_density:  { source: "gemini",   ttl: null },
-  color_ratio:       { source: "gemini",   ttl: null },
-  aspect_ratio:      { source: "gemini",   ttl: null },
-  season:            { source: "gemini",   ttl: null },
-  family_content:    { source: "gemini",   ttl: null },
-  related_films:     { source: "gemini",   ttl: null },
-  imdbRating:        { source: "omdb",     ttl: 7 * 86400 },
-  imdbVotes:         { source: "omdb",     ttl: 7 * 86400 },
-  imdbID:            { source: "omdb",     ttl: 7 * 86400 },
-  directors:         { source: "omdb",     ttl: 90 * 86400 },
-  original_work:     { source: "wikidata", ttl: 90 * 86400 },
-  filming_locations: { source: "wikidata", ttl: 90 * 86400 },
-  commons_images:    { source: "commons",  ttl: 90 * 86400 },
-  web_evidence:      { source: "tavily",   ttl: 30 * 86400 }
-};
-const GEMINI_FIELDS = Object.entries(FIELD_DEFS).filter(([, d]) => d.source === "gemini").map(([k]) => k);
 
 // ---------- D1 profil okuma/yazma ----------
 async function getProfileRow(env, movieId) {
@@ -283,7 +259,31 @@ async function enrichProfile(env, movie, staleFields, settings) {
   const updates = {};
   const covered = new Set();
 
-  // 1. Klasik kaynaklar
+  // 0. TMDB detayı (tür, dil, ülke) — sabit alanlar, her modda çalışır
+  const tmdbNeeded = ["genres", "spoken_languages", "production_countries"].filter(f => need.has(f));
+  if (tmdbNeeded.length && movie.id) {
+    try {
+      const detail = await tmdb(env, `/movie/${movie.id}`, { language: "tr-TR" });
+      if (need.has("genres")) {
+        updates.genres = Array.isArray(detail.genres) ? detail.genres.map(g => g.name) : [];
+        covered.add("genres");
+      }
+      if (need.has("spoken_languages")) {
+        updates.spoken_languages = Array.isArray(detail.spoken_languages)
+          ? detail.spoken_languages.map(l => l.name || l.english_name || l.iso_639_1)
+          : [];
+        covered.add("spoken_languages");
+      }
+      if (need.has("production_countries")) {
+        updates.production_countries = Array.isArray(detail.production_countries)
+          ? detail.production_countries.map(c => c.name || c.iso_3166_1)
+          : [];
+        covered.add("production_countries");
+      }
+    } catch (e) { console.warn("tmdb detail enrich:", e.message); }
+  }
+
+  // 1. OMDb
   if (["imdbRating","imdbVotes","imdbID","directors"].some(f => need.has(f))) {
     try {
       const data = await omdb(env, { t: movie.original_title || movie.title, y: String(yearOf(movie) || "") });
@@ -292,6 +292,8 @@ async function enrichProfile(env, movie, staleFields, settings) {
       }
     } catch (e) { console.warn("omdb enrich:", e.message); }
   }
+
+  // 2. Wikidata
   if (need.has("original_work") || need.has("filming_locations")) {
     try {
       const wd = await wikidata(env, movie);
@@ -299,6 +301,8 @@ async function enrichProfile(env, movie, staleFields, settings) {
       if (need.has("filming_locations")) { updates.filming_locations = wd.filmingLocations || []; covered.add("filming_locations"); }
     } catch (e) { console.warn("wikidata enrich:", e.message); }
   }
+
+  // 3. Commons
   if (need.has("commons_images")) {
     try {
       const c = await commons(env, movie);
@@ -306,7 +310,7 @@ async function enrichProfile(env, movie, staleFields, settings) {
     } catch (e) { console.warn("commons enrich:", e.message); }
   }
 
-  // 2. Web araması
+  // 4. Web araması
   const remainingAfterClassic = [...need].filter(f => !covered.has(f));
   if (settings.useWebResearch && remainingAfterClassic.length) {
     try {
@@ -316,7 +320,7 @@ async function enrichProfile(env, movie, staleFields, settings) {
     } catch (e) { console.warn("tavily enrich:", e.message); }
   }
 
-  // 3. AI
+  // 5. AI
   const aiNeeded = [...need].filter(f => !covered.has(f) && FIELD_DEFS[f].source === "gemini");
   if (settings.useAI && aiNeeded.length) {
     try {
@@ -349,11 +353,11 @@ function evaluateFilters(profile, filters) {
   if (filters.indoorRatioMin != null) numOk("indoor_ratio", filters.indoorRatioMin, null, "İç mekân oranı");
   if (filters.dialogueDensityMin != null) numOk("dialogue_density", filters.dialogueDensityMin, null, "Diyalog yoğunluğu");
 
-  // include/exclude kümeleri
   const checkSet = (key, profileKey, label) => {
     const f = filters[key];
     if (!f) return;
-    const have = Array.isArray(profile[profileKey]) ? profile[profileKey].map(norm) : [];
+    const raw = profile[profileKey];
+    const have = Array.isArray(raw) ? raw.map(norm) : [];
     if (f.include?.length) {
       const missing = f.include.filter(x => !have.includes(norm(x.label || x)));
       if (missing.length) { match = false; reasons.push(`${label}: eksik ${missing.map(x => x.label || x).join(", ")}`); }
@@ -391,8 +395,7 @@ async function handleResearch(env, body) {
     const fieldRows = await getFieldRows(env, movieId);
     const profile = existing?.data || {};
 
-    // TMDB temel alanlarını profile taşı (tür, dil, ülke, poster, overview)
-    if (!profile.genres && Array.isArray(movie.genre_ids)) profile.genre_ids = movie.genre_ids;
+    // TMDB temel alanlarını profile taşı (poster, overview, vote_average)
     if (!profile.vote_average && movie.vote_average != null) profile.vote_average = movie.vote_average;
     if (!profile.overview && movie.overview) profile.overview = movie.overview;
     if (!profile.poster_path && movie.poster_path) profile.poster_path = movie.poster_path;

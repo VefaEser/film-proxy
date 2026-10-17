@@ -582,4 +582,4 @@ async function handleRequest(request, env) {
   }
 }
 
-export default { fetch(request, env) { return handleRequest(env); } };
+export default { fetch(request, env) { return handleRequest(request, env); } };

@@ -11,22 +11,19 @@ const CORS = {
 
 function response(data, status = 200) {
   return new Response(JSON.stringify(data), {
-    status,
-    headers: { ...CORS, "Content-Type": "application/json; charset=utf-8" }
+    status, headers: { ...CORS, "Content-Type": "application/json; charset=utf-8" }
   });
 }
 function jsonError(message, status = 500, extra = {}) {
   return response({ error: String(message), ...extra }, status);
 }
-function safeJSON(text, fallback = null) {
-  try { return JSON.parse(text); } catch { return fallback; }
-}
+function safeJSON(text, fallback = null) { try { return JSON.parse(text); } catch { return fallback; } }
 function wait(ms) { return new Promise(r => setTimeout(r, ms)); }
 function norm(s) { return String(s || "").trim().toLowerCase().replace(/\s+/g, " "); }
 function yearOf(m) { return Number(String(m.release_date || "").slice(0, 4)) || Number(m.year) || 0; }
 function movieKey(m) { return String(m.id || m.tmdb_id || ""); }
 
-// ---------- D1 profil okuma/yazma ----------
+// ---------- D1 ----------
 async function getProfileRow(env, movieId) {
   if (!env.DB) return null;
   try {
@@ -72,7 +69,6 @@ async function putFieldRow(env, movieId, field, source) {
   } catch (e) { console.error("field write:", e.message); }
 }
 
-// ---------- Eksik / eskimiş alanlar ----------
 function findStaleFields(profile, fieldRows, forceRefresh) {
   const now = Math.floor(Date.now() / 1000);
   const fetched = new Map(fieldRows.map(r => [r.field, Number(r.fetched_at)]));
@@ -135,10 +131,8 @@ LIMIT 8`;
   const bindings = data.results?.bindings || [];
   return {
     items: bindings.map(x => ({
-      label: x.itemLabel?.value || "",
-      description: x.itemDescription?.value || "",
-      originalWork: x.originalWorkLabel?.value || "",
-      filmingLocation: x.filmingLocationLabel?.value || ""
+      label: x.itemLabel?.value || "", description: x.itemDescription?.value || "",
+      originalWork: x.originalWorkLabel?.value || "", filmingLocation: x.filmingLocationLabel?.value || ""
     })),
     originalWork: bindings.find(x => x.originalWorkLabel)?.originalWorkLabel?.value || null,
     filmingLocations: [...new Set(bindings.map(x => x.filmingLocationLabel?.value).filter(Boolean))]
@@ -226,7 +220,7 @@ function buildGeminiPrompt(movie, fields, known) {
 Film: ${JSON.stringify({ id: movie.id, title: movie.title, original_title: movie.original_title, year: yearOf(movie) })}
 Bilinen veriler: ${JSON.stringify(known).slice(0, 4000)}
 Senden istenen alanlar: ${JSON.stringify(fields)}
-Her alan için değer üret. Sayısal alanlar 0-100 veya null; location_count string; family_content nesne; related_films string[].
+Her alan için değer üret. night_ratio/day_ratio/indoor_ratio/dialogue_density/color_ratio 0-100 veya null; location_count string; family_content nesne; related_films string[]; story_locations/story_geography/character_traits/narrative_style/production_process/sound/reality/story_dimensions string[]; story_period string[]; aspect_ratio string; season string[].
 Yanıt biçimi yalnızca şu JSON: {"<alan>": <değer>, ...} ve yalnızca istenen alanları içer.`;
 }
 function buildSearchQuery(movie, fields) {
@@ -253,14 +247,14 @@ function extractCoveredFields(results, need) {
   return covered;
 }
 
-// ---------- Profil zenginleştirme ----------
+// ---------- Zenginleştirme ----------
 async function enrichProfile(env, movie, staleFields, settings) {
   const need = new Set(staleFields);
   const updates = {};
   const covered = new Set();
 
-  // 0. TMDB detayı (tür, dil, ülke) — sabit alanlar, her modda çalışır
-  const tmdbNeeded = ["genres", "spoken_languages", "production_countries"].filter(f => need.has(f));
+  // 0. TMDB detay
+  const tmdbNeeded = ["genres", "spoken_languages", "production_countries", "runtime"].filter(f => need.has(f));
   if (tmdbNeeded.length && movie.id) {
     try {
       const detail = await tmdb(env, `/movie/${movie.id}`, { language: "tr-TR" });
@@ -270,15 +264,17 @@ async function enrichProfile(env, movie, staleFields, settings) {
       }
       if (need.has("spoken_languages")) {
         updates.spoken_languages = Array.isArray(detail.spoken_languages)
-          ? detail.spoken_languages.map(l => l.name || l.english_name || l.iso_639_1)
-          : [];
+          ? detail.spoken_languages.map(l => l.name || l.english_name || l.iso_639_1) : [];
         covered.add("spoken_languages");
       }
       if (need.has("production_countries")) {
         updates.production_countries = Array.isArray(detail.production_countries)
-          ? detail.production_countries.map(c => c.name || c.iso_3166_1)
-          : [];
+          ? detail.production_countries.map(c => c.name || c.iso_3166_1) : [];
         covered.add("production_countries");
+      }
+      if (need.has("runtime")) {
+        updates.runtime = Number(detail.runtime) || null;
+        covered.add("runtime");
       }
     } catch (e) { console.warn("tmdb detail enrich:", e.message); }
   }
@@ -310,7 +306,7 @@ async function enrichProfile(env, movie, staleFields, settings) {
     } catch (e) { console.warn("commons enrich:", e.message); }
   }
 
-  // 4. Web araması
+  // 4. Web
   const remainingAfterClassic = [...need].filter(f => !covered.has(f));
   if (settings.useWebResearch && remainingAfterClassic.length) {
     try {
@@ -333,51 +329,123 @@ async function enrichProfile(env, movie, staleFields, settings) {
   return { updates, covered };
 }
 
-// ---------- Yerel filtre değerlendirme ----------
+// ---------- Filtre değerlendirme ----------
+function toNum(v) { if (v === null || v === undefined || v === "") return null; const n = Number(String(v).replace(/[^\d.-]/g, "")); return Number.isFinite(n) ? n : null; }
+
+function evalSet(profile, field, f, label, state) {
+  if (!f) return;
+  const raw = profile[field];
+  const have = Array.isArray(raw) ? raw.map(norm) : (raw ? [norm(raw)] : []);
+  if (f.include?.length) {
+    const missing = f.include.filter(x => !have.includes(norm(x.label || x)));
+    if (missing.length) { state.match = false; state.reasons.push(`${label}: eksik ${missing.map(x => x.label || x).join(", ")}`); }
+    else state.reasons.push(`${label}: dahil edilenler tamam`);
+  }
+  if (f.exclude?.length) {
+    const hit = f.exclude.filter(x => have.includes(norm(x.label || x)));
+    if (hit.length) {
+      state.match = false;
+      state.reasons.push(`${label}: hariç tutulanlar mevcut ${hit.map(x => x.label || x).join(", ")}`);
+      state.conflicts = true;
+    }
+  }
+  if (f.free?.length) {
+    for (const t of f.free) {
+      if (!have.includes(norm(t))) { state.unknown = true; state.reasons.push(`${label}: "${t}" bilinmiyor`); }
+      else state.reasons.push(`${label}: "${t}" eşleşti`);
+    }
+  }
+}
+
+function evalRange(profile, field, min, max, label, state) {
+  if (min == null && max == null) return;
+  const v = toNum(profile[field]);
+  if (v === null) { state.unknown = true; state.reasons.push(`${label}: bilinmiyor`); return; }
+  if ((min != null && v < min) || (max != null && v > max)) { state.match = false; state.reasons.push(`${label}: ${v} aralık dışı`); }
+  else state.reasons.push(`${label}: ${v} uygun`);
+}
+
 function evaluateFilters(profile, filters) {
-  const reasons = [];
-  let match = true;
-  let unknown = false;
+  const state = { match: true, reasons: [], unknown: false, conflicts: false };
 
-  const num = v => (v === null || v === undefined || v === "" ? null : Number(v));
-  const numOk = (field, min, max, label) => {
-    const v = num(profile[field]);
-    if (v === null) { unknown = true; reasons.push(`${label}: bilinmiyor`); return; }
-    if ((min != null && v < min) || (max != null && v > max)) { match = false; reasons.push(`${label}: ${v} aralık dışı`); }
-    else reasons.push(`${label}: ${v} uygun`);
-  };
-
-  if (filters.imdbMin != null || filters.imdbMax != null) numOk("imdbRating", filters.imdbMin, filters.imdbMax, "IMDb");
-  if (filters.tmdbMin != null || filters.tmdbMax != null) numOk("vote_average", filters.tmdbMin, filters.tmdbMax, "TMDB");
-  if (filters.nightRatioMin != null) numOk("night_ratio", filters.nightRatioMin, null, "Gece oranı");
-  if (filters.indoorRatioMin != null) numOk("indoor_ratio", filters.indoorRatioMin, null, "İç mekân oranı");
-  if (filters.dialogueDensityMin != null) numOk("dialogue_density", filters.dialogueDensityMin, null, "Diyalog yoğunluğu");
-
-  const checkSet = (key, profileKey, label) => {
-    const f = filters[key];
-    if (!f) return;
-    const raw = profile[profileKey];
-    const have = Array.isArray(raw) ? raw.map(norm) : [];
-    if (f.include?.length) {
-      const missing = f.include.filter(x => !have.includes(norm(x.label || x)));
-      if (missing.length) { match = false; reasons.push(`${label}: eksik ${missing.map(x => x.label || x).join(", ")}`); }
-      else reasons.push(`${label}: dahil edilenler tamam`);
+  // Puanlar
+  evalRange(profile, "imdbRating", filters.imdbMin, filters.imdbMax, "IMDb puanı", state);
+  evalRange(profile, "vote_average", filters.tmdbMin, filters.tmdbMax, "TMDB puanı", state);
+  // Oy sayıları
+  const iv = toNum(profile.imdbVotes);
+  if (filters.imdbVotesMin != null && filters.imdbVotesMin > 0) {
+    if (iv === null) { state.unknown = true; state.reasons.push("IMDb oy: bilinmiyor"); }
+    else if (iv < filters.imdbVotesMin) { state.match = false; state.reasons.push(`IMDb oy ${iv} < ${filters.imdbVotesMin}`); }
+  }
+  const tv = toNum(profile.vote_count);
+  if (filters.tmdbVotesMin != null && filters.tmdbVotesMin > 0) {
+    if (tv === null) { state.unknown = true; state.reasons.push("TMDB oy: bilinmiyor"); }
+    else if (tv < filters.tmdbVotesMin) { state.match = false; state.reasons.push(`TMDB oy ${tv} < ${filters.tmdbVotesMin}`); }
+  }
+  // Yıl
+  if (filters.yearMin != null || filters.yearMax != null) {
+    const y = yearOf(profile) || null;
+    if (y === null) { state.unknown = true; state.reasons.push("Yıl: bilinmiyor"); }
+    else if ((filters.yearMin != null && y < filters.yearMin) || (filters.yearMax != null && y > filters.yearMax)) {
+      state.match = false; state.reasons.push(`Yıl ${y} aralık dışı`);
     }
-    if (f.exclude?.length) {
-      const hit = f.exclude.filter(x => have.includes(norm(x.label || x)));
-      if (hit.length) { match = false; reasons.push(`${label}: hariç tutulanlar mevcut ${hit.map(x => x.label || x).join(", ")}`); }
+  }
+  // Süre
+  evalRange(profile, "runtime", filters.runtimeMin, filters.runtimeMax, "Süre", state);
+  // Karakter yoğunluğu
+  if (filters.characterDensity) {
+    const c = filters.characterDensity;
+    const fc = profile.family_content || {};
+    evalRange(fc, "main_characters", c.mainMin, c.mainMax, "Ana karakter", state);
+    evalRange(fc, "supporting_characters", c.supportMin, c.supportMax, "Yan karakter", state);
+    evalRange(fc, "extras", c.extraMin, c.extraMax, "Figüran", state);
+  }
+  // Oransal filtreler
+  if (filters.nightRatioMin != null || filters.nightRatioMax != null) evalRange(profile, "night_ratio", filters.nightRatioMin, filters.nightRatioMax, "Gece oranı", state);
+  if (filters.indoorRatioMin != null || filters.indoorRatioMax != null) evalRange(profile, "indoor_ratio", filters.indoorRatioMin, filters.indoorRatioMax, "İç mekân oranı", state);
+  if (filters.dialogueDensityMin != null || filters.dialogueDensityMax != null) evalRange(profile, "dialogue_density", filters.dialogueDensityMin, filters.dialogueDensityMax, "Diyalog yoğunluğu", state);
+  if (filters.colorRatioMin != null || filters.colorRatioMax != null) evalRange(profile, "color_ratio", filters.colorRatioMin, filters.colorRatioMax, "Renk oranı", state);
+  if (filters.locationCountMin != null || filters.locationCountMax != null) {
+    const v = toNum(profile.location_count);
+    if (v === null) { state.unknown = true; state.reasons.push("Mekân sayısı: bilinmiyor"); }
+    else if ((filters.locationCountMin != null && v < filters.locationCountMin) || (filters.locationCountMax != null && v > filters.locationCountMax)) {
+      state.match = false; state.reasons.push(`Mekân sayısı ${v} aralık dışı`);
     }
-    if (f.free?.length) {
-      for (const t of f.free) if (!have.includes(norm(t))) { unknown = true; reasons.push(`${label}: "${t}" bilinmiyor`); }
-    }
-  };
-  checkSet("genres", "genres", "Tür");
-  checkSet("original_language", "spoken_languages", "Dil");
-  checkSet("production_countries", "production_countries", "Ülke");
-  checkSet("filming_locations", "filming_locations", "Çekim yeri");
-  checkSet("season", "season", "Mevsim");
+  }
 
-  return { match, reasons, unknown };
+  // Set filtreleri
+  evalSet(profile, "genres", filters.genres, "Tür", state);
+  evalSet(profile, "spoken_languages", filters.original_language, "Dil", state);
+  evalSet(profile, "production_countries", filters.production_countries, "Ülke", state);
+  evalSet(profile, "story_locations", filters.story_locations, "Hikâye yeri", state);
+  evalSet(profile, "filming_locations", filters.filming_locations, "Çekim yeri", state);
+  evalSet(profile, "story_period", filters.story_period, "Dönem", state);
+  evalSet(profile, "story_geography", filters.story_geography, "Coğrafya", state);
+  evalSet(profile, "season", filters.season, "Mevsim", state);
+  evalSet(profile, "character_traits", filters.character_traits, "Karakter niteliği", state);
+  evalSet(profile, "aspect_ratio", filters.aspect_ratio, "En-boy oranı", state);
+  evalSet(profile, "narrative_style", filters.narrative_style, "Anlatım tarzı", state);
+  evalSet(profile, "production_process", filters.production_process, "Çekim süreci", state);
+  evalSet(profile, "sound", filters.sound, "Ses", state);
+  evalSet(profile, "reality", filters.reality, "Gerçeklik", state);
+  evalSet(profile, "story_dimensions", filters.story_dimensions, "Hikâye boyutları", state);
+
+  // Çakışma
+  const conflictKeys = ["genres","original_language","production_countries","story_locations","filming_locations","story_period","story_geography","season","character_traits","aspect_ratio","narrative_style","production_process","sound","reality","story_dimensions"];
+  for (const k of conflictKeys) {
+    const f = filters[k];
+    if (!f || !f.conflict) continue;
+    if (f.include?.length && f.exclude?.length) {
+      const incSet = new Set(f.include.map(x => norm(x.label || x)));
+      const excSet = new Set(f.exclude.map(x => norm(x.label || x)));
+      const profileVals = (profile[k === "original_language" ? "spoken_languages" : k] || []).map(norm);
+      const hasInc = [...incSet].some(x => profileVals.includes(x));
+      const hasExc = [...excSet].some(x => profileVals.includes(x));
+      if (hasInc && hasExc) { state.match = false; state.reasons.push(`${k}: çakışan dahil/hariç (izin verilmedi)`); }
+    }
+  }
+
+  return state;
 }
 
 // ---------- /research ----------
@@ -395,10 +463,11 @@ async function handleResearch(env, body) {
     const fieldRows = await getFieldRows(env, movieId);
     const profile = existing?.data || {};
 
-    // TMDB temel alanlarını profile taşı (poster, overview, vote_average)
     if (!profile.vote_average && movie.vote_average != null) profile.vote_average = movie.vote_average;
+    if (!profile.vote_count && movie.vote_count != null) profile.vote_count = movie.vote_count;
     if (!profile.overview && movie.overview) profile.overview = movie.overview;
     if (!profile.poster_path && movie.poster_path) profile.poster_path = movie.poster_path;
+    if (!profile.release_date && movie.release_date) profile.release_date = movie.release_date;
 
     const stale = findStaleFields(profile, fieldRows, forceRefresh);
     if (stale.length) {
@@ -416,6 +485,7 @@ async function handleResearch(env, body) {
       filter_match: evalResult.match,
       filter_reasons: evalResult.reasons,
       unknown: evalResult.unknown,
+      conflicts: evalResult.conflicts,
       _fromCache: stale.length === 0
     });
   }

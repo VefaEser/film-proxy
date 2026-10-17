@@ -1,8 +1,13 @@
 // Film profilinde tutulan alanların tanımı.
-// source: "omdb" | "wikidata" | "commons" | "tavily" | "gemini"
+// source: "tmdb" | "omdb" | "wikidata" | "commons" | "tavily" | "gemini"
 // ttl: saniye; null = süresiz (yalnızca manuel yenileme)
 
 export const FIELD_DEFS = {
+  // TMDB (sabit, detay çağrısından)
+  genres:               { source: "tmdb", ttl: 90 * 86400 },
+  spoken_languages:     { source: "tmdb", ttl: 90 * 86400 },
+  production_countries: { source: "tmdb", ttl: 90 * 86400 },
+
   // Gemini (göreceli / tahmini)
   night_ratio:       { source: "gemini",   ttl: null },
   day_ratio:         { source: "gemini",   ttl: null },
@@ -36,4 +41,4 @@ export const GEMINI_FIELDS = Object.entries(FIELD_DEFS)
   .filter(([, def]) => def.source === "gemini")
   .map(([key]) => key);
 
-export const VALID_SOURCES = ["omdb", "wikidata", "commons", "tavily", "gemini"];
+export const VALID_SOURCES = ["tmdb", "omdb", "wikidata", "commons", "tavily", "gemini"];

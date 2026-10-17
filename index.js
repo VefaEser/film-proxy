@@ -147,10 +147,10 @@ async function commons(env, movie) {
   url.searchParams.set("generator", "search");
   url.searchParams.set("gsrsearch", `filetype:bitmap "${title}" film`);
   url.searchParams.set("gsrnamespace", "6");
-  url.searchParams.set("gsrlimit", "5");
+  url.searchParams.set("gsrlimit", "10");
   url.searchParams.set("prop", "imageinfo");
   url.searchParams.set("iiprop", "url|extmetadata");
-  url.searchParams.set("iiurlwidth", "640");
+  url.searchParams.set("iiurlwidth", "320");
   const data = await fetchJSON(url.toString(), { headers: { "User-Agent": "FilmKesifMotoru/1.0" } }, "Wikimedia Commons");
   const pages = Object.values(data.query?.pages || {});
   return { images: pages.map(p => {
@@ -159,7 +159,7 @@ async function commons(env, movie) {
       title: p.title || "", url: i.thumburl || i.url || "", pageUrl: i.descriptionurl || "",
       license: meta.LicenseShortName?.value || "", artist: meta.Artist?.value || "", attribution: meta.Attribution?.value || ""
     };
-  }).filter(x => x.url) };
+  }).filter(x => x.url).slice(0, 10) };
 }
 async function tavily(env, query) {
   if (!env.TAVILY_API_KEY) return { results: [], warning: "TAVILY_API_KEY ayarlanmamış." };
@@ -307,7 +307,6 @@ async function enrichProfile(env, movie, staleFields, settings, filters) {
   const remainingAfterClassic = [...need].filter(f => !covered.has(f));
   if (settings.useWebResearch && remainingAfterClassic.length) {
     try {
-      // Serbest değerleri de arama sorgusuna ekle
       const freeTerms = [];
       const f = filters || {};
       for (const key of Object.keys(f)) {
@@ -423,7 +422,6 @@ function evaluateFilters(profile, filters) {
   evalSet(profile, "reality", filters.reality, "Gerçeklik", state);
   evalSet(profile, "story_dimensions", filters.story_dimensions, "Hikâye boyutları", state);
 
-  // Çakışma kuralı: include + exclude birlikte ve conflict işaretsizse ele
   const conflictKeys = ["genres","original_language","production_countries","story_locations","filming_locations","story_period","story_geography","season","character_traits","aspect_ratio","narrative_style","production_process","sound","reality","story_dimensions"];
   for (const k of conflictKeys) {
     const f = filters[k];
@@ -505,7 +503,7 @@ async function tmdbRoute(env, url) {
   if (path === "/configuration/languages") return tmdb(env, path);
   if (path === "/configuration/countries") return tmdb(env, path, { language: url.searchParams.get("language") || "tr-TR" });
   if (path === "/discover/movie") {
-    const allowed = ["language","sort_by","vote_average.gte","vote_average.lte","vote_count.gte","page","primary_release_date.gte","primary_release_date.lte","with_genres","without_genres","with_original_language","with_origin_country","with_text_query"];
+    const allowed = ["language","sort_by","vote_average.gte","vote_average.lte","vote_count.gte","page","primary_release_date.gte","primary_release_date.lte","with_genres","without_genres","with_original_language","with_origin_country","with_runtime.gte","with_runtime.lte","with_text_query"];
     const params = {};
     for (const key of allowed) if (url.searchParams.has(key)) params[key] = url.searchParams.get(key);
     return tmdb(env, path, params);

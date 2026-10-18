@@ -9,6 +9,7 @@ const MODEL_CHAIN = [
 ];
 const TMDB_BASE = "https://api.themoviedb.org/3";
 const GOOGLE_INTERACTIONS = "https://generativelanguage.googleapis.com/v1beta/interactions";
+const GOOGLE_GENERATE = "https://generativelanguage.googleapis.com/v1beta/models";
 const CORS = {
   "Access-Control-Allow-Origin": "*",
   "Access-Control-Allow-Methods": "GET,POST,OPTIONS",
@@ -115,35 +116,55 @@ async function omdb(env, params) {
   if (data.Response === "False") throw new Error(data.Error || "OMDb sonucu bulunamadı.");
   return data;
 }
-async function wikidata(env, movie) {
-  const title = movie.original_title || movie.title || "";
-  const year = yearOf(movie);
-  if (!title) return { items: [], filmingLocations: [], originalWork: null };
-  const escaped = title.replace(/\\/g, "\\\\").replace(/"/g, '\\"');
-  const query = `
-SELECT ?item ?itemLabel ?itemDescription ?originalWorkLabel ?filmingLocationLabel WHERE {
+
+// ---------- Wikidata: toplu sorgu ----------
+function buildWikidataBatchQuery(movies) {
+  const rows = movies.map(m => {
+    const title = (m.original_title || m.title || "").replace(/\\/g, "\\\\").replace(/"/g, '\\"');
+    const year = yearOf(m);
+    return `("${title}" ${year || 0} ${m.id})`;
+  }).join(" ");
+  return `
+SELECT ?movieId ?item ?itemLabel ?itemDescription ?originalWorkLabel ?filmingLocationLabel WHERE {
+  VALUES (?title ?year ?movieId) { ${rows} }
   ?item wdt:P31 wd:Q11424; rdfs:label ?label.
-  FILTER(LANG(?label)="en" && LCASE(STR(?label))=LCASE("${escaped}"))
+  FILTER(LANG(?label)="en" && LCASE(STR(?label))=LCASE(?title))
+  OPTIONAL {?item wdt:P577 ?date. FILTER(!BOUND(?date) || YEAR(?date) >= ?year - 1 && YEAR(?date) <= ?year + 1)}
   OPTIONAL {?item wdt:P144 ?originalWork.}
   OPTIONAL {?item wdt:P915 ?filmingLocation.}
-  OPTIONAL {?item wdt:P577 ?date.}
   OPTIONAL {?item schema:description ?itemDescription. FILTER(LANG(?itemDescription)="en")}
   SERVICE wikibase:label { bd:serviceParam wikibase:language "en,tr". }
-  ${year ? `FILTER(!BOUND(?date) || YEAR(?date) >= ${year - 1} && YEAR(?date) <= ${year + 1})` : ""}
 }
-LIMIT 8`;
+LIMIT 200`;
+}
+
+async function wikidataBatch(env, movies) {
+  const results = new Map();
+  if (!movies.length) return results;
+  const query = buildWikidataBatchQuery(movies);
   const url = "https://query.wikidata.org/sparql?query=" + encodeURIComponent(query);
-  const data = await fetchJSON(url, { headers: { "Accept": "application/sparql-results+json", "User-Agent": "FilmKesifMotoru/1.0" } }, "Wikidata", 30000);
-  const bindings = data.results?.bindings || [];
-  return {
-    items: bindings.map(x => ({
-      label: x.itemLabel?.value || "", description: x.itemDescription?.value || "",
-      originalWork: x.originalWorkLabel?.value || "", filmingLocation: x.filmingLocationLabel?.value || ""
-    })),
-    originalWork: bindings.find(x => x.originalWorkLabel)?.originalWorkLabel?.value || null,
-    filmingLocations: [...new Set(bindings.map(x => x.filmingLocationLabel?.value).filter(Boolean))]
-  };
+  try {
+    const data = await fetchJSON(url, {
+      headers: { "Accept": "application/sparql-results+json", "User-Agent": "FilmKesifMotoru/1.0" }
+    }, "Wikidata", 10000);
+    const bindings = data.results?.bindings || [];
+    const byId = new Map();
+    for (const b of bindings) {
+      const id = b.movieId?.value || "";
+      if (!byId.has(id)) byId.set(id, { originalWork: null, filmingLocations: new Set() });
+      const rec = byId.get(id);
+      if (b.originalWorkLabel?.value) rec.originalWork = b.originalWorkLabel.value;
+      if (b.filmingLocationLabel?.value) rec.filmingLocations.add(b.filmingLocationLabel.value);
+    }
+    for (const [id, rec] of byId) {
+      results.set(id, { originalWork: rec.originalWork, filmingLocations: [...rec.filmingLocations] });
+    }
+  } catch (e) {
+    console.warn("wikidata batch:", e.message);
+  }
+  return results;
 }
+
 async function commons(env, movie) {
   const title = movie.original_title || movie.title || "";
   if (!title) return { images: [] };
@@ -180,6 +201,14 @@ async function tavily(env, query) {
 function extractText(data) {
   if (typeof data?.output_text === "string") return data.output_text;
   if (typeof data?.text === "string") return data.text;
+  // generateContent biçimi
+  const cand = data?.candidates?.[0];
+  if (cand) {
+    const parts = cand?.content?.parts || [];
+    const texts = parts.map(p => (typeof p?.text === "string" ? p.text : "")).filter(Boolean);
+    if (texts.length) return texts.join("\n");
+  }
+  // Interactions biçimi
   const outputs = data?.outputs || data?.output || [];
   const list = Array.isArray(outputs) ? outputs : [outputs];
   const texts = [];
@@ -190,23 +219,20 @@ function extractText(data) {
   }
   return texts.join("\n");
 }
+
 function isKeyRetryable(msg) {
   const m = String(msg || "").toLowerCase();
   return /(http\s*(400|401|403|404|408|409|425|429|500|502|503|504))/.test(m)
     || /quota|rate.?limit|resource.?exhausted|too many requests|exceeded/.test(m)
     || /temporar|timeout|timed out|network|fetch failed|connection|econn|socket|abort/.test(m)
     || /api.?key|permission|unauthor|forbidden|invalid.?key|not.?authorized/.test(m)
-    || /model.?not.?found|not.?found|unsupported|unknown.?model/.test(m);
+    || /model.?not.?found|not.?found|unsupported|unknown.?model/.test(m)
+    || /invalid argument|unknown field|unknown name|unrecognized/.test(m);
 }
 
-// Model adlarını normalize eder: "models/" önekini, baş/son boşlukları temizler, küçük harfe çevirir.
 function normalizeModelName(m) {
-  return String(m || "")
-    .trim()
-    .toLowerCase()
-    .replace(/^models\//, "");
+  return String(m || "").trim().toLowerCase().replace(/^models\//, "");
 }
-
 function buildModelChain(env) {
   const seen = new Set();
   const chain = [];
@@ -221,16 +247,28 @@ function buildModelChain(env) {
   return chain;
 }
 
-async function callGeminiOnce(env, key, model, prompt, useThinkingLow) {
+async function callInteractions(env, key, model, prompt, useThinkingLow) {
   const body = { model, input: prompt };
   if (useThinkingLow) body.thinking_level = "low";
   const data = await fetchJSON(GOOGLE_INTERACTIONS, {
     method: "POST",
     headers: { "Content-Type": "application/json", "x-goog-api-key": key },
     body: JSON.stringify(body)
-  }, `Gemini ${model}`, 60000);
+  }, `Gemini Interactions ${model}`, 60000);
   const text = extractText(data);
-  if (!text) throw new Error(`Gemini ${model} yanıtında metin yok.`);
+  if (!text) throw new Error(`Gemini Interactions ${model} yanıtında metin yok.`);
+  return text;
+}
+
+async function callGenerateContent(env, key, model, prompt) {
+  const url = `${GOOGLE_GENERATE}/${encodeURIComponent(model)}:generateContent`;
+  const data = await fetchJSON(url, {
+    method: "POST",
+    headers: { "Content-Type": "application/json", "x-goog-api-key": key },
+    body: JSON.stringify({ contents: [{ parts: [{ text: prompt }] }] })
+  }, `Gemini generateContent ${model}`, 60000);
+  const text = extractText(data);
+  if (!text) throw new Error(`Gemini generateContent ${model} yanıtında metin yok.`);
   return text;
 }
 
@@ -247,30 +285,47 @@ async function callGemini(env, prompt) {
   for (const model of models) {
     for (const { key, index } of keys) {
       if (exhaustedKeys.has(index)) continue;
+
+      // 1) Interactions API (thinking_level: low)
       try {
-        const text = await callGeminiOnce(env, key, model, prompt, true);
-        console.log(`gemini: model=${model} key=${index} başarılı`);
+        const text = await callInteractions(env, key, model, prompt, true);
+        console.log(`gemini: model=${model} key=${index} interactions başarılı`);
         return text;
       } catch (e) {
         const msg = String(e.message || e);
-        if (/thinking_level|unknown field|invalid argument/i.test(msg)) {
+        if (/thinking_level|unknown field|invalid argument|unknown name/i.test(msg)) {
+          // thinking_level desteklenmiyor; aynı model/anahtarla alansız dene
           try {
-            const text = await callGeminiOnce(env, key, model, prompt, false);
-            console.log(`gemini: model=${model} key=${index} başarılı (thinking_level yok)`);
+            const text = await callInteractions(env, key, model, prompt, false);
+            console.log(`gemini: model=${model} key=${index} interactions başarılı (thinking_level yok)`);
             return text;
           } catch (e2) {
             const m2 = String(e2.message || e2);
-            errors.push(`model=${model} key=${index}: ${m2}`);
-            console.warn(`gemini: model=${model} key=${index} başarısız — ${m2}`);
+            errors.push(`interactions model=${model} key=${index}: ${m2}`);
+            console.warn(`gemini: interactions model=${model} key=${index} başarısız — ${m2}`);
             if (/429|quota|rate.?limit|exceeded/i.test(m2)) exhaustedKeys.add(index);
-            continue;
+            // generateContent'e düş
           }
+        } else {
+          errors.push(`interactions model=${model} key=${index}: ${msg}`);
+          console.warn(`gemini: interactions model=${model} key=${index} başarısız — ${msg}`);
+          if (/429|quota|rate.?limit|exceeded/i.test(msg)) exhaustedKeys.add(index);
         }
-        errors.push(`model=${model} key=${index}: ${msg}`);
-        console.warn(`gemini: model=${model} key=${index} başarısız — ${msg}`);
+      }
+
+      if (exhaustedKeys.has(index)) continue;
+
+      // 2) generateContent (klasik uç nokta)
+      try {
+        const text = await callGenerateContent(env, key, model, prompt);
+        console.log(`gemini: model=${model} key=${index} generateContent başarılı`);
+        return text;
+      } catch (e) {
+        const msg = String(e.message || e);
+        errors.push(`generateContent model=${model} key=${index}: ${msg}`);
+        console.warn(`gemini: generateContent model=${model} key=${index} başarısız — ${msg}`);
         if (/429|quota|rate.?limit|exceeded/i.test(msg)) exhaustedKeys.add(index);
-        if (!isKeyRetryable(msg)) continue;
-        await wait(400);
+        await wait(200);
       }
     }
   }
@@ -332,7 +387,7 @@ function extractCoveredFields(results, need) {
   return covered;
 }
 
-// ---------- Zenginleştirme: klasik kaynaklar ----------
+// ---------- Zenginleştirme ----------
 async function enrichClassic(env, movie, staleFields, settings, filters) {
   const need = new Set(staleFields);
   const updates = {};
@@ -371,14 +426,6 @@ async function enrichClassic(env, movie, staleFields, settings, filters) {
         if (need.has(f)) { updates[f] = data[f] ?? null; covered.add(f); }
       }
     } catch (e) { console.warn("omdb enrich:", e.message); }
-  }
-
-  if (need.has("original_work") || need.has("filming_locations")) {
-    try {
-      const wd = await wikidata(env, movie);
-      if (need.has("original_work")) { updates.original_work = wd.originalWork || null; covered.add("original_work"); }
-      if (need.has("filming_locations")) { updates.filming_locations = wd.filmingLocations || []; covered.add("filming_locations"); }
-    } catch (e) { console.warn("wikidata enrich:", e.message); }
   }
 
   if (need.has("commons_images")) {
@@ -542,14 +589,35 @@ async function handleResearchStream(env, body, controller) {
     if (!profile.release_date && movie.release_date) profile.release_date = movie.release_date;
 
     const stale = findStaleFields(profile, fieldRows, forceRefresh);
-    send({ type: "step", index: i, total, title, stage: stale.length ? "zenginleştiriliyor" : "önbellekten", fields: stale.slice(0, 6) });
+    prepared.push({ movie, movieId, profile, stale, webAvailable: false, aiNeeded: [] });
+  }
 
-    const classic = await enrichClassic(env, movie, stale, settings, filters);
-    Object.assign(profile, classic.updates);
-    for (const f of classic.covered) if (profile[f] !== undefined && profile[f] !== null) await putFieldRow(env, movieId, f, FIELD_DEFS[f].source);
+  for (let i = 0; i < prepared.length; i++) {
+    const p = prepared[i];
+    send({ type: "step", index: i, total, title: p.movie.original_title || p.movie.title, stage: p.stale.length ? "zenginleştiriliyor" : "önbellekten", fields: p.stale.slice(0, 6) });
+    const classic = await enrichClassic(env, p.movie, p.stale, settings, filters);
+    Object.assign(p.profile, classic.updates);
+    for (const f of classic.covered) if (p.profile[f] !== undefined && p.profile[f] !== null) await putFieldRow(env, p.movieId, f, FIELD_DEFS[f].source);
+    p.webAvailable = classic.webAvailable;
+  }
 
-    const aiNeeded = [...stale].filter(f => !classic.covered.has(f) && FIELD_DEFS[f].source === "gemini");
-    prepared.push({ movie, movieId, profile, stale, aiNeeded, webAvailable: classic.webAvailable });
+  const wikiNeeded = prepared.filter(p => p.stale.includes("original_work") || p.stale.includes("filming_locations"));
+  if (wikiNeeded.length) {
+    const wikiResults = await wikidataBatch(env, wikiNeeded.map(p => p.movie));
+    for (const p of wikiNeeded) {
+      const rec = wikiResults.get(String(p.movie.id));
+      if (!rec) continue;
+      if (p.stale.includes("original_work") && rec.originalWork) { p.profile.original_work = rec.originalWork; await putFieldRow(env, p.movieId, "original_work", "wikidata"); }
+      if (p.stale.includes("filming_locations") && rec.filmingLocations.length) { p.profile.filming_locations = rec.filmingLocations; await putFieldRow(env, p.movieId, "filming_locations", "wikidata"); }
+    }
+  }
+
+  for (const p of prepared) {
+    const coveredNow = new Set();
+    for (const f of p.stale) {
+      if (p.profile[f] !== undefined && p.profile[f] !== null) coveredNow.add(f);
+    }
+    p.aiNeeded = [...p.stale].filter(f => !coveredNow.has(f) && FIELD_DEFS[f].source === "gemini");
   }
 
   let aiAvailable = false;
@@ -657,7 +725,8 @@ async function handleRequest(request, env) {
     }
     if (url.pathname === "/wikidata") {
       const movie = { id: url.searchParams.get("id"), title: url.searchParams.get("title"), original_title: url.searchParams.get("title"), year: url.searchParams.get("year") };
-      return response(await wikidata(env, movie));
+      const res = await wikidataBatch(env, [movie]);
+      return response({ items: [], ...(res.get(String(movie.id)) || { originalWork: null, filmingLocations: [] }) });
     }
     if (url.pathname === "/commons") {
       const movie = { title: url.searchParams.get("title"), original_title: url.searchParams.get("title") };

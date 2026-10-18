@@ -1,6 +1,12 @@
 import { FIELD_DEFS, GEMINI_FIELDS } from "./fields.config.js";
 
 const MODEL_DEFAULT = "gemini-3.8-flash";
+const MODEL_CHAIN = [
+  "gemini-3.8-flash",
+  "gemini-3.5-flash-lite",
+  "gemini-3.1-flash-lite",
+  "gemini-3.5-flash"
+];
 const TMDB_BASE = "https://api.themoviedb.org/3";
 const GOOGLE_INTERACTIONS = "https://generativelanguage.googleapis.com/v1beta/interactions";
 const CORS = {
@@ -85,8 +91,8 @@ function findStaleFields(profile, fieldRows, forceRefresh) {
 }
 
 // ---------- Dış servisler ----------
-async function fetchJSON(url, options = {}, label = "Uzak servis") {
-  const res = await fetch(url, { ...options, signal: AbortSignal.timeout ? AbortSignal.timeout(18000) : undefined });
+async function fetchJSON(url, options = {}, label = "Uzak servis", timeoutMs = 18000) {
+  const res = await fetch(url, { ...options, signal: AbortSignal.timeout ? AbortSignal.timeout(timeoutMs) : undefined });
   const body = await res.text();
   const data = safeJSON(body, null);
   if (!res.ok) throw new Error(`${label}: HTTP ${res.status} ${body.slice(0, 300)}`);
@@ -127,7 +133,7 @@ SELECT ?item ?itemLabel ?itemDescription ?originalWorkLabel ?filmingLocationLabe
 }
 LIMIT 8`;
   const url = "https://query.wikidata.org/sparql?query=" + encodeURIComponent(query);
-  const data = await fetchJSON(url, { headers: { "Accept": "application/sparql-results+json", "User-Agent": "FilmKesifMotoru/1.0" } }, "Wikidata");
+  const data = await fetchJSON(url, { headers: { "Accept": "application/sparql-results+json", "User-Agent": "FilmKesifMotoru/1.0" } }, "Wikidata", 30000);
   const bindings = data.results?.bindings || [];
   return {
     items: bindings.map(x => ({
@@ -184,47 +190,91 @@ function extractText(data) {
   }
   return texts.join("\n");
 }
-
-// Yedek anahtara geçilmesi gereken durumları yakalayan geniş kontrol.
-// HTTP durum kodu ne olursa olsun; kota, limit, geçici hata, kimlik doğrulama
-// ve ağ hatalarında sıradaki anahtar denenir.
 function isKeyRetryable(msg) {
   const m = String(msg || "").toLowerCase();
-  return /(http\s*(401|403|408|409|425|429|500|502|503|504))/.test(m)
+  return /(http\s*(400|401|403|404|408|409|425|429|500|502|503|504))/.test(m)
     || /quota|rate.?limit|resource.?exhausted|too many requests|exceeded/.test(m)
     || /temporar|timeout|timed out|network|fetch failed|connection|econn|socket|abort/.test(m)
-    || /api.?key|permission|unauthor|forbidden|invalid.?key|not.?authorized/.test(m);
+    || /api.?key|permission|unauthor|forbidden|invalid.?key|not.?authorized/.test(m)
+    || /model.?not.?found|not.?found|unsupported|unknown.?model/.test(m);
+}
+
+// Model adlarını normalize eder: "models/" önekini, baş/son boşlukları temizler, küçük harfe çevirir.
+function normalizeModelName(m) {
+  return String(m || "")
+    .trim()
+    .toLowerCase()
+    .replace(/^models\//, "");
+}
+
+function buildModelChain(env) {
+  const seen = new Set();
+  const chain = [];
+  const push = (m) => {
+    const n = normalizeModelName(m);
+    if (!n || seen.has(n)) return;
+    seen.add(n);
+    chain.push(n);
+  };
+  push(env.GEMINI_MODEL);
+  for (const m of MODEL_CHAIN) push(m);
+  return chain;
+}
+
+async function callGeminiOnce(env, key, model, prompt, useThinkingLow) {
+  const body = { model, input: prompt };
+  if (useThinkingLow) body.thinking_level = "low";
+  const data = await fetchJSON(GOOGLE_INTERACTIONS, {
+    method: "POST",
+    headers: { "Content-Type": "application/json", "x-goog-api-key": key },
+    body: JSON.stringify(body)
+  }, `Gemini ${model}`, 60000);
+  const text = extractText(data);
+  if (!text) throw new Error(`Gemini ${model} yanıtında metin yok.`);
+  return text;
 }
 
 async function callGemini(env, prompt) {
-  const keys = [env.GEMINI_API_KEY_1, env.GEMINI_API_KEY_2, env.GEMINI_API_KEY_3].filter(Boolean);
+  const keys = [env.GEMINI_API_KEY_1, env.GEMINI_API_KEY_2, env.GEMINI_API_KEY_3]
+    .map((k, i) => ({ key: k, index: i + 1 }))
+    .filter(x => x.key);
   if (!keys.length) throw new Error("GEMINI_API_KEY_1/2/3 Secret'larından en az biri gerekli.");
-  const model = env.GEMINI_MODEL || MODEL_DEFAULT;
+
+  const models = buildModelChain(env);
+  const exhaustedKeys = new Set();
   const errors = [];
-  for (let i = 0; i < keys.length; i++) {
-    const keyIndex = i + 1;
-    try {
-      const data = await fetchJSON(GOOGLE_INTERACTIONS, {
-        method: "POST",
-        headers: { "Content-Type": "application/json", "x-goog-api-key": keys[i] },
-        body: JSON.stringify({ model, input: prompt })
-      }, `Gemini Interactions (key ${keyIndex})`);
-      const text = extractText(data);
-      if (!text) throw new Error(`Gemini yanıtında metin bulunamadı (key ${keyIndex}).`);
-      console.log(`gemini: key ${keyIndex} başarılı`);
-      return text;
-    } catch (e) {
-      const msg = String(e.message || e);
-      errors.push(`key${keyIndex}: ${msg}`);
-      console.warn(`gemini: key ${keyIndex} başarısız — ${msg}`);
-      if (!isKeyRetryable(msg)) {
-        // Bu hata anahtarla ilgili değilse (ör. prompt biçimi) diğer anahtarları denemek anlamsız.
-        throw new Error(errors.join(" | "));
+
+  for (const model of models) {
+    for (const { key, index } of keys) {
+      if (exhaustedKeys.has(index)) continue;
+      try {
+        const text = await callGeminiOnce(env, key, model, prompt, true);
+        console.log(`gemini: model=${model} key=${index} başarılı`);
+        return text;
+      } catch (e) {
+        const msg = String(e.message || e);
+        if (/thinking_level|unknown field|invalid argument/i.test(msg)) {
+          try {
+            const text = await callGeminiOnce(env, key, model, prompt, false);
+            console.log(`gemini: model=${model} key=${index} başarılı (thinking_level yok)`);
+            return text;
+          } catch (e2) {
+            const m2 = String(e2.message || e2);
+            errors.push(`model=${model} key=${index}: ${m2}`);
+            console.warn(`gemini: model=${model} key=${index} başarısız — ${m2}`);
+            if (/429|quota|rate.?limit|exceeded/i.test(m2)) exhaustedKeys.add(index);
+            continue;
+          }
+        }
+        errors.push(`model=${model} key=${index}: ${msg}`);
+        console.warn(`gemini: model=${model} key=${index} başarısız — ${msg}`);
+        if (/429|quota|rate.?limit|exceeded/i.test(msg)) exhaustedKeys.add(index);
+        if (!isKeyRetryable(msg)) continue;
+        await wait(400);
       }
-      if (i < keys.length - 1) await wait(800 * (i + 1));
     }
   }
-  throw new Error(`Gemini tüm anahtarlarda başarısız: ${errors.join(" | ")}`);
+  throw new Error(`Gemini tüm model/anahtarlarda başarısız: ${errors.join(" | ")}`);
 }
 
 function extractJSON(text) {
@@ -233,16 +283,31 @@ function extractJSON(text) {
   if (start < 0 || end < start) throw new Error("Gemini geçerli JSON döndürmedi.");
   return JSON.parse(clean.slice(start, end + 1));
 }
-function buildGeminiPrompt(movie, fields, known, filters) {
-  const f = filters || {};
-  return `Sen bir film araştırma asistanısın. Yalnızca sağlanan kaynaklardan hareket et; kanıt yoksa düşük güvenli olarak işaretle, uydurma.
-Film: ${JSON.stringify({ id: movie.id, title: movie.title, original_title: movie.original_title, year: yearOf(movie) })}
-Bilinen veriler: ${JSON.stringify(known).slice(0, 4000)}
-Senden istenen alanlar: ${JSON.stringify(fields)}
-Kullanıcı filtreleri (include = olumlu, exclude = olumsuz, serbest değerler dahil): ${JSON.stringify(f).slice(0, 3000)}
-Her alan için değer üret. night_ratio/day_ratio/indoor_ratio/dialogue_density/color_ratio 0-100 veya null; location_count string; family_content nesne; related_films string[]; story_locations/story_geography/character_traits/narrative_style/production_process/sound/reality/story_dimensions string[]; story_period string[]; aspect_ratio string; season string[].
-Yanıt biçimi yalnızca şu JSON: {"<alan>": <değer>, ...} ve yalnızca istenen alanları içer.`;
+function extractJSONArray(text) {
+  const clean = String(text).replace(/^```(?:json)?\s*/i, "").replace(/\s*```$/,"").trim();
+  const start = clean.indexOf("["), end = clean.lastIndexOf("]");
+  if (start < 0 || end < start) return null;
+  try { return JSON.parse(clean.slice(start, end + 1)); } catch { return null; }
 }
+
+function buildBatchGeminiPrompt(movies, fieldsByMovie, knownByMovie, filters) {
+  const f = filters || {};
+  const payload = movies.map(m => ({
+    id: m.id,
+    title: m.title,
+    original_title: m.original_title,
+    year: yearOf(m),
+    fields: fieldsByMovie[m.id] || [],
+    known: knownByMovie[m.id] || {}
+  }));
+  return `Sen bir film araştırma asistanısın. Yalnızca sağlanan kaynaklardan hareket et; kanıt yoksa düşük güvenli olarak işaretle, uydurma.
+Kullanıcı filtreleri (include = olumlu, exclude = olumsuz): ${JSON.stringify(f).slice(0, 3000)}
+Her film için, "fields" listesindeki alanları doldur.
+Sayısal alanlar 0-100 veya null; location_count string; family_content nesne; related_films string[]; story_locations/story_geography/character_traits/narrative_style/production_process/sound/reality/story_dimensions string[]; story_period string[]; aspect_ratio string; season string[].
+Yanıt biçimi yalnızca şu JSON dizisi: [{"id": <film_id>, "<alan>": <değer>, ...}, ...]
+Filmler: ${JSON.stringify(payload).slice(0, 12000)}`;
+}
+
 function buildSearchQuery(movie, fields) {
   const title = movie.original_title || movie.title || "";
   const year = yearOf(movie) || "";
@@ -267,11 +332,12 @@ function extractCoveredFields(results, need) {
   return covered;
 }
 
-// ---------- Zenginleştirme ----------
-async function enrichProfile(env, movie, staleFields, settings, filters) {
+// ---------- Zenginleştirme: klasik kaynaklar ----------
+async function enrichClassic(env, movie, staleFields, settings, filters) {
   const need = new Set(staleFields);
   const updates = {};
   const covered = new Set();
+  let webAvailable = false;
 
   const tmdbNeeded = ["genres", "spoken_languages", "production_countries", "runtime"].filter(f => need.has(f));
   if (tmdbNeeded.length && movie.id) {
@@ -336,20 +402,12 @@ async function enrichProfile(env, movie, staleFields, settings, filters) {
       const fullQuery = freeTerms.length ? `${baseQuery} ${freeTerms.join(" ")}` : baseQuery;
       const w = await tavily(env, fullQuery);
       updates.web_evidence = w.results || [];
+      if (Array.isArray(w.results) && w.results.length) webAvailable = true;
       for (const f2 of extractCoveredFields(w.results, remainingAfterClassic)) covered.add(f2);
     } catch (e) { console.warn("tavily enrich:", e.message); }
   }
 
-  const aiNeeded = [...need].filter(f => !covered.has(f) && FIELD_DEFS[f].source === "gemini");
-  if (settings.useAI && aiNeeded.length) {
-    try {
-      const raw = await callGemini(env, buildGeminiPrompt(movie, aiNeeded, updates, filters));
-      const parsed = extractJSON(raw);
-      for (const f of aiNeeded) if (parsed[f] !== undefined) { updates[f] = parsed[f]; covered.add(f); }
-    } catch (e) { console.warn("gemini enrich:", e.message); }
-  }
-
-  return { updates, covered };
+  return { updates, covered, webAvailable };
 }
 
 // ---------- Filtre değerlendirme ----------
@@ -373,7 +431,6 @@ function evalSet(profile, field, f, label, state) {
     }
   }
 }
-
 function evalRange(profile, field, min, max, label, state) {
   if (min == null && max == null) return;
   const v = toNum(profile[field]);
@@ -381,10 +438,8 @@ function evalRange(profile, field, min, max, label, state) {
   if ((min != null && v < min) || (max != null && v > max)) { state.match = false; state.reasons.push(`${label}: ${v} aralık dışı`); }
   else state.reasons.push(`${label}: ${v} uygun`);
 }
-
 function evaluateFilters(profile, filters) {
   const state = { match: true, reasons: [], unknown: false, conflicts: false };
-
   evalRange(profile, "imdbRating", filters.imdbMin, filters.imdbMax, "IMDb puanı", state);
   evalRange(profile, "vote_average", filters.tmdbMin, filters.tmdbMax, "TMDB puanı", state);
   const iv = toNum(profile.imdbVotes);
@@ -423,7 +478,6 @@ function evaluateFilters(profile, filters) {
       state.match = false; state.reasons.push(`Mekân sayısı ${v} aralık dışı`);
     }
   }
-
   evalSet(profile, "genres", filters.genres, "Tür", state);
   evalSet(profile, "spoken_languages", filters.original_language, "Dil", state);
   evalSet(profile, "production_countries", filters.production_countries, "Ülke", state);
@@ -452,7 +506,6 @@ function evaluateFilters(profile, filters) {
     const hasExc = [...excSet].some(x => profileVals.includes(x));
     if (hasInc && hasExc) { state.match = false; state.reasons.push(`${k}: çakışan dahil/hariç (izin verilmedi)`); }
   }
-
   return state;
 }
 
@@ -471,7 +524,7 @@ async function handleResearchStream(env, body, controller) {
 
   send({ type: "start", total });
 
-  const results = [];
+  const prepared = [];
   for (let i = 0; i < movies.length; i++) {
     const movie = movies[i];
     const movieId = movieKey(movie);
@@ -489,25 +542,70 @@ async function handleResearchStream(env, body, controller) {
     if (!profile.release_date && movie.release_date) profile.release_date = movie.release_date;
 
     const stale = findStaleFields(profile, fieldRows, forceRefresh);
-    if (stale.length) {
-      send({ type: "step", index: i, total, title, stage: "zenginleştiriliyor", fields: stale.slice(0, 6) });
-      const { updates, covered } = await enrichProfile(env, movie, stale, settings, filters);
-      Object.assign(profile, updates);
-      for (const f of covered) if (profile[f] !== undefined && profile[f] !== null) await putFieldRow(env, movieId, f, FIELD_DEFS[f].source);
-      await putProfileRow(env, movieId, movie.title, yearOf(movie), profile, forceRefresh);
-    } else {
-      send({ type: "step", index: i, total, title, stage: "önbellekten" });
-    }
+    send({ type: "step", index: i, total, title, stage: stale.length ? "zenginleştiriliyor" : "önbellekten", fields: stale.slice(0, 6) });
 
-    const evalResult = evaluateFilters(profile, filters);
+    const classic = await enrichClassic(env, movie, stale, settings, filters);
+    Object.assign(profile, classic.updates);
+    for (const f of classic.covered) if (profile[f] !== undefined && profile[f] !== null) await putFieldRow(env, movieId, f, FIELD_DEFS[f].source);
+
+    const aiNeeded = [...stale].filter(f => !classic.covered.has(f) && FIELD_DEFS[f].source === "gemini");
+    prepared.push({ movie, movieId, profile, stale, aiNeeded, webAvailable: classic.webAvailable });
+  }
+
+  let aiAvailable = false;
+  const aiRequested = settings.useAI && prepared.some(p => p.aiNeeded.length);
+  if (aiRequested) {
+    const aiMovies = prepared.filter(p => p.aiNeeded.length);
+    const fieldsByMovie = {};
+    const knownByMovie = {};
+    for (const p of aiMovies) {
+      fieldsByMovie[p.movie.id] = p.aiNeeded;
+      knownByMovie[p.movie.id] = { ...p.profile };
+    }
+    try {
+      const prompt = buildBatchGeminiPrompt(aiMovies.map(p => p.movie), fieldsByMovie, knownByMovie, filters);
+      const raw = await callGemini(env, prompt);
+      const arr = extractJSONArray(raw) || (() => {
+        try { const obj = extractJSON(raw); return obj.movies || []; } catch { return []; }
+      })();
+      const byId = new Map();
+      for (const item of arr) {
+        const id = item && (item.id ?? item.movie_id);
+        if (id != null) byId.set(String(id), item);
+      }
+      for (const p of aiMovies) {
+        const item = byId.get(String(p.movie.id));
+        if (item) {
+          for (const f of p.aiNeeded) {
+            if (item[f] !== undefined && item[f] !== null) p.profile[f] = item[f];
+          }
+        }
+      }
+      aiAvailable = true;
+    } catch (e) {
+      console.warn("gemini toplu enrich:", e.message);
+      aiAvailable = false;
+    }
+  } else if (settings.useAI) {
+    aiAvailable = true;
+  }
+
+  const results = [];
+  for (const p of prepared) {
+    if (p.stale.length) {
+      await putProfileRow(env, p.movieId, p.movie.title, yearOf(p.movie), p.profile, forceRefresh);
+    }
+    const evalResult = evaluateFilters(p.profile, filters);
     const result = {
-      id: movie.id, ...movie, ...profile,
+      id: p.movie.id, ...p.movie, ...p.profile,
       filter_match: evalResult.match, filter_reasons: evalResult.reasons,
       unknown: evalResult.unknown, conflicts: evalResult.conflicts,
-      _fromCache: stale.length === 0
+      ai_available: aiAvailable,
+      web_available: p.webAvailable,
+      _fromCache: p.stale.length === 0
     };
     results.push(result);
-    send({ type: "movie", index: i, total, movie: result });
+    send({ type: "movie", index: results.length - 1, total, movie: result });
   }
 
   send({ type: "done", movies: results });
@@ -545,6 +643,7 @@ async function handleRequest(request, env) {
     if (url.pathname === "/health") {
       return response({
         ok: true, model: env.GEMINI_MODEL || MODEL_DEFAULT,
+        models: buildModelChain(env),
         tmdb: !!env.TMDB_API_KEY, omdb: !!env.OMDB_API_KEY, tavily: !!env.TAVILY_API_KEY,
         geminiKeys: [!!env.GEMINI_API_KEY_1, !!env.GEMINI_API_KEY_2, !!env.GEMINI_API_KEY_3],
         d1: !!env.DB

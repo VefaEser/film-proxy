@@ -16,6 +16,7 @@
     --country-color: #34d399;
     --lang-color: #f472b6;
     --bg: #111827;
+    --panel-bg: #243244;
   }
   * { box-sizing: border-box; }
   html, body { overflow-x: hidden; max-width: 100%; }
@@ -36,66 +37,51 @@
   .score-field label { font-size: 0.78rem; color: var(--text-muted); }
   .score-field input { width: 100%; min-width: 0; padding: 8px 10px; font-size: 0.9rem; border: 1px solid var(--card-border); border-radius: 6px; background: var(--card-bg); color: var(--text-main); }
 
-  /* Çoklu seçim kutusu: açıldığında 3 satır sabit; 1-2. satır chip, 3. satır input; ok 3. satır sağında */
-  .ms { position: relative; margin-bottom: 12px; }
-  .ms-label { display: block; font-size: 0.85rem; font-weight: 600; margin-bottom: 4px; }
+  .ms { position: relative; margin-bottom: 56px; padding-top: 26px; min-height: 122px; }
+  .ms-label { position: absolute; top: 0; left: 0; right: 0; font-size: 0.85rem; font-weight: 600; margin: 0; line-height: 20px; }
   .ms-box {
+    position: absolute;
+    bottom: 0; left: 0; right: 0;
     display: grid;
     grid-template-columns: 1fr 30px;
-    grid-template-rows: auto;
+    grid-template-rows: 1fr 1fr auto;
     column-gap: 6px;
-    row-gap: 2px;
+    height: 96px;
     border: 1px solid var(--card-border);
     border-radius: 6px;
-    padding: 6px 8px;
+    padding: 4px 8px;
     background: var(--card-bg);
     cursor: text;
-    align-items: start;
-  }
-  .ms-box.open {
-    grid-template-rows: 1fr 1fr auto;
-    height: 92px;
+    align-items: stretch;
   }
   .ms-box:focus-within { border-color: var(--year-color); }
-  .ms-chips-and-input {
-    display: contents;
-  }
-  .ms-box.open .ms-chips {
+  .ms-chips {
     grid-column: 1; grid-row: 1 / 3;
-    max-height: 100%;
+    min-width: 0;
     overflow-y: auto;
-    padding-right: 4px;
-    border-right: 4px solid transparent;
+    display: flex; flex-wrap: wrap; gap: 4px; align-content: flex-start;
   }
-  .ms-box:not(.open) .ms-chips {
-    grid-column: 1; grid-row: 1;
-    display: flex; flex-wrap: wrap; gap: 4px;
-  }
-  .ms-chips { display: flex; flex-wrap: wrap; gap: 4px; width: 100%; align-content: flex-start; }
   .ms-input {
     grid-column: 1; grid-row: 3;
     border: none; outline: none; background: transparent; color: var(--text-main);
     font-size: 0.85rem; padding: 4px 0; width: 100%;
   }
-  .ms-box:not(.open) .ms-input { grid-row: 2; }
   .ms-arrow {
-    grid-column: 2;
+    grid-column: 2; grid-row: 3;
     align-self: end; justify-self: end;
     border: none; background: transparent; cursor: pointer;
     color: var(--text-muted); font-size: 0.85rem; padding: 2px 4px;
     width: 26px; height: 26px; line-height: 1;
   }
-  .ms-box:not(.open) .ms-arrow { grid-row: 1; align-self: start; }
-  .ms-box.open .ms-arrow { grid-row: 3; }
   .ms-arrow.open { color: var(--text-main); }
   .ms-chip { display: inline-flex; align-items: center; gap: 4px; font-size: 0.75rem; padding: 2px 6px; border-radius: 4px; background: rgba(37, 99, 235, 0.15); color: var(--text-main); }
   .ms-chip[data-state="exclude"] { background: rgba(220, 38, 38, 0.15); }
   .ms-chip[data-state="include"]::before { content: "✓ "; font-weight: 700; }
   .ms-chip[data-state="exclude"]::before { content: "× "; font-weight: 700; }
   .ms-chip button { border: none; background: transparent; cursor: pointer; color: inherit; font-size: 0.75rem; padding: 0 2px; }
-  .ms-panel { position: absolute; z-index: 50; top: calc(100% + 4px); left: 0; right: 0; max-width: 100%; max-height: 260px; overflow-y: auto; background: var(--card-bg); border: 1px solid var(--card-border); border-radius: 8px; box-shadow: 0 8px 24px rgba(0,0,0,0.4); display: none; }
+  .ms-panel { position: absolute; z-index: 50; top: calc(100% + 4px); left: 0; right: 0; max-width: 100%; max-height: 260px; overflow-y: auto; background: var(--panel-bg); border: 1px solid var(--card-border); border-radius: 8px; box-shadow: 0 8px 24px rgba(0,0,0,0.5); display: none; }
   .ms-panel.open { display: block; }
-  .ms-panel-head { display: flex; justify-content: flex-end; padding: 6px 8px; border-bottom: 1px solid var(--card-border); position: sticky; top: 0; background: var(--card-bg); z-index: 1; }
+  .ms-panel-head { display: flex; justify-content: flex-end; padding: 6px 8px; border-bottom: 1px solid var(--card-border); position: sticky; top: 0; background: var(--panel-bg); z-index: 1; }
   .ms-select-all { font-size: 0.75rem; padding: 2px 8px; border: 1px solid var(--card-border); border-radius: 4px; background: transparent; color: var(--text-main); cursor: pointer; }
   .ms-select-all[data-state="include"] { background: rgba(37, 99, 235, 0.2); }
   .ms-select-all[data-state="exclude"] { background: rgba(220, 38, 38, 0.2); }
@@ -107,7 +93,7 @@
   .ms-suggestions { border-top: 1px solid var(--card-border); padding: 4px 0; }
   .ms-suggestion { padding: 6px 10px; font-size: 0.8rem; cursor: pointer; color: var(--text-muted); }
   .ms-suggestion:hover { background: rgba(255,255,255,0.05); color: var(--text-main); }
-  .ms-extra { margin-top: 6px; font-size: 0.78rem; color: var(--text-muted); }
+  .ms-extra { position: absolute; top: 100%; left: 0; right: 0; margin-top: 6px; font-size: 0.78rem; color: var(--text-muted); z-index: 5; }
   .ms-extra label { display: flex; align-items: center; gap: 6px; cursor: pointer; margin-bottom: 2px; }
   .ms-extra input[type="checkbox"] { accent-color: var(--year-color); }
 
@@ -126,24 +112,29 @@
   #searchBtn:hover { opacity: 0.9; }
   #clearAllBtn { display: block; width: 100%; padding: 10px; font-size: 0.85rem; font-weight: 600; background: transparent; color: var(--text-main); border: 1px solid var(--card-border); border-radius: 8px; cursor: pointer; margin-bottom: 8px; }
 
+  .more-btn {
+    padding: 10px 16px;
+    border: 1px solid var(--card-border);
+    background: transparent;
+    color: var(--text-main);
+    border-radius: 8px;
+    cursor: pointer;
+    font-size: 0.85rem;
+  }
+  .more-btn:hover { background: rgba(255,255,255,0.06); }
+  .more-btn:disabled { opacity: 0.5; cursor: default; }
+
   .film-card {
-    display: grid;
-    grid-template-columns: 150px 1fr;
-    gap: 16px;
-    padding: 16px;
+    position: relative;
     background: var(--card-bg);
     border: 1px solid var(--card-border);
     border-radius: 12px;
+    padding: 16px;
     margin-bottom: 16px;
-    position: relative;
   }
-  .film-card--unknown { border-style: dashed; }
-  .film-poster-link { width: 150px; display: block; }
-  .film-poster { width: 150px; height: 225px; object-fit: cover; border-radius: 8px; background: #374151; display: block; }
-  .film-info { min-width: 0; word-break: break-word; position: relative; }
   .film-refresh {
     position: absolute;
-    top: 0; right: 0;
+    top: 8px; right: 8px;
     width: 26px; height: 26px;
     padding: 0;
     border: 1px solid var(--card-border);
@@ -153,36 +144,63 @@
     font-size: 0.95rem;
     line-height: 1;
     cursor: pointer;
+    z-index: 2;
   }
   .film-refresh:hover { color: var(--text-main); background: rgba(255,255,255,0.06); }
-  .film-title { font-size: 1.1rem; font-weight: 700; margin: 0 0 4px; line-height: 1.3; word-break: break-word; padding-right: 32px; }
+  .film-top { display: flow-root; }
+  .film-poster-wrap { float: left; margin: 0 12px 8px 0; }
+  .film-poster { width: 120px; height: 180px; object-fit: cover; border-radius: 8px; background: #374151; cursor: zoom-in; display: block; }
+  .film-top-info { min-width: 0; }
+  .film-title { font-size: 1.05rem; font-weight: 700; margin: 0 0 2px; line-height: 1.3; word-break: break-word; padding-right: 32px; }
   .film-title a { color: var(--text-main); text-decoration: none; }
   .film-title a:hover { text-decoration: underline; }
-  .film-title .tr-title { font-weight: 400; color: var(--text-muted); font-size: 0.9rem; }
-  .film-meta-line { display: flex; flex-wrap: wrap; align-items: baseline; gap: 6px 10px; margin-bottom: 4px; font-size: 0.85rem; }
+  .film-title-tr { font-size: 0.85rem; color: var(--text-muted); margin-bottom: 6px; }
+  .film-meta-line { display: flex; flex-wrap: wrap; align-items: baseline; gap: 4px 10px; font-size: 0.82rem; }
   .film-year { color: var(--year-color); font-weight: 700; }
   .imdb-rating { color: var(--imdb-color); font-weight: 700; }
   .imdb-votes { color: var(--text-muted); font-weight: 400; }
-  .film-genres { color: var(--genre-color); font-size: 0.8rem; margin-bottom: 4px; word-break: break-word; }
-  .film-countries { color: var(--country-color); font-size: 0.8rem; margin-bottom: 4px; word-break: break-word; }
-  .film-languages { color: var(--lang-color); font-size: 0.8rem; margin-bottom: 8px; word-break: break-word; }
-  .film-watched-badge { display: inline-block; font-size: 0.72rem; font-weight: 600; color: #fbbf24; background: rgba(251, 191, 36, 0.15); padding: 2px 8px; border-radius: 4px; margin-bottom: 8px; }
-  .film-note { font-size: 0.75rem; color: #fbbf24; background: rgba(251, 191, 36, 0.12); padding: 4px 8px; border-radius: 6px; margin: 6px 0; }
-  .film-actions { display: flex; gap: 8px; margin-top: 4px; flex-wrap: wrap; }
+  .film-genres { color: var(--genre-color); font-size: 0.8rem; }
+  .film-runtime { color: var(--text-muted); font-size: 0.8rem; }
+  .film-director { color: var(--text-main); font-size: 0.8rem; }
+  .film-countries { color: var(--country-color); font-size: 0.8rem; }
+  .film-watched-badge { display: inline-block; font-size: 0.72rem; font-weight: 600; color: #fbbf24; background: rgba(251, 191, 36, 0.15); padding: 2px 8px; border-radius: 4px; margin-top: 6px; }
+  .film-bottom { clear: both; padding-top: 8px; }
+  .film-actions { display: flex; gap: 8px; flex-wrap: wrap; margin-bottom: 8px; }
   .film-actions button { font-size: 0.78rem; padding: 4px 10px; border: 1px solid var(--card-border); background: transparent; color: var(--text-main); border-radius: 6px; cursor: pointer; }
   .film-actions button:hover { background: rgba(255,255,255,0.06); }
-  .film-details, .film-overview, .film-gallery { display: none; margin-top: 10px; }
-  .film-details.open, .film-overview.open, .film-gallery.open { display: block; }
-  .film-details { border-top: 1px dashed var(--card-border); padding-top: 10px; }
+  .film-details { display: none; border-top: 1px dashed var(--card-border); padding-top: 10px; }
+  .film-details.open { display: block; }
   .detail-row { display: flex; flex-wrap: wrap; justify-content: space-between; gap: 12px; font-size: 0.82rem; padding: 2px 0; }
   .detail-row .label { color: var(--text-muted); }
   .detail-row .value { color: var(--text-main); font-weight: 500; text-align: right; word-break: break-word; }
-  .film-overview { border-top: 1px dashed var(--card-border); padding-top: 10px; font-size: 0.85rem; line-height: 1.5; }
-  .film-gallery { border-top: 1px dashed var(--card-border); padding-top: 10px; display: none; grid-template-columns: repeat(auto-fill, minmax(90px, 1fr)); gap: 6px; }
+  .film-overview { margin-top: 10px; font-size: 0.85rem; line-height: 1.5; }
+  .person-link { color: var(--year-color); text-decoration: none; cursor: pointer; }
+  .person-link:hover { text-decoration: underline; }
+  .film-gallery { display: none; margin-top: 10px; grid-template-columns: repeat(auto-fill, minmax(110px, 1fr)); gap: 6px; }
   .film-gallery.open { display: grid; }
-  .film-gallery img { width: 100%; height: 90px; object-fit: cover; border-radius: 6px; background: #374151; }
+  .film-gallery img { width: 100%; height: 80px; object-fit: cover; border-radius: 6px; background: #374151; cursor: zoom-in; }
+  .film-gallery .gallery-link { display: block; }
+  .list-note { font-size: 0.78rem; color: #fbbf24; background: rgba(251, 191, 36, 0.12); padding: 6px 10px; border-radius: 6px; margin-bottom: 12px; }
   .loading, .error, .empty { font-size: 0.85rem; color: var(--text-muted); padding: 8px 0; }
   .error { color: #f87171; }
+
+  .lightbox {
+    display: none;
+    position: fixed; inset: 0;
+    background: rgba(0,0,0,0.85);
+    z-index: 999;
+    align-items: center; justify-content: center;
+    padding: 24px;
+  }
+  .lightbox.open { display: flex; }
+  .lightbox img { max-width: 100%; max-height: 100%; border-radius: 8px; }
+  .lightbox-close {
+    position: absolute; top: 12px; right: 12px;
+    width: 36px; height: 36px;
+    border: none; border-radius: 50%;
+    background: rgba(255,255,255,0.15); color: #fff;
+    font-size: 1rem; cursor: pointer;
+  }
 
   .progress { margin-bottom: 12px; }
   .progress-bar { width: 100%; height: 10px; background: #374151; border-radius: 6px; overflow: hidden; }
@@ -206,9 +224,8 @@
   @media (max-width: 480px) {
     header, main { padding-left: 10px; padding-right: 10px; }
     section { padding: 12px; }
-    .film-card { padding: 12px; gap: 10px; grid-template-columns: 110px 1fr; }
-    .film-poster-link { width: 110px; }
-    .film-poster { width: 110px; height: 165px; }
+    .film-card { padding: 12px; }
+    .film-poster { width: 90px; height: 135px; }
     .score-grid { gap: 6px; }
     .family-levels { grid-template-columns: 1fr; }
   }
@@ -236,33 +253,21 @@
 
   <div class="ms" data-ms data-name="genres" data-options='[]'>
     <span class="ms-label">Film türü</span>
-    <div class="ms-box">
-      <div class="ms-chips"></div>
-      <input class="ms-input" type="text" placeholder="Ara veya değer gir...">
-      <button type="button" class="ms-arrow">▼</button>
-    </div>
+    <div class="ms-box"><div class="ms-chips"></div><input class="ms-input" type="text" placeholder="Ara veya değer gir..."><button type="button" class="ms-arrow">▼</button></div>
     <div class="ms-panel"><div class="ms-panel-head"><button type="button" class="ms-select-all" data-state="">Tümünü seç</button></div><div class="ms-options"></div><div class="ms-suggestions"></div></div>
     <div class="ms-extra"><label><input type="checkbox" class="ms-conflict"> Çakışan filmleri dahil et</label></div>
   </div>
 
   <div class="ms" data-ms data-name="original_language" data-options='[]'>
     <span class="ms-label">Film dili (özgün dil)</span>
-    <div class="ms-box">
-      <div class="ms-chips"></div>
-      <input class="ms-input" type="text" placeholder="Dil ara veya yaz...">
-      <button type="button" class="ms-arrow">▼</button>
-    </div>
+    <div class="ms-box"><div class="ms-chips"></div><input class="ms-input" type="text" placeholder="Dil ara veya yaz..."><button type="button" class="ms-arrow">▼</button></div>
     <div class="ms-panel"><div class="ms-panel-head"><button type="button" class="ms-select-all" data-state="">Tümünü seç</button></div><div class="ms-options"></div><div class="ms-suggestions"></div></div>
     <div class="ms-extra"><label><input type="checkbox" class="ms-conflict"> Çakışan filmleri dahil et</label></div>
   </div>
 
   <div class="ms" data-ms data-name="production_countries" data-options='[]'>
     <span class="ms-label">Yapım ülkeleri</span>
-    <div class="ms-box">
-      <div class="ms-chips"></div>
-      <input class="ms-input" type="text" placeholder="Ülke ara veya yaz...">
-      <button type="button" class="ms-arrow">▼</button>
-    </div>
+    <div class="ms-box"><div class="ms-chips"></div><input class="ms-input" type="text" placeholder="Ülke ara veya yaz..."><button type="button" class="ms-arrow">▼</button></div>
     <div class="ms-panel"><div class="ms-panel-head"><button type="button" class="ms-select-all" data-state="">Tümünü seç</button></div><div class="ms-options"></div><div class="ms-suggestions"></div></div>
     <div class="ms-extra"><label><input type="checkbox" class="ms-conflict"> Çakışan filmleri dahil et</label></div>
   </div>
@@ -428,4 +433,4 @@
 </main>
 <script src="app.js"></script>
 </body>
-  </html>
+                                      </html>

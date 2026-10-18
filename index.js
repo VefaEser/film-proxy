@@ -116,6 +116,20 @@ async function omdb(env, params) {
   if (data.Response === "False") throw new Error(data.Error || "OMDb sonucu bulunamadı.");
   return data;
 }
+// OMDb'yi birkaç stratejiyle dene: t+y, t, i
+async function omdbBest(env, movie) {
+  const title = movie.original_title || movie.title || "";
+  const year = String(yearOf(movie) || "");
+  const tries = [];
+  if (title) tries.push({ t: title, y: year });
+  if (title) tries.push({ t: title });
+  if (movie.imdb_id) tries.push({ i: movie.imdb_id });
+  let lastErr = null;
+  for (const p of tries) {
+    try { return await omdb(env, p); } catch (e) { lastErr = e; }
+  }
+  throw lastErr || new Error("OMDb sonucu bulunamadı.");
+}
 
 // ---------- Wikidata: toplu sorgu (P31 filtreli, LCASE'siz) ----------
 function buildWikidataBatchQuery(movies) {
@@ -157,7 +171,6 @@ async function wikidataBatchOnce(env, movies, timeoutMs) {
   }
   return results;
 }
-
 async function wikidataBatch(env, movies) {
   try {
     return await wikidataBatchOnce(env, movies, 40000);
@@ -178,7 +191,6 @@ function isUsefulGalleryImage(img) {
   if (/(poster|portrait|headshot|actor|actress|cast|logo|cover)/.test(text)) return false;
   return true;
 }
-
 async function commons(env, movie) {
   const title = movie.original_title || movie.title || "";
   if (!title) return { images: [] };
@@ -226,23 +238,21 @@ function extractText(data) {
   const texts = [];
   const push = (v) => { if (typeof v === "string" && v) texts.push(v); };
   const walk = (obj, depth = 0) => {
-    if (!obj || depth > 5) return;
+    if (!obj || depth > 6) return;
     if (typeof obj === "string") { push(obj); return; }
     if (Array.isArray(obj)) { for (const x of obj) walk(x, depth + 1); return; }
     if (typeof obj === "object") {
-      for (const key of ["text", "content", "output", "parts", "result", "response", "value"]) {
+      for (const key of ["text", "content", "output", "parts", "result", "response", "value", "message"]) {
         if (obj[key] !== undefined) walk(obj[key], depth + 1);
       }
     }
   };
   for (const o of list) walk(o);
-  // Interactions API steps içinde metin olabilir
   const steps = data?.steps;
   if (Array.isArray(steps)) for (const s of steps) walk(s);
   if (texts.length) return texts.join("\n");
   return "";
 }
-
 function isKeyRetryable(msg) {
   const m = String(msg || "").toLowerCase();
   return /(http\s*(400|401|403|404|408|409|425|429|500|502|503|504))/.test(m)
@@ -252,7 +262,6 @@ function isKeyRetryable(msg) {
     || /model.?not.?found|not.?found|unsupported|unknown.?model/.test(m)
     || /invalid argument|unknown field|unknown name|unrecognized/.test(m);
 }
-
 function normalizeModelName(m) {
   return String(m || "").trim().toLowerCase().replace(/^models\//, "");
 }
@@ -269,7 +278,6 @@ function buildModelChain(env) {
   for (const m of MODEL_CHAIN) push(m);
   return chain;
 }
-
 async function callInteractions(env, key, model, prompt, useThinkingLow) {
   const body = { model, input: prompt };
   if (useThinkingLow) body.thinking_level = "low";
@@ -282,7 +290,6 @@ async function callInteractions(env, key, model, prompt, useThinkingLow) {
   if (!text) throw new Error(`Gemini Interactions ${model} yanıtında metin yok.`);
   return text;
 }
-
 async function callGenerateContent(env, key, model, prompt) {
   const url = `${GOOGLE_GENERATE}/${encodeURIComponent(model)}:generateContent`;
   const data = await fetchJSON(url, {
@@ -294,7 +301,6 @@ async function callGenerateContent(env, key, model, prompt) {
   if (!text) throw new Error(`Gemini generateContent ${model} yanıtında metin yok.`);
   return text;
 }
-
 async function callGemini(env, prompt) {
   const keys = [env.GEMINI_API_KEY_1, env.GEMINI_API_KEY_2, env.GEMINI_API_KEY_3]
     .map((k, i) => ({ key: k, index: i + 1 }))
@@ -347,7 +353,6 @@ async function callGemini(env, prompt) {
   }
   throw new Error(`Gemini tüm model/anahtarlarda başarısız: ${errors.join(" | ")}`);
 }
-
 function extractJSON(text) {
   const clean = String(text).replace(/^```(?:json)?\s*/i, "").replace(/\s*```$/,"").trim();
   const start = clean.indexOf("{"), end = clean.lastIndexOf("}");
@@ -360,7 +365,6 @@ function extractJSONArray(text) {
   if (start < 0 || end < start) return null;
   try { return JSON.parse(clean.slice(start, end + 1)); } catch { return null; }
 }
-
 function buildBatchGeminiPrompt(movies, fieldsByMovie, knownByMovie, filters) {
   const f = filters || {};
   const payload = movies.map(m => ({
@@ -376,9 +380,8 @@ Kullanıcı filtreleri (include = olumlu, exclude = olumsuz): ${JSON.stringify(f
 Her film için, "fields" listesindeki alanları doldur.
 Sayısal alanlar 0-100 veya null; location_count string; family_content nesne; related_films string[]; story_locations/story_geography/character_traits/narrative_style/production_process/sound/reality/story_dimensions string[]; story_period string[]; aspect_ratio string; season string[].
 Yanıt biçimi yalnızca şu JSON dizisi: [{"id": <film_id>, "<alan>": <değer>, ...}, ...]
-Filmler: ${JSON.stringify(payload).slice(0, 12000)}`;
+Filmler: ${JSON.stringify(payload).slice(0, 16000)}`;
 }
-
 function buildSearchQuery(movie, fields) {
   const title = movie.original_title || movie.title || "";
   const year = yearOf(movie) || "";
@@ -432,12 +435,13 @@ async function enrichClassic(env, movie, staleFields, settings, filters) {
         updates.runtime = Number(detail.runtime) || null;
         covered.add("runtime");
       }
+      if (!movie.imdb_id && detail.imdb_id) movie.imdb_id = detail.imdb_id;
     } catch (e) { console.warn("tmdb detail enrich:", e.message); }
   }
 
   if (["imdbRating","imdbVotes","imdbID","directors"].some(f => need.has(f))) {
     try {
-      const data = await omdb(env, { t: movie.original_title || movie.title, y: String(yearOf(movie) || "") });
+      const data = await omdbBest(env, movie);
       const clean = (v) => (v === "N/A" || v === undefined ? null : v);
       for (const f of ["imdbRating","imdbVotes","imdbID","directors"]) {
         if (need.has(f)) { updates[f] = clean(data[f]); covered.add(f); }
@@ -482,7 +486,6 @@ function toNum(v) {
   const n = Number(String(v).replace(/[^\d.-]/g, ""));
   return Number.isFinite(n) ? n : null;
 }
-
 function evalSet(profile, field, f, label, state) {
   if (!f) return;
   const raw = profile[field];
@@ -514,8 +517,11 @@ function evalRange(profile, field, min, max, label, state, strict = false) {
 }
 function evaluateFilters(profile, filters) {
   const state = { match: true, reasons: [], unknown: false, conflicts: false };
-  evalRange(profile, "imdbRating", filters.imdbMin, filters.imdbMax, "IMDb puanı", state, true);
-  evalRange(profile, "vote_average", filters.tmdbMin, filters.tmdbMax, "TMDB puanı", state, true);
+  // IMDb puanı katı mod yalnızca kullanıcı bir aralık girdiyse
+  const imdbActive = (filters.imdbMin != null && filters.imdbMin > 0) || (filters.imdbMax != null && filters.imdbMax < 10);
+  evalRange(profile, "imdbRating", filters.imdbMin, filters.imdbMax, "IMDb puanı", state, imdbActive);
+  const tmdbActive = (filters.tmdbMin != null && filters.tmdbMin > 0) || (filters.tmdbMax != null && filters.tmdbMax < 10);
+  evalRange(profile, "vote_average", filters.tmdbMin, filters.tmdbMax, "TMDB puanı", state, tmdbActive);
   const iv = toNum(profile.imdbVotes);
   if (filters.imdbVotesMin != null && filters.imdbVotesMin > 0) {
     if (iv === null) { state.match = false; state.reasons.push("IMDb oy: bilinmiyor (elendi)"); }
@@ -588,7 +594,7 @@ async function handleResearchStream(env, body, controller) {
   const enc = new TextEncoder();
   const send = (obj) => controller.enqueue(enc.encode(`data: ${JSON.stringify(obj)}\n\n`));
 
-  const movies = Array.isArray(body.movies) ? body.movies.slice(0, 8) : [];
+  const movies = Array.isArray(body.movies) ? body.movies.slice(0, 18) : [];
   const total = movies.length;
   if (!total) { send({ type: "done", movies: [] }); controller.close(); return; }
 

@@ -117,55 +117,65 @@ async function omdb(env, params) {
   return data;
 }
 
-// ---------- Wikidata: toplu sorgu (sadeleştirilmiş) ----------
+// ---------- Wikidata: toplu sorgu (P31 filtreli, LCASE'siz) ----------
 function buildWikidataBatchQuery(movies) {
   const rows = movies.map(m => {
     const title = (m.original_title || m.title || "").replace(/\\/g, "\\\\").replace(/"/g, '\\"');
-    return `("${title}" ${m.id})`;
+    return `("${title}"@en ${m.id})`;
   }).join(" ");
   return `
-SELECT ?movieId ?item ?itemLabel ?originalWorkLabel ?filmingLocationLabel WHERE {
+SELECT ?movieId ?item ?originalWorkLabel ?filmingLocationLabel WHERE {
   VALUES (?title ?movieId) { ${rows} }
-  ?item wdt:P31 wd:Q11424; rdfs:label ?label.
-  FILTER(LANG(?label)="en" && LCASE(STR(?label))=LCASE(?title))
-  OPTIONAL {?item wdt:P144 ?originalWork.}
-  OPTIONAL {?item wdt:P915 ?filmingLocation.}
+  ?item rdfs:label ?title .
+  ?item wdt:P31 wd:Q11424 .
+  OPTIONAL { ?item wdt:P144 ?originalWork. }
+  OPTIONAL { ?item wdt:P915 ?filmingLocation. }
   SERVICE wikibase:label { bd:serviceParam wikibase:language "en,tr". }
 }
 LIMIT 200`;
 }
 
-async function wikidataBatch(env, movies) {
+async function wikidataBatchOnce(env, movies, timeoutMs) {
   const results = new Map();
   if (!movies.length) return results;
   const query = buildWikidataBatchQuery(movies);
   const url = "https://query.wikidata.org/sparql?query=" + encodeURIComponent(query);
-  try {
-    const data = await fetchJSON(url, {
-      headers: { "Accept": "application/sparql-results+json", "User-Agent": "FilmKesifMotoru/1.0" }
-    }, "Wikidata", 40000);
-    const bindings = data.results?.bindings || [];
-    const byId = new Map();
-    for (const b of bindings) {
-      const id = b.movieId?.value || "";
-      if (!byId.has(id)) byId.set(id, { originalWork: null, filmingLocations: new Set() });
-      const rec = byId.get(id);
-      if (b.originalWorkLabel?.value) rec.originalWork = b.originalWorkLabel.value;
-      if (b.filmingLocationLabel?.value) rec.filmingLocations.add(b.filmingLocationLabel.value);
-    }
-    for (const [id, rec] of byId) {
-      results.set(id, { originalWork: rec.originalWork, filmingLocations: [...rec.filmingLocations] });
-    }
-  } catch (e) {
-    console.warn("wikidata batch:", e.message);
+  const data = await fetchJSON(url, {
+    headers: { "Accept": "application/sparql-results+json", "User-Agent": "FilmKesifMotoru/1.0" }
+  }, "Wikidata", timeoutMs);
+  const bindings = data.results?.bindings || [];
+  const byId = new Map();
+  for (const b of bindings) {
+    const id = b.movieId?.value || "";
+    if (!byId.has(id)) byId.set(id, { originalWork: null, filmingLocations: new Set() });
+    const rec = byId.get(id);
+    if (b.originalWorkLabel?.value) rec.originalWork = b.originalWorkLabel.value;
+    if (b.filmingLocationLabel?.value) rec.filmingLocations.add(b.filmingLocationLabel.value);
+  }
+  for (const [id, rec] of byId) {
+    results.set(id, { originalWork: rec.originalWork, filmingLocations: [...rec.filmingLocations] });
   }
   return results;
 }
 
+async function wikidataBatch(env, movies) {
+  try {
+    return await wikidataBatchOnce(env, movies, 40000);
+  } catch (e) {
+    console.warn("wikidata batch (1. deneme):", e.message);
+    await wait(1500);
+    try {
+      return await wikidataBatchOnce(env, movies, 40000);
+    } catch (e2) {
+      console.warn("wikidata batch (2. deneme):", e2.message);
+      return new Map();
+    }
+  }
+}
+
 function isUsefulGalleryImage(img) {
   const text = `${img.title || ""} ${img.pageUrl || ""} ${img.license || ""}`.toLowerCase();
-  // Oyuncu portresi, afiş, logo, kapak gibi görselleri atla
-  if (/(poster|portrait|headshot|actor|actress|cast|logo|cover|headshot)/.test(text)) return false;
+  if (/(poster|portrait|headshot|actor|actress|cast|logo|cover)/.test(text)) return false;
   return true;
 }
 
@@ -214,12 +224,23 @@ function extractText(data) {
   const outputs = data?.outputs || data?.output || [];
   const list = Array.isArray(outputs) ? outputs : [outputs];
   const texts = [];
-  for (const o of list) {
-    if (typeof o?.text === "string") texts.push(o.text);
-    for (const c of o?.content || []) if (typeof c?.text === "string") texts.push(c.text);
-    for (const s of o?.steps || []) if (typeof s?.text === "string") texts.push(s.text);
-  }
-  return texts.join("\n");
+  const push = (v) => { if (typeof v === "string" && v) texts.push(v); };
+  const walk = (obj, depth = 0) => {
+    if (!obj || depth > 5) return;
+    if (typeof obj === "string") { push(obj); return; }
+    if (Array.isArray(obj)) { for (const x of obj) walk(x, depth + 1); return; }
+    if (typeof obj === "object") {
+      for (const key of ["text", "content", "output", "parts", "result", "response", "value"]) {
+        if (obj[key] !== undefined) walk(obj[key], depth + 1);
+      }
+    }
+  };
+  for (const o of list) walk(o);
+  // Interactions API steps içinde metin olabilir
+  const steps = data?.steps;
+  if (Array.isArray(steps)) for (const s of steps) walk(s);
+  if (texts.length) return texts.join("\n");
+  return "";
 }
 
 function isKeyRetryable(msg) {
@@ -258,10 +279,7 @@ async function callInteractions(env, key, model, prompt, useThinkingLow) {
     body: JSON.stringify(body)
   }, `Gemini Interactions ${model}`, 60000);
   const text = extractText(data);
-  if (!text) {
-    console.warn(`gemini: interactions ${model} yanıtında metin yok — gövde: ${JSON.stringify(data).slice(0, 2000)}`);
-    throw new Error(`Gemini Interactions ${model} yanıtında metin yok.`);
-  }
+  if (!text) throw new Error(`Gemini Interactions ${model} yanıtında metin yok.`);
   return text;
 }
 
@@ -273,10 +291,7 @@ async function callGenerateContent(env, key, model, prompt) {
     body: JSON.stringify({ contents: [{ parts: [{ text: prompt }] }] })
   }, `Gemini generateContent ${model}`, 60000);
   const text = extractText(data);
-  if (!text) {
-    console.warn(`gemini: generateContent ${model} yanıtında metin yok — gövde: ${JSON.stringify(data).slice(0, 2000)}`);
-    throw new Error(`Gemini generateContent ${model} yanıtında metin yok.`);
-  }
+  if (!text) throw new Error(`Gemini generateContent ${model} yanıtında metin yok.`);
   return text;
 }
 

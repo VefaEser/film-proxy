@@ -1,0 +1,1608 @@
+<?xml version="1.0" encoding="UTF-8" ?>
+<!DOCTYPE html>
+<html b:version='2' class='v2' expr:dir='data:blog.languageDirection' xmlns='http://www.w3.org/1999/xhtml' xmlns:b='http://www.google.com/2005/gml/b' xmlns:data='http://www.google.com/2005/gml/data' xmlns:expr='http://www.google.com/2005/gml/expr'>
+<head>
+  <meta charset='UTF-8'/>
+  <meta content='width=device-width, initial-scale=1.0' name='viewport'/>
+  <title><data:blog.pageTitle/></title>
+  <b:include data='blog' name='all-head-content'/>
+  <b:skin><![CDATA[
+  :root {
+    --card-bg: #1f2937;
+    --card-border: #374151;
+    --text-main: #f3f4f6;
+    --text-muted: #9ca3af;
+    --year-color: #60a5fa;
+    --imdb-color: #fbbf24;
+    --genre-color: #c084fc;
+    --country-color: #34d399;
+    --lang-color: #f472b6;
+    --bg: #111827;
+    --panel-bg: #243244;
+  }
+  * { box-sizing: border-box; }
+  html, body { overflow-x: hidden; max-width: 100%; }
+  body { margin:0; font-family: system-ui, -apple-system, "Segoe UI", Roboto, sans-serif; background: var(--bg); color: var(--text-main); line-height:1.5; color-scheme: dark; }
+  header { padding: 16px 16px 4px; max-width: 960px; margin: 0 auto; }
+  header h1 { margin: 0 0 8px; font-size: 1.35rem; }
+  main { max-width: 960px; margin: 0 auto; padding: 0 12px 48px; }
+  section { background: var(--card-bg); border: 1px solid var(--card-border); border-radius: 12px; padding: 14px; margin-bottom: 14px; max-width: 100%; }
+  section h2 { font-size: 1rem; margin: 0 0 10px; padding-bottom: 8px; border-bottom: 1px solid var(--card-border); }
+
+  .range-row { display: flex; align-items: center; gap: 8px; margin-bottom: 8px; flex-wrap: wrap; }
+  .range-row label { font-size: 0.85rem; color: var(--text-muted); }
+  .range-row input[type="number"], .range-row input[type="text"] { padding: 6px 8px; font-size: 0.85rem; border: 1px solid var(--card-border); border-radius: 6px; background: var(--card-bg); color: var(--text-main); }
+  .range-row input[type="number"] { width: 90px; }
+
+  .score-grid { display: grid; grid-template-columns: 1fr 1fr; gap: 8px; margin-bottom: 12px; }
+  .score-field { display: flex; flex-direction: column; gap: 4px; min-width: 0; }
+  .score-field label { font-size: 0.78rem; color: var(--text-muted); }
+  .score-field input { width: 100%; min-width: 0; padding: 8px 10px; font-size: 0.9rem; border: 1px solid var(--card-border); border-radius: 6px; background: var(--card-bg); color: var(--text-main); }
+
+  .ms { position: relative; margin-bottom: 56px; padding-top: 26px; min-height: 122px; }
+  .ms-label { position: absolute; top: 0; left: 0; right: 0; font-size: 0.85rem; font-weight: 600; margin: 0; line-height: 20px; }
+  .ms-box {
+    position: absolute;
+    bottom: 0; left: 0; right: 0;
+    display: grid;
+    grid-template-columns: 1fr 30px;
+    grid-template-rows: 1fr 1fr auto;
+    column-gap: 6px;
+    height: 96px;
+    border: 1px solid var(--card-border);
+    border-radius: 6px;
+    padding: 4px 8px;
+    background: var(--card-bg);
+    cursor: text;
+    align-items: stretch;
+  }
+  .ms-box:focus-within { border-color: var(--year-color); }
+  .ms-chips {
+    grid-column: 1; grid-row: 1 / 3;
+    min-width: 0;
+    overflow-y: auto;
+    display: flex; flex-wrap: wrap; gap: 4px; align-content: flex-start;
+  }
+  .ms-input {
+    grid-column: 1; grid-row: 3;
+    border: none; outline: none; background: transparent; color: var(--text-main);
+    font-size: 0.85rem; padding: 4px 0; width: 100%;
+  }
+  .ms-arrow {
+    grid-column: 2; grid-row: 3;
+    align-self: end; justify-self: end;
+    border: none; background: transparent; cursor: pointer;
+    color: var(--text-muted); font-size: 0.85rem; padding: 2px 4px;
+    width: 26px; height: 26px; line-height: 1;
+  }
+  .ms-arrow.open { color: var(--text-main); }
+  .ms-chip { display: inline-flex; align-items: center; gap: 4px; font-size: 0.75rem; padding: 2px 6px; border-radius: 4px; background: rgba(37, 99, 235, 0.15); color: var(--text-main); }
+  .ms-chip[data-state="exclude"] { background: rgba(220, 38, 38, 0.15); }
+  .ms-chip[data-state="include"]::before { content: "✓ "; font-weight: 700; }
+  .ms-chip[data-state="exclude"]::before { content: "× "; font-weight: 700; }
+  .ms-chip button { border: none; background: transparent; cursor: pointer; color: inherit; font-size: 0.75rem; padding: 0 2px; }
+  .ms-panel { position: absolute; z-index: 50; top: calc(100% + 4px); left: 0; right: 0; max-width: 100%; max-height: 260px; overflow-y: auto; background: var(--panel-bg); border: 1px solid var(--card-border); border-radius: 8px; box-shadow: 0 8px 24px rgba(0,0,0,0.5); display: none; }
+  .ms-panel.open { display: block; }
+  .ms-panel-head { display: flex; justify-content: flex-end; padding: 6px 8px; border-bottom: 1px solid var(--card-border); position: sticky; top: 0; background: var(--panel-bg); z-index: 1; }
+  .ms-select-all { font-size: 0.75rem; padding: 2px 8px; border: 1px solid var(--card-border); border-radius: 4px; background: transparent; color: var(--text-main); cursor: pointer; }
+  .ms-select-all[data-state="include"] { background: rgba(37, 99, 235, 0.2); }
+  .ms-select-all[data-state="exclude"] { background: rgba(220, 38, 38, 0.2); }
+  .ms-option { display: flex; align-items: center; justify-content: space-between; padding: 6px 10px; font-size: 0.82rem; color: var(--text-main); gap: 8px; }
+  .ms-option:hover { background: rgba(255,255,255,0.05); }
+  .ms-check { width: 24px; height: 24px; flex: 0 0 24px; border: 1px solid var(--card-border); border-radius: 4px; background: transparent; color: var(--text-main); cursor: pointer; font-size: 0.9rem; }
+  .ms-check[data-state="include"] { background: rgba(37, 99, 235, 0.25); border-color: var(--year-color); }
+  .ms-check[data-state="exclude"] { background: rgba(220, 38, 38, 0.25); border-color: #dc2626; }
+  .ms-suggestions { border-top: 1px solid var(--card-border); padding: 4px 0; }
+  .ms-suggestion { padding: 6px 10px; font-size: 0.8rem; cursor: pointer; color: var(--text-muted); }
+  .ms-suggestion:hover { background: rgba(255,255,255,0.05); color: var(--text-main); }
+  .ms-extra { position: absolute; top: 100%; left: 0; right: 0; margin-top: 6px; font-size: 0.78rem; color: var(--text-muted); z-index: 5; }
+  .ms-extra label { display: flex; align-items: center; gap: 6px; cursor: pointer; margin-bottom: 2px; }
+  .ms-extra input[type="checkbox"] { accent-color: var(--year-color); }
+
+  .search-mode { border: 1px solid var(--card-border); border-radius: 8px; padding: 10px 12px; margin-bottom: 12px; }
+  .search-mode legend { font-size: 0.85rem; font-weight: 600; padding: 0 4px; }
+  .search-mode label { display: flex; align-items: center; gap: 8px; font-size: 0.85rem; margin-bottom: 4px; cursor: pointer; }
+  .search-mode input[type="checkbox"] { accent-color: var(--year-color); }
+  .search-mode-hint { margin: 6px 0 0; font-size: 0.75rem; color: var(--text-muted); }
+
+  .csv-row { display: flex; align-items: center; gap: 8px; flex-wrap: wrap; }
+  .csv-row input[type="file"] { font-size: 0.8rem; }
+  #csvStatus { font-size: 0.78rem; color: var(--text-muted); }
+  #csvClear { border: 1px solid var(--card-border); background: transparent; color: var(--text-main); border-radius: 6px; padding: 4px 8px; cursor: pointer; font-size: 0.8rem; display: none; }
+
+  #searchBtn { display: block; width: 100%; padding: 12px; font-size: 0.95rem; font-weight: 600; background: var(--year-color); color: #fff; border: none; border-radius: 8px; cursor: pointer; margin-top: 4px; }
+  #searchBtn:hover { opacity: 0.9; }
+  #clearAllBtn { display: block; width: 100%; padding: 10px; font-size: 0.85rem; font-weight: 600; background: transparent; color: var(--text-main); border: 1px solid var(--card-border); border-radius: 8px; cursor: pointer; margin-bottom: 8px; }
+
+  .more-btn {
+    padding: 10px 16px;
+    border: 1px solid var(--card-border);
+    background: transparent;
+    color: var(--text-main);
+    border-radius: 8px;
+    cursor: pointer;
+    font-size: 0.85rem;
+  }
+  .more-btn:hover { background: rgba(255,255,255,0.06); }
+  .more-btn:disabled { opacity: 0.5; cursor: default; }
+
+  .film-card {
+    position: relative;
+    background: var(--card-bg);
+    border: 1px solid var(--card-border);
+    border-radius: 12px;
+    padding: 16px;
+    margin-bottom: 16px;
+  }
+  .film-refresh {
+    position: absolute;
+    top: 8px; right: 8px;
+    width: 26px; height: 26px;
+    padding: 0;
+    border: 1px solid var(--card-border);
+    border-radius: 6px;
+    background: transparent;
+    color: var(--text-muted);
+    font-size: 0.95rem;
+    line-height: 1;
+    cursor: pointer;
+    z-index: 2;
+  }
+  .film-refresh:hover { color: var(--text-main); background: rgba(255,255,255,0.06); }
+  .film-top { display: flow-root; }
+  .film-poster-wrap { float: left; margin: 0 12px 8px 0; }
+  .film-poster { width: 120px; height: 180px; object-fit: cover; border-radius: 8px; background: #374151; cursor: zoom-in; display: block; }
+  .film-top-info { min-width: 0; }
+  .film-title { font-size: 1.05rem; font-weight: 700; margin: 0 0 2px; line-height: 1.3; word-break: break-word; padding-right: 32px; }
+  .film-title a { color: var(--text-main); text-decoration: none; }
+  .film-title a:hover { text-decoration: underline; }
+  .film-title-tr { font-size: 0.85rem; color: var(--text-muted); margin-bottom: 6px; }
+  .film-meta-line { display: flex; flex-wrap: wrap; align-items: baseline; gap: 4px 10px; font-size: 0.82rem; }
+  .film-year { color: var(--year-color); font-weight: 700; }
+  .imdb-rating { color: var(--imdb-color); font-weight: 700; }
+  .imdb-votes { color: var(--text-muted); font-weight: 400; }
+  .film-genres { color: var(--genre-color); font-size: 0.8rem; }
+  .film-runtime { color: var(--text-muted); font-size: 0.8rem; }
+  .film-director { color: var(--text-main); font-size: 0.8rem; }
+  .film-countries { color: var(--country-color); font-size: 0.8rem; }
+  .film-watched-badge { display: inline-block; font-size: 0.72rem; font-weight: 600; color: #fbbf24; background: rgba(251, 191, 36, 0.15); padding: 2px 8px; border-radius: 4px; margin-top: 6px; }
+  .film-bottom { clear: both; padding-top: 8px; }
+  .film-actions { display: flex; gap: 8px; flex-wrap: wrap; margin-bottom: 8px; }
+  .film-actions button { font-size: 0.78rem; padding: 4px 10px; border: 1px solid var(--card-border); background: transparent; color: var(--text-main); border-radius: 6px; cursor: pointer; }
+  .film-actions button:hover { background: rgba(255,255,255,0.06); }
+  .film-details { display: none; border-top: 1px dashed var(--card-border); padding-top: 10px; }
+  .film-details.open { display: block; }
+  .detail-row { display: flex; flex-wrap: wrap; justify-content: space-between; gap: 12px; font-size: 0.82rem; padding: 2px 0; }
+  .detail-row .label { color: var(--text-muted); }
+  .detail-row .value { color: var(--text-main); font-weight: 500; text-align: right; word-break: break-word; }
+  .film-overview { margin-top: 10px; font-size: 0.85rem; line-height: 1.5; }
+  .person-link { color: var(--year-color); text-decoration: none; cursor: pointer; }
+  .person-link:hover { text-decoration: underline; }
+  .film-gallery { display: none; margin-top: 10px; grid-template-columns: repeat(auto-fill, minmax(110px, 1fr)); gap: 6px; }
+  .film-gallery.open { display: grid; }
+  .film-gallery img { width: 100%; height: 80px; object-fit: cover; border-radius: 6px; background: #374151; cursor: zoom-in; }
+  .film-gallery .gallery-link { display: block; }
+  .list-note { font-size: 0.78rem; color: #fbbf24; background: rgba(251, 191, 36, 0.12); padding: 6px 10px; border-radius: 6px; margin-bottom: 12px; }
+  .loading, .error, .empty { font-size: 0.85rem; color: var(--text-muted); padding: 8px 0; }
+  .error { color: #f87171; }
+
+  .lightbox {
+    display: none;
+    position: fixed; inset: 0;
+    background: rgba(0,0,0,0.85);
+    z-index: 999;
+    align-items: center; justify-content: center;
+    padding: 24px;
+  }
+  .lightbox.open { display: flex; }
+  .lightbox img { max-width: 100%; max-height: 100%; border-radius: 8px; }
+  .lightbox-close {
+    position: absolute; top: 12px; right: 12px;
+    width: 36px; height: 36px;
+    border: none; border-radius: 50%;
+    background: rgba(255,255,255,0.15); color: #fff;
+    font-size: 1rem; cursor: pointer;
+  }
+
+  .progress { margin-bottom: 12px; }
+  .progress-bar { width: 100%; height: 10px; background: #374151; border-radius: 6px; overflow: hidden; }
+  .progress-fill { height: 100%; width: 0%; background: linear-gradient(90deg, #2563eb, #60a5fa); transition: width 0.3s ease; }
+  .progress-text { font-size: 0.78rem; color: var(--text-muted); margin-top: 4px; word-break: break-word; }
+
+  .ratio-row { margin-bottom: 12px; }
+  .ratio-head { display: flex; align-items: center; gap: 8px; font-size: 0.85rem; margin-bottom: 4px; }
+  .ratio-labels { display: flex; justify-content: space-between; font-size: 0.78rem; color: var(--text-muted); margin-bottom: 2px; }
+  .ratio-slider { width: 100%; }
+  .ratio-slider:disabled { opacity: 0.4; }
+  .ratio-value { font-size: 0.8rem; color: var(--year-color); font-weight: 600; }
+
+  .family-item { border: 1px solid var(--card-border); border-radius: 8px; padding: 10px; margin-bottom: 10px; }
+  .family-title { font-size: 0.85rem; font-weight: 600; margin: 0 0 6px; }
+  .family-subtitle { font-size: 0.75rem; color: var(--text-muted); margin: 6px 0 2px; }
+  .family-levels { display: grid; grid-template-columns: 1fr 1fr; gap: 6px; margin-bottom: 6px; }
+  .family-levels label { font-size: 0.75rem; display: flex; align-items: center; gap: 4px; cursor: pointer; }
+  .family-invisible { font-size: 0.75rem; color: var(--text-muted); display: flex; align-items: center; gap: 6px; margin-top: 4px; }
+
+  /* Blogger widget alanı için isteğe bağlı kart görünümü */
+  .custom-body-section {
+    max-width: 960px;
+    margin: 14px auto 0;
+    padding: 0 12px;
+  }
+  .custom-body-section .widget {
+    background: var(--card-bg);
+    border: 1px solid var(--card-border);
+    border-radius: 12px;
+    padding: 14px;
+    margin-bottom: 14px;
+  }
+  .custom-body-section h2 { font-size: 1rem; margin: 0 0 10px; padding-bottom: 8px; border-bottom: 1px solid var(--card-border); }
+
+  @media (max-width: 480px) {
+    header, main { padding-left: 10px; padding-right: 10px; }
+    section { padding: 12px; }
+    .film-card { padding: 12px; }
+    .film-poster { width: 90px; height: 135px; }
+    .score-grid { gap: 6px; }
+    .family-levels { grid-template-columns: 1fr; }
+  }
+  ]]></b:skin>
+</head>
+<body>
+
+<!-- Blogger widget alanı: panelden HTML/Text/Gadget ekleyebilirsiniz -->
+<b:section id='custom-body-section' class='custom-body-section' maxwidgets='5' showaddelement='yes'>
+  <b:widget id='HTML1' type='HTML' locked='false' title='Özel Alan'/>
+</b:section>
+
+<header>
+  <h1>Film Keşif Motoru</h1>
+</header>
+<main>
+
+<section>
+  <div class="score-grid">
+    <div class="score-field"><label for="imdbMin">IMDb puanı (en az)</label><input type="number" id="imdbMin" min="0" max="10" step="0.1" value="0"/></div>
+    <div class="score-field"><label for="imdbMax">IMDb puanı (en çok)</label><input type="number" id="imdbMax" min="0" max="10" step="0.1" value="10"/></div>
+    <div class="score-field"><label for="tmdbMin">TMDB puanı (en az)</label><input type="number" id="tmdbMin" min="0" max="10" step="0.1" value="0"/></div>
+    <div class="score-field"><label for="tmdbMax">TMDB puanı (en çok)</label><input type="number" id="tmdbMax" min="0" max="10" step="0.1" value="10"/></div>
+    <div class="score-field"><label for="imdbVotesMin">IMDb en az oy sayısı</label><input type="number" id="imdbVotesMin" min="0" step="100" value="0"/></div>
+    <div class="score-field"><label for="tmdbVotesMin">TMDB en az oy sayısı</label><input type="number" id="tmdbVotesMin" min="0" step="100" value="0"/></div>
+    <div class="score-field"><label for="yearMin">Film yılı (en erken)</label><input type="number" id="yearMin" min="1875" max="2075" step="1" placeholder="1875"/></div>
+    <div class="score-field"><label for="yearMax">Film yılı (en geç)</label><input type="number" id="yearMax" min="1875" max="2075" step="1" placeholder="2075"/></div>
+    <div class="score-field"><label for="runtimeMin">Film süresi (en düşük dk)</label><input type="number" id="runtimeMin" min="0" step="1" placeholder="0"/></div>
+    <div class="score-field"><label for="runtimeMax">Film süresi (en yüksek dk)</label><input type="number" id="runtimeMax" min="0" step="1" placeholder="—"/></div>
+  </div>
+
+  <div class="ms" data-ms="1" data-name="genres" data-options='[]'>
+    <span class="ms-label">Film türü</span>
+    <div class="ms-box"><div class="ms-chips"></div><input class="ms-input" type="text" placeholder="Ara veya değer gir..."/><button type="button" class="ms-arrow">▼</button></div>
+    <div class="ms-panel"><div class="ms-panel-head"><button type="button" class="ms-select-all" data-state="">Tümünü seç</button></div><div class="ms-options"></div><div class="ms-suggestions"></div></div>
+    <div class="ms-extra"><label><input type="checkbox" class="ms-conflict"/> Çakışan filmleri dahil et</label></div>
+  </div>
+
+  <div class="ms" data-ms="1" data-name="original_language" data-options='[]'>
+    <span class="ms-label">Film dili (özgün dil)</span>
+    <div class="ms-box"><div class="ms-chips"></div><input class="ms-input" type="text" placeholder="Dil ara veya yaz..."/><button type="button" class="ms-arrow">▼</button></div>
+    <div class="ms-panel"><div class="ms-panel-head"><button type="button" class="ms-select-all" data-state="">Tümünü seç</button></div><div class="ms-options"></div><div class="ms-suggestions"></div></div>
+    <div class="ms-extra"><label><input type="checkbox" class="ms-conflict"/> Çakışan filmleri dahil et</label></div>
+  </div>
+
+  <div class="ms" data-ms="1" data-name="production_countries" data-options='[]'>
+    <span class="ms-label">Yapım ülkeleri</span>
+    <div class="ms-box"><div class="ms-chips"></div><input class="ms-input" type="text" placeholder="Ülke ara veya yaz..."/><button type="button" class="ms-arrow">▼</button></div>
+    <div class="ms-panel"><div class="ms-panel-head"><button type="button" class="ms-select-all" data-state="">Tümünü seç</button></div><div class="ms-options"></div><div class="ms-suggestions"></div></div>
+    <div class="ms-extra"><label><input type="checkbox" class="ms-conflict"/> Çakışan filmleri dahil et</label></div>
+  </div>
+</section>
+
+<section>
+  <h2>Gelişmiş Filtreler</h2>
+
+  <div class="ms" data-ms="1" data-name="story_locations" data-options='[]'>
+    <span class="ms-label">Hikâyenin geçtiği yerler</span>
+    <div class="ms-box"><div class="ms-chips"></div><input class="ms-input" type="text" placeholder="Yer ara veya yaz..."/><button type="button" class="ms-arrow">▼</button></div>
+    <div class="ms-panel"><div class="ms-panel-head"><button type="button" class="ms-select-all" data-state="">Tümünü seç</button></div><div class="ms-options"></div><div class="ms-suggestions"></div></div>
+    <div class="ms-extra"><label><input type="checkbox" class="ms-conflict"/> Çakışan yerleri dahil et</label></div>
+  </div>
+
+  <div class="ms" data-ms="1" data-name="filming_locations" data-options='[]'>
+    <span class="ms-label">Filmin çekildiği yerler</span>
+    <div class="ms-box"><div class="ms-chips"></div><input class="ms-input" type="text" placeholder="Çekim yeri ara veya yaz..."/><button type="button" class="ms-arrow">▼</button></div>
+    <div class="ms-panel"><div class="ms-panel-head"><button type="button" class="ms-select-all" data-state="">Tümünü seç</button></div><div class="ms-options"></div><div class="ms-suggestions"></div></div>
+    <div class="ms-extra"><label><input type="checkbox" class="ms-conflict"/> Çakışan yerleri dahil et</label></div>
+  </div>
+
+  <div class="ms" data-ms="1" data-name="story_period" data-options='[]'>
+    <span class="ms-label">Hikâyenin geçtiği dönem</span>
+    <div class="ms-box"><div class="ms-chips"></div><input class="ms-input" type="text" placeholder="Dönem ara veya yaz..."/><button type="button" class="ms-arrow">▼</button></div>
+    <div class="ms-panel"><div class="ms-panel-head"><button type="button" class="ms-select-all" data-state="">Tümünü seç</button></div><div class="ms-options"></div><div class="ms-suggestions"></div></div>
+    <div class="ms-extra"><label><input type="checkbox" class="ms-conflict"/> Çakışan filmleri dahil et</label></div>
+  </div>
+
+  <div class="ms" data-ms="1" data-name="story_geography" data-options='[]'>
+    <span class="ms-label">Hikâyenin coğrafyası</span>
+    <div class="ms-box"><div class="ms-chips"></div><input class="ms-input" type="text" placeholder="Coğrafya ara veya yaz..."/><button type="button" class="ms-arrow">▼</button></div>
+    <div class="ms-panel"><div class="ms-panel-head"><button type="button" class="ms-select-all" data-state="">Tümünü seç</button></div><div class="ms-options"></div><div class="ms-suggestions"></div></div>
+    <div class="ms-extra"><label><input type="checkbox" class="ms-conflict"/> Çakışan filmleri dahil et</label></div>
+  </div>
+
+  <div class="ms" data-ms="1" data-name="season" data-options='[]'>
+    <span class="ms-label">Hikâyenin geçtiği mevsim</span>
+    <div class="ms-box"><div class="ms-chips"></div><input class="ms-input" type="text" placeholder="Mevsim ara veya yaz..."/><button type="button" class="ms-arrow">▼</button></div>
+    <div class="ms-panel"><div class="ms-panel-head"><button type="button" class="ms-select-all" data-state="">Tümünü seç</button></div><div class="ms-options"></div><div class="ms-suggestions"></div></div>
+    <div class="ms-extra"><label><input type="checkbox" class="ms-conflict"/> Çakışan filmleri dahil et</label></div>
+  </div>
+
+  <div class="ms" data-ms="1" data-name="character_traits" data-options='[]'>
+    <span class="ms-label">Karakter niteliği</span>
+    <div class="ms-box"><div class="ms-chips"></div><input class="ms-input" type="text" placeholder="Niteliği ara veya yaz..."/><button type="button" class="ms-arrow">▼</button></div>
+    <div class="ms-panel"><div class="ms-panel-head"><button type="button" class="ms-select-all" data-state="">Tümünü seç</button></div><div class="ms-options"></div><div class="ms-suggestions"></div></div>
+    <div class="ms-extra"><label><input type="checkbox" class="ms-conflict"/> Çakışan filmleri dahil et</label></div>
+  </div>
+
+  <div class="ms" data-ms="1" data-name="aspect_ratio" data-options='[]'>
+    <span class="ms-label">Filmin en boy oranı</span>
+    <div class="ms-box"><div class="ms-chips"></div><input class="ms-input" type="text" placeholder="Örn. 2.39:1"/><button type="button" class="ms-arrow">▼</button></div>
+    <div class="ms-panel"><div class="ms-panel-head"><button type="button" class="ms-select-all" data-state="">Tümünü seç</button></div><div class="ms-options"></div><div class="ms-suggestions"></div></div>
+    <div class="ms-extra"><label><input type="checkbox" class="ms-conflict"/> Çakışan filmleri dahil et</label></div>
+  </div>
+
+  <div class="ms" data-ms="1" data-name="narrative_style" data-options='[]'>
+    <span class="ms-label">Hikâye anlatım tarzı</span>
+    <div class="ms-box"><div class="ms-chips"></div><input class="ms-input" type="text" placeholder="Tarz ara veya yaz..."/><button type="button" class="ms-arrow">▼</button></div>
+    <div class="ms-panel"><div class="ms-panel-head"><button type="button" class="ms-select-all" data-state="">Tümünü seç</button></div><div class="ms-options"></div><div class="ms-suggestions"></div></div>
+    <div class="ms-extra"><label><input type="checkbox" class="ms-conflict"/> Çakışan filmleri dahil et</label></div>
+  </div>
+
+  <div class="ms" data-ms="1" data-name="production_process" data-options='[]'>
+    <span class="ms-label">Filmin çekim süreci</span>
+    <div class="ms-box"><div class="ms-chips"></div><input class="ms-input" type="text" placeholder="Süreç ara veya yaz..."/><button type="button" class="ms-arrow">▼</button></div>
+    <div class="ms-panel"><div class="ms-panel-head"><button type="button" class="ms-select-all" data-state="">Tümünü seç</button></div><div class="ms-options"></div><div class="ms-suggestions"></div></div>
+    <div class="ms-extra"><label><input type="checkbox" class="ms-conflict"/> Çakışan filmleri dahil et</label></div>
+  </div>
+
+  <div class="ms" data-ms="1" data-name="sound" data-options='[]'>
+    <span class="ms-label">Film sesi</span>
+    <div class="ms-box"><div class="ms-chips"></div><input class="ms-input" type="text" placeholder="Ses özelliği ara veya yaz..."/><button type="button" class="ms-arrow">▼</button></div>
+    <div class="ms-panel"><div class="ms-panel-head"><button type="button" class="ms-select-all" data-state="">Tümünü seç</button></div><div class="ms-options"></div><div class="ms-suggestions"></div></div>
+    <div class="ms-extra"><label><input type="checkbox" class="ms-conflict"/> Çakışan filmleri dahil et</label></div>
+  </div>
+
+  <div class="ms" data-ms="1" data-name="reality" data-options='[]'>
+    <span class="ms-label">Hikâyenin gerçekliği</span>
+    <div class="ms-box"><div class="ms-chips"></div><input class="ms-input" type="text" placeholder="Gerçeklik ara veya yaz..."/><button type="button" class="ms-arrow">▼</button></div>
+    <div class="ms-panel"><div class="ms-panel-head"><button type="button" class="ms-select-all" data-state="">Tümünü seç</button></div><div class="ms-options"></div><div class="ms-suggestions"></div></div>
+    <div class="ms-extra"><label><input type="checkbox" class="ms-conflict"/> Çakışan filmleri dahil et</label></div>
+  </div>
+
+  <div class="ms" data-ms="1" data-name="story_dimensions" data-options='[]'>
+    <span class="ms-label">Hikâyenin boyutları</span>
+    <div class="ms-box"><div class="ms-chips"></div><input class="ms-input" type="text" placeholder="Boyut ara veya yaz..."/><button type="button" class="ms-arrow">▼</button></div>
+    <div class="ms-panel"><div class="ms-panel-head"><button type="button" class="ms-select-all" data-state="">Tümünü seç</button></div><div class="ms-options"></div><div class="ms-suggestions"></div></div>
+    <div class="ms-extra"><label><input type="checkbox" class="ms-conflict"/> Çakışan filmleri dahil et</label></div>
+  </div>
+</section>
+
+<section>
+  <h2>Oransal Seçimler</h2>
+  <div class="ratio-row" data-ratio="nightRatio">
+    <div class="ratio-head"><label><input type="checkbox" id="enableLight"/> Işık Seçimi</label><span class="ratio-value" id="val-nightRatio">%50</span></div>
+    <div class="ratio-labels"><span id="lbl-nightRatio-left">gece %50</span><span id="lbl-nightRatio-right">gündüz %50</span></div>
+    <input class="ratio-slider" type="range" id="nightRatio" min="0" max="100" value="50" disabled=""/>
+  </div>
+  <div class="ratio-row" data-ratio="indoorRatio">
+    <div class="ratio-head"><label><input type="checkbox" id="enablePlace"/> Mekân Yeri Seçimi</label><span class="ratio-value" id="val-indoorRatio">%50</span></div>
+    <div class="ratio-labels"><span id="lbl-indoorRatio-left">iç mekân %50</span><span id="lbl-indoorRatio-right">dış mekân %50</span></div>
+    <input class="ratio-slider" type="range" id="indoorRatio" min="0" max="100" value="50" disabled=""/>
+  </div>
+  <div class="ratio-row" data-ratio="locationCount">
+    <div class="ratio-head"><label><input type="checkbox" id="enablePlaceCount"/> Tekli/Çoklu Mekân Seçimi</label><span class="ratio-value" id="val-locationCount">%50</span></div>
+    <div class="ratio-labels"><span id="lbl-locationCount-left">tek mekân %50</span><span id="lbl-locationCount-right">çoklu mekân %50</span></div>
+    <input class="ratio-slider" type="range" id="locationCount" min="0" max="100" value="50" disabled=""/>
+  </div>
+  <div class="ratio-row" data-ratio="dialogueDensity">
+    <div class="ratio-head"><label><input type="checkbox" id="enableDialogue"/> Konuşma Yoğunluğu</label><span class="ratio-value" id="val-dialogueDensity">%50</span></div>
+    <div class="ratio-labels"><span id="lbl-dialogueDensity-left">sessizlik %50</span><span id="lbl-dialogueDensity-right">yoğun konuşma %50</span></div>
+    <input class="ratio-slider" type="range" id="dialogueDensity" min="0" max="100" value="50" disabled=""/>
+  </div>
+  <div class="ratio-row" data-ratio="colorRatio">
+    <div class="ratio-head"><label><input type="checkbox" id="enableColor"/> Filmin Rengi</label><span class="ratio-value" id="val-colorRatio">%50</span></div>
+    <div class="ratio-labels"><span id="lbl-colorRatio-left">siyah beyaz %50</span><span id="lbl-colorRatio-right">renkli %50</span></div>
+    <input class="ratio-slider" type="range" id="colorRatio" min="0" max="100" value="50" disabled=""/>
+  </div>
+</section>
+
+<section>
+  <h2>Hikâyedeki karakter sayısı</h2>
+  <div class="score-grid">
+    <div class="score-field"><label>Ana karakter (en az)</label><input type="number" id="charMainMin" min="0" step="1"/></div>
+    <div class="score-field"><label>Ana karakter (en çok)</label><input type="number" id="charMainMax" min="0" step="1"/></div>
+    <div class="score-field"><label>Yan karakter (en az)</label><input type="number" id="charSuppMin" min="0" step="1"/></div>
+    <div class="score-field"><label>Yan karakter (en çok)</label><input type="number" id="charSuppMax" min="0" step="1"/></div>
+    <div class="score-field"><label>Figüran (en az)</label><input type="number" id="charExtraMin" min="0" step="1"/></div>
+    <div class="score-field"><label>Figüran (en çok)</label><input type="number" id="charExtraMax" min="0" step="1"/></div>
+  </div>
+</section>
+
+<section id="familyDetails">
+  <h2>Aile rehberi</h2>
+  <div id="familyList"></div>
+</section>
+
+<section>
+  <h2>İzlenen filmler (CSV)</h2>
+  <div class="csv-row">
+    <input type="file" id="csvWatched" accept=".csv,text/csv"/>
+    <button type="button" id="csvClear">✕ İptal</button>
+    <span id="csvStatus">CSV yüklenmedi.</span>
+  </div>
+</section>
+
+<section>
+  <h2>Arama</h2>
+  <button type="button" id="clearAllBtn">Tüm filtreleri temizle</button>
+  <div class="range-row" style="margin-bottom:12px;"><input type="text" id="searchQuery" placeholder="Film adı girin (ör. Inception)" style="flex:1;width:100%;"/></div>
+  <fieldset class="search-mode">
+    <legend>Arama modu</legend>
+    <label><input type="checkbox" id="useWebResearch" checked=""/> Web araştırması (Tavily)</label>
+    <label><input type="checkbox" id="useAI" checked=""/> Yapay zeka analizi (Gemini)</label>
+    <p class="search-mode-hint" id="modeHint"></p>
+  </fieldset>
+  <button type="button" id="searchBtn">Ara</button>
+  <div id="results" style="margin-top:16px;"></div>
+</section>
+
+</main>
+
+<script>
+//<![CDATA[
+const API_BASE = "https://film-proxy.stavaft.workers.dev";
+const TARGET_COUNT = 5;
+
+function esc(s) {
+  return String(s == null ? "" : s).replace(/&/g, "&amp;").replace(/</g, "&lt;").replace(/>/g, "&gt;").replace(/"/g, "&quot;").replace(/'/g, "&#39;");
+}
+function norm(s) {
+  return String(s || "").trim().toLowerCase()
+    .replace(/İ/g, "i").replace(/I/g, "ı")
+    .replace(/Ş/g, "ş").replace(/Ğ/g, "ğ")
+    .replace(/Ü/g, "ü").replace(/Ö/g, "ö").replace(/Ç/g, "ç")
+    .replace(/Â/g, "a").replace(/Î/g, "i").replace(/Û/g, "u")
+    .replace(/\s+/g, " ");
+}
+function yearOf(m) { return Number(String(m.release_date || "").slice(0, 4)) || Number(m.year) || null; }
+function formatVotes(v) {
+  if (v == null) return "";
+  const n = Number(String(v).replace(/[^\d]/g, ""));
+  if (!n) return "";
+  return n >= 1000 ? ((n / 1000).toFixed(n >= 10000 ? 0 : 1)) + "B" : String(n);
+}
+function posterUrl(m, size) {
+  size = size || "w342";
+  const p = m.original_poster_path || m.poster_path || m.poster || "";
+  if (!p) return "";
+  if (p.indexOf("http") === 0) return p;
+  return "https://image.tmdb.org/t/p/" + size + p;
+}
+function googleUrl(title, year) {
+  const q = ((title || "") + " " + (year || "")).trim();
+  return "https://www.google.com/search?q=" + encodeURIComponent(q);
+}
+function profileUrl(path, size) {
+  size = size || "w45";
+  if (!path) return "";
+  return "https://image.tmdb.org/t/p/" + size + path;
+}
+const COUNTRY_ABBR = {
+  "united states of america": "USA", "amerika birleşik devletleri": "ABD",
+  "united states": "USA", "abd": "ABD",
+  "united kingdom": "UK", "birleşik krallık": "UK",
+  "russian federation": "Rusya", "rusya federasyonu": "Rusya",
+  "south korea": "Güney Kore", "güney kore": "Güney Kore",
+  "north korea": "Kuzey Kore", "kuzey kore": "Kuzey Kore",
+  "czech republic": "Çekya", "çek cumhuriyeti": "Çekya"
+};
+function shortCountry(name) {
+  const n = norm(name);
+  return COUNTRY_ABBR[n] || name;
+}
+
+const STATIC_OPTIONS = {
+  story_period: [{ id: "bc", label: "Milattan önce" }].concat(
+    Array.from({ length: 19 }, function(_, i) { return { id: "c" + (i + 1), label: (i + 1) + ". yüzyıl" }; }),
+    [
+      { id: "d1900", label: "1900'ler" }, { id: "d1910", label: "1910'lar" }, { id: "d1920", label: "1920'ler" },
+      { id: "d1930", label: "1930'lar" }, { id: "d1940", label: "1940'lar" }, { id: "d1950", label: "1950'ler" },
+      { id: "d1960", label: "1960'lar" }, { id: "d1970", label: "1970'ler" }, { id: "d1980", label: "1980'ler" },
+      { id: "d1990", label: "1990'lar" }, { id: "d2000", label: "2000'ler" }, { id: "d2010", label: "2010'lar" },
+      { id: "d2020", label: "2020'ler" }, { id: "future", label: "Geleceğe dair" }
+    ]
+  ),
+  story_geography: [
+    { id: "city", label: "Şehir" }, { id: "town", label: "Kasaba" }, { id: "village", label: "Köy" },
+    { id: "mountain", label: "Dağlık ve yüksek kesimler" }, { id: "desert", label: "Çöl" }, { id: "steppe", label: "Bozkır" },
+    { id: "forest", label: "Orman" }, { id: "seaside", label: "Deniz kenarı" }, { id: "riverside", label: "Nehir kenarı" },
+    { id: "opensea", label: "Açık deniz" }, { id: "air", label: "Hava" }
+  ],
+  season: [
+    { id: "spring", label: "İlkbahar" }, { id: "summer", label: "Yaz" },
+    { id: "autumn", label: "Sonbahar" }, { id: "winter", label: "Kış" }
+  ],
+  character_traits: [
+    { id: "male_main", label: "Erkek ana karakter" }, { id: "female_main", label: "Kadın ana karakter" },
+    { id: "child_main", label: "Çocuk ana karakter" }, { id: "lgbt_main", label: "LGBT+ ana karakter" },
+    { id: "male_support", label: "Erkek yan karakter" }, { id: "female_support", label: "Kadın yan karakter" },
+    { id: "child_support", label: "Çocuk yan karakter" }, { id: "lgbt_support", label: "LGBT+ yan karakter" },
+    { id: "male_extra", label: "Erkek figüran" }, { id: "female_extra", label: "Kadın figüran" },
+    { id: "child_extra", label: "Çocuk figüran" }, { id: "lgbt_extra", label: "LGBT+ figüran" },
+    { id: "young_main", label: "Genç ana karakter" }, { id: "young_support", label: "Genç yan karakter" },
+    { id: "young_extra", label: "Genç figüran" }, { id: "middle_main", label: "Orta yaşlı ana karakter" },
+    { id: "middle_support", label: "Orta yaşlı yan karakter" }, { id: "middle_extra", label: "Orta yaşlı figüran" },
+    { id: "old_main", label: "Yaşlı ana karakter" }, { id: "old_support", label: "Yaşlı yan karakter" },
+    { id: "old_extra", label: "Yaşlı figüran" }, { id: "disabled_main", label: "Engelli ana karakter" },
+    { id: "disabled_support", label: "Engelli yan karakter" }, { id: "disabled_extra", label: "Engelli figüran" },
+    { id: "animal", label: "Ana veya yan karakter bir hayvan" }
+  ],
+  aspect_ratio: [
+    { id: "1:1", label: "1:1" }, { id: "4:3", label: "4:3" }, { id: "16:9", label: "16:9" },
+    { id: "18:9", label: "18:9" }, { id: "21:9", label: "21:9" }
+  ],
+  narrative_style: [
+    { id: "multi", label: "Farklı hikayelerin ayrı ayrı anlatımı" },
+    { id: "reverse", label: "Sondan başa doğru giden hikaye" },
+    { id: "linear", label: "Baştan sona giden hikaye" },
+    { id: "flashback", label: "Ara ara geriye dönüşler yapan hikaye" },
+    { id: "end_first", label: "Sonu önce anlatılıp başı sonra anlatılan hikaye" },
+    { id: "mid_first", label: "Ortası önce anlatılıp, öncesi ve sonrası sonra anlatılan hikaye" },
+    { id: "fast", label: "Çok fazla olayın olduğu hareketli hikaye" },
+    { id: "slow", label: "Çok az olayın olduğu durgun hikaye" },
+    { id: "no_end", label: "Sonu olmayan hikaye" },
+    { id: "alt_end", label: "Alternatif sonlu hikaye" },
+    { id: "alt_narr", label: "Alternatif anlatımlı hikaye" }
+  ],
+  production_process: [
+    { id: "amateur", label: "Amatör film" }, { id: "indie", label: "Bağımsız film" },
+    { id: "art", label: "Sanat filmi" }, { id: "big", label: "Büyük prodüksiyon" },
+    { id: "bmovie", label: "B movie" }, { id: "avant", label: "Avangart film" },
+    { id: "studio", label: "Stüdyo filmi" }, { id: "no_music", label: "Müziksiz film" },
+    { id: "rare_music", label: "Nadir Müzikli Film" }, { id: "handheld", label: "Hareketli kamera kullanımı" },
+    { id: "propaganda", label: "Propaganda filmi" }, { id: "dogme", label: "Dogme 95" }
+  ],
+  sound: [
+    { id: "ambient", label: "Sürekli doğal ortam gürültüsü" },
+    { id: "music", label: "Yoğun müzik kullanımı" },
+    { id: "effects", label: "Yoğun gürültülü efekt kullanımı" },
+    { id: "voiceover_ext", label: "Dış ses kullanımı" },
+    { id: "voiceover_int", label: "İç ses kullanımı" },
+    { id: "silent", label: "Sessiz film" },
+    { id: "dubbed", label: "Ses dublajı çoğunlukla stüdyoda yapılmış" }
+  ],
+  reality: [
+    { id: "true", label: "Tamamen gerçek olaylara sadık" },
+    { id: "mostly_true", label: "Çoğunlukla gerçek olaylara dayalı" },
+    { id: "inspired", label: "Gerçek olaylardan esinlenmiş" },
+    { id: "realistic", label: "Gerçekçi" },
+    { id: "fictional", label: "Sıradışı ve aşırı tesadüfi olaylara dayalı tamamen kurgusal senaryo" },
+    { id: "utopic", label: "Utopik" }
+  ],
+  story_dimensions: [
+    { id: "has_sequel", label: "Devam filmi var" }, { id: "is_sequel", label: "Devam filmi" },
+    { id: "series_tight", label: "Diziyle sıkı bağlantılı" }, { id: "series_loose", label: "Diziyle alakalı" },
+    { id: "concept", label: "Konsept filmi" }, { id: "has_version", label: "Farklı versiyonu var" },
+    { id: "same_event", label: "Aynı olay farklı film" }
+  ],
+  sex_details: [
+    { id: "sexual_touch", label: "Cinsel temas var" }, { id: "kissing", label: "Öpüşme var" },
+    { id: "sex", label: "Sevişme var" }, { id: "penetration", label: "Penatrasyon var" },
+    { id: "male_genital", label: "Erkek cinsel organı gözüküyor" },
+    { id: "female_genital", label: "Kadın cinsel organı gözüküyor" },
+    { id: "female_breast", label: "Kadın emzirme organı gözüküyor" },
+    { id: "male_butt", label: "Erkek kaba eti gözüküyor" },
+    { id: "female_butt", label: "Kadın kaba eti gözüküyor" },
+    { id: "extreme_nudity", label: "Teşhircilik yok ama aşırı çıplaklık var" },
+    { id: "mild_nudity", label: "Çıplaklık az" }
+  ]
+};
+
+const FAMILY_TRAITS = [
+  { key: "tobacco", label: "Tütün ürünleri kullanımı" },
+  { key: "alcohol", label: "Alkol kullanımı" },
+  { key: "drugs", label: "Uyuşturucu kullanımı" },
+  { key: "sex_nudity", label: "Cinsel sahneler ve çıplaklık" },
+  { key: "violence", label: "Şiddet ve kan" },
+  { key: "crimes_against_humanity", label: "İnsanlığa karşı suçlar" },
+  { key: "terror", label: "Terör" },
+  { key: "illegal", label: "Yasadışı eylemler" },
+  { key: "lgbt", label: "LGBT+ içeriği" },
+  { key: "pedophilia", label: "Pedofili, ensest ve diğer cinsel sapkınlıklar" },
+  { key: "unmarried", label: "Nikahsız ilişkiler" },
+  { key: "profanity", label: "Argo ve küfür kullanımı" },
+  { key: "disturbing", label: "Ürpertici veya ürkütücü sahneler" },
+  { key: "racism", label: "Irkçılık, ayrımcılık, dini değerlere hakaret ve nefret suçu" }
+];
+const INTENSITY = [
+  ["none", "Hiç yok"],
+  ["few", "Bir veya birkaç sahnede var"],
+  ["side", "Yan konu (yoğun)"],
+  ["main", "Ana konu (çok yoğun)"]
+];
+const APPROACH = [
+  ["bad", "Kötü gösteriyor"],
+  ["neutral", "Tarafsız kalıyor"],
+  ["legit", "Meşrulaştırıyor"]
+];
+
+function renderFamilyGuide() {
+  const list = document.getElementById("familyList");
+  if (!list) return;
+  list.innerHTML = FAMILY_TRAITS.map(function(t) {
+    return '<div class="family-item" data-family-key="' + esc(t.key) + '">' +
+      '<p class="family-title">' + esc(t.label) + '</p>' +
+      '<p class="family-subtitle">İçerik</p>' +
+      '<div class="family-levels">' +
+        INTENSITY.map(function(pair) {
+          var v = pair[0], l = pair[1];
+          return '<label><input type="radio" name="int_' + esc(t.key) + '" value="' + v + '" data-radio="1"/> ' + esc(l) + '</label>';
+        }).join("") +
+      '</div>' +
+      '<p class="family-subtitle">Yaklaşım</p>' +
+      '<div class="family-levels">' +
+        APPROACH.map(function(pair) {
+          var v = pair[0], l = pair[1];
+          return '<label><input type="radio" name="app_' + esc(t.key) + '" value="' + v + '" data-radio="1"/> ' + esc(l) + '</label>';
+        }).join("") +
+      '</div>' +
+      (t.key === "sex_nudity" ?
+        '<div class="ms" data-ms="1" data-name="sex_details">' +
+          '<span class="ms-label">Diğer şeyler</span>' +
+          '<div class="ms-box"><div class="ms-chips"></div><input class="ms-input" type="text" placeholder="Ayrıntı ara veya yaz..."/><button type="button" class="ms-arrow">▼</button></div>' +
+          '<div class="ms-panel"><div class="ms-panel-head"><button type="button" class="ms-select-all" data-state="">Tümünü seç</button></div><div class="ms-options"></div><div class="ms-suggestions"></div></div>' +
+          '<div class="ms-extra"><label><input type="checkbox" class="ms-conflict"/> Çakışan filmleri dahil et</label></div>' +
+        '</div>' : "") +
+      '<label class="family-invisible"><input type="checkbox" class="family-invisible-check"/> Gösterilmeyen içeriği değerlendirme</label>' +
+    '</div>';
+  }).join("");
+  list.querySelectorAll("[data-ms]").forEach(function(root) { if (!MS_STATE.get(root)) msInit(root); });
+  list.querySelectorAll('input[type="radio"][data-radio="1"]').forEach(function(r) {
+    r.addEventListener("click", function() {
+      if (r.dataset.wasChecked === "1") { r.checked = false; r.dataset.wasChecked = ""; }
+      else { r.dataset.wasChecked = "1"; }
+      var name = r.name;
+      list.querySelectorAll('input[name="' + name + '"]').forEach(function(o) { if (o !== r) o.dataset.wasChecked = ""; });
+      syncSexDetails();
+    });
+  });
+  syncSexDetails();
+}
+function syncSexDetails() {
+  document.querySelectorAll('[data-family-key="sex_nudity"]').forEach(function(el) {
+    var noneRadio = el.querySelector('input[name="int_sex_nudity"][value="none"]');
+    var ms = el.querySelector('[data-ms][data-name="sex_details"]');
+    var disabled = !!(noneRadio && noneRadio.checked);
+    if (ms) {
+      ms.style.pointerEvents = disabled ? "none" : "";
+      ms.style.opacity = disabled ? "0.45" : "";
+      if (disabled) {
+        var panel = ms.querySelector(".ms-panel");
+        if (panel) panel.classList.remove("open");
+      }
+    }
+  });
+}
+
+var watchedList = [];
+function parseWatchedCSV(text) {
+  var lines = text.replace(/^\uFEFF/, "").trim().split(/\r?\n/);
+  if (!lines.length) return [];
+  var headers = lines[0].split(",").map(function(h) { return h.trim().replace(/^"|"$/g, ""); });
+  var idx = function(name) { return headers.findIndex(function(h) { return h.toLowerCase() === name.toLowerCase(); }); };
+  var iTitle = idx("Original Title"), iYear = idx("Year"), iConst = idx("Const"), iDir = idx("Directors");
+  if (iTitle < 0) throw new Error("CSV'de 'Original Title' sütunu yok.");
+  var splitLine = function(line) {
+    var out = []; var cur = ""; var q = false;
+    for (var i = 0; i < line.length; i++) {
+      var c = line[i];
+      if (c === '"') { if (q && line[i+1] === '"') { cur += '"'; i++; } else q = !q; }
+      else if (c === "," && !q) { out.push(cur); cur = ""; }
+      else cur += c;
+    }
+    out.push(cur);
+    return out;
+  };
+  return lines.slice(1).map(function(line) {
+    var cols = splitLine(line);
+    return {
+      originalTitle: (cols[iTitle] || "").trim(),
+      year: parseInt(cols[iYear]) || null,
+      imdbId: iConst >= 0 ? (cols[iConst] || "").trim() : "",
+      directors: iDir >= 0 ? (cols[iDir] || "").trim() : ""
+    };
+  }).filter(function(r) { return r.originalTitle; });
+}
+function filterWatchedLocally(movies) {
+  if (!watchedList.length) return movies;
+  var titleKey = function(t, y) { return norm(t) + "|" + (y || 0); };
+  var titleSet = new Set(watchedList.map(function(w) { return titleKey(w.originalTitle, w.year); }));
+  var imdbSet = new Set(watchedList.filter(function(w) { return w.imdbId; }).map(function(w) { return w.imdbId; }));
+  return movies.filter(function(m) {
+    if (m.imdb_id && imdbSet.has(m.imdb_id)) return false;
+    if (m.imdbID && imdbSet.has(m.imdbID)) return false;
+    return !titleSet.has(titleKey(m.original_title || m.title, yearOf(m)));
+  });
+}
+function verifyWatched(result) {
+  var w = watchedList.find(function(x) { return x.imdbId && (x.imdbId === result.imdbID || x.imdbId === result.imdb_id); });
+  if (!w) return { verified: false, reason: "IMDb ID eşleşmedi" };
+  if (w.directors) {
+    var a = norm(result.omdb_directors || "");
+    var b = norm(w.directors);
+    if (a && a.indexOf(b.split(",")[0].trim()) === -1) return { verified: false, reason: "Yönetmen eşleşmedi" };
+  }
+  return { verified: true, reason: "IMDb ID + yönetmen doğrulandı" };
+}
+
+function currentMode() {
+  return {
+    useWebResearch: (document.getElementById("useWebResearch") || {}).checked || false,
+    useAI: (document.getElementById("useAI") || {}).checked || false
+  };
+}
+function updateModeHint() {
+  var mode = currentMode();
+  var useWebResearch = mode.useWebResearch, useAI = mode.useAI;
+  var el = document.getElementById("modeHint");
+  if (!el) return;
+  var msg = "";
+  if (useWebResearch && useAI) msg = "En doğru sonuç: önce web'den kanıt toplanır, yetersizse AI devreye girer.";
+  else if (useWebResearch && !useAI) msg = "Hızlı mod: yalnızca web kaynakları. AI'ya özgü alanlar boş kalabilir.";
+  else if (!useWebResearch && useAI) msg = "AI modu: web kanıtı olmadan tahmin; doğruluk düşebilir.";
+  else msg = "Yalnızca klasik kaynaklar (TMDB, OMDb, Wikidata, Commons). AI alanları boş kalır.";
+  el.textContent = msg;
+}
+
+function collectFilters() {
+  var filters = {};
+  document.querySelectorAll("[data-ms]").forEach(function(root) {
+    var name = root.dataset.name;
+    if (name === "sex_details") return;
+    var v = msGetValues(root);
+    var conflict = (root.querySelector(".ms-conflict") || {}).checked || false;
+    if (v.include.length || v.exclude.length) {
+      filters[name] = { include: v.include, exclude: v.exclude, conflict: conflict };
+    }
+  });
+  var num = function(id, def) { var el = document.getElementById(id); var v = el ? parseFloat(el.value) : NaN; return Number.isFinite(v) ? v : def; };
+  filters.imdbMin = num("imdbMin", 0); filters.imdbMax = num("imdbMax", 10);
+  filters.tmdbMin = num("tmdbMin", 0); filters.tmdbMax = num("tmdbMax", 10);
+  filters.imdbVotesMin = num("imdbVotesMin", 0);
+  filters.tmdbVotesMin = num("tmdbVotesMin", 0);
+  filters.yearMin = num("yearMin", null); filters.yearMax = num("yearMax", null);
+  filters.runtimeMin = num("runtimeMin", null); filters.runtimeMax = num("runtimeMax", null);
+  var ratio = function(id, enabledId) {
+    var en = document.getElementById(enabledId);
+    if (!en || !en.checked) return null;
+    var el = document.getElementById(id);
+    return el ? parseFloat(el.value) : null;
+  };
+  var nr = ratio("nightRatio", "enableLight"); if (nr != null) filters.nightRatioMin = nr;
+  var ir = ratio("indoorRatio", "enablePlace"); if (ir != null) filters.indoorRatioMin = ir;
+  var dd = ratio("dialogueDensity", "enableDialogue"); if (dd != null) filters.dialogueDensityMin = dd;
+  var cr = ratio("colorRatio", "enableColor"); if (cr != null) filters.colorRatioMin = cr;
+  var lc = ratio("locationCount", "enablePlaceCount"); if (lc != null) filters.locationCountMin = lc;
+  var mainMin = num("charMainMin", null), mainMax = num("charMainMax", null);
+  var suppMin = num("charSuppMin", null), suppMax = num("charSuppMax", null);
+  var extraMin = num("charExtraMin", null), extraMax = num("charExtraMax", null);
+  if (mainMin != null || mainMax != null || suppMin != null || suppMax != null || extraMin != null || extraMax != null) {
+    filters.characterDensity = { mainMin: mainMin, mainMax: mainMax, supportMin: suppMin, supportMax: suppMax, extraMin: extraMin, extraMax: extraMax };
+  }
+  var family = {};
+  document.querySelectorAll("[data-family-key]").forEach(function(el) {
+    var key = el.dataset.familyKey;
+    var int = (el.querySelector('input[name="int_' + key + '"]:checked') || {}).value || "";
+    var app = (el.querySelector('input[name="app_' + key + '"]:checked') || {}).value || "";
+    var invEl = el.querySelector(".family-invisible-check");
+    var inv = invEl ? invEl.checked : false;
+    var details = null;
+    if (key === "sex_nudity") {
+      var ms = el.querySelector('[data-ms][data-name="sex_details"]');
+      if (ms) {
+        var v = msGetValues(ms);
+        if (v.include.length || v.exclude.length) details = { include: v.include, exclude: v.exclude, conflict: (ms.querySelector(".ms-conflict") || {}).checked || false };
+      }
+    }
+    if (int || app || details) family[key] = { intensity: int, approach: app, evaluateInvisible: inv, details: details };
+  });
+  if (Object.keys(family).length) filters.family_content = family;
+  return filters;
+}
+
+function buildDiscoverParams(filters, page) {
+  var params = new URLSearchParams();
+  params.set("language", "tr-TR");
+  params.set("page", String(page || 1));
+  params.set("include_adult", "false");
+  params.set("sort_by", "vote_average.desc");
+
+  var vc = filters.tmdbVotesMin > 0
+    ? filters.tmdbVotesMin
+    : filters.imdbVotesMin > 0
+      ? Math.max(200, Math.round(filters.imdbVotesMin / 10))
+      : 200;
+  params.set("vote_count.gte", String(vc));
+
+  var validId = function(id) { return id != null && id !== "" && id !== "__space__" && id !== "__studio__"; };
+  if (filters.genres && filters.genres.include && filters.genres.include.length) {
+    var ids = filters.genres.include.map(function(g) { return g.id; }).filter(validId);
+    if (ids.length) params.set("with_genres", ids.join(","));
+  }
+  if (filters.genres && filters.genres.exclude && filters.genres.exclude.length) {
+    var ids2 = filters.genres.exclude.map(function(g) { return g.id; }).filter(validId);
+    if (ids2.length) params.set("without_genres", ids2.join(","));
+  }
+  if (filters.original_language && filters.original_language.include && filters.original_language.include.length) {
+    var id = filters.original_language.include[0] && filters.original_language.include[0].id;
+    if (validId(id)) params.set("with_original_language", id);
+  }
+  if (filters.production_countries && filters.production_countries.include && filters.production_countries.include.length) {
+    var ids3 = filters.production_countries.include.map(function(c) { return c.id; }).filter(validId);
+    if (ids3.length) params.set("with_origin_country", ids3.join("|"));
+  }
+  if (filters.tmdbMin > 0) params.set("vote_average.gte", String(filters.tmdbMin));
+  if (filters.tmdbMax < 10) params.set("vote_average.lte", String(filters.tmdbMax));
+  if (filters.yearMin != null) params.set("primary_release_date.gte", filters.yearMin + "-01-01");
+  if (filters.yearMax != null) params.set("primary_release_date.lte", filters.yearMax + "-12-31");
+  if (filters.runtimeMin != null) params.set("with_runtime.gte", String(filters.runtimeMin));
+  if (filters.runtimeMax != null) params.set("with_runtime.lte", String(filters.runtimeMax));
+
+  return params;
+}
+
+async function runResearch(movies, filters, options) {
+  options = options || {};
+  var refresh = options.refresh || false;
+  var forceAll = options.forceAll || false;
+  var onProgress = options.onProgress;
+  var mode = currentMode();
+  var res = await fetch(API_BASE + "/research", {
+    method: "POST",
+    headers: { "Content-Type": "application/json", "Accept": "text/event-stream" },
+    body: JSON.stringify({ movies: movies.slice(0, TARGET_COUNT), filters: filters, useWebResearch: mode.useWebResearch, useAI: mode.useAI, refresh: refresh, forceAll: forceAll })
+  });
+  if (!res.ok || !res.body) {
+    var err = await res.json().catch(function() { return {}; });
+    throw new Error(err.error || ("Araştırma hatası: " + res.status));
+  }
+  var reader = res.body.getReader();
+  var decoder = new TextDecoder();
+  var buffer = "";
+  var collected = [];
+  while (true) {
+    var r = await reader.read();
+    if (r.done) break;
+    buffer += decoder.decode(r.value, { stream: true });
+    var parts = buffer.split("\n\n");
+    buffer = parts.pop() || "";
+    for (var pi = 0; pi < parts.length; pi++) {
+      var part = parts[pi];
+      var lineArr = part.split("\n");
+      var line = null;
+      for (var li = 0; li < lineArr.length; li++) if (lineArr[li].indexOf("data: ") === 0) { line = lineArr[li]; break; }
+      if (!line) continue;
+      var msg;
+      try { msg = JSON.parse(line.slice(6)); } catch { continue; }
+      if (msg.type === "start") { if (onProgress) onProgress({ percent: 0, text: "Başlıyor (" + msg.total + " film)" }); }
+      else if (msg.type === "step") {
+        var pct = Math.round((msg.index / msg.total) * 100);
+        var stageText = msg.stage === "zenginleştiriliyor"
+          ? msg.title + " — kaynaklar çekiliyor (" + (msg.fields || []).join(", ") + ")"
+          : msg.stage === "önbellekten" ? msg.title + " — önbellekten"
+          : msg.title + " — okunuyor";
+        if (onProgress) onProgress({ percent: pct, text: stageText });
+      }
+      else if (msg.type === "movie") {
+        collected.push(msg.movie);
+        var pct2 = Math.round(((msg.index + 1) / msg.total) * 100);
+        if (onProgress) onProgress({ percent: pct2, text: (msg.movie.original_title || msg.movie.title) + " tamamlandı" });
+      }
+      else if (msg.type === "done") {
+        var list = (msg.movies || collected).map(function(m) { return Object.assign({}, m, { ai_requested: mode.useAI, web_requested: mode.useWebResearch }); });
+        return list;
+      }
+      else if (msg.type === "error") throw new Error(msg.message || "Bilinmeyen hata");
+    }
+  }
+  return collected.map(function(m) { return Object.assign({}, m, { ai_requested: mode.useAI, web_requested: mode.useWebResearch }); });
+}
+
+function nameLink(name, profilePath) {
+  if (profilePath) {
+    var src = profileUrl(profilePath);
+    return '<a href="#" class="person-link" data-person-src="' + esc(src) + '" data-person-name="' + esc(name) + '">' + esc(name) + '</a>';
+  }
+  return esc(name);
+}
+function personList(items, includeProfile) {
+  if (includeProfile === undefined) includeProfile = true;
+  if (!Array.isArray(items) || !items.length) return "";
+  return items.map(function(it) {
+    if (typeof it === "string") return esc(it);
+    return includeProfile ? nameLink(it.name, it.profile_path) : esc(it.name);
+  }).filter(Boolean).join(", ");
+}
+
+function renderFilmCard(m, filters) {
+  var original = m.original_title || m.title || "Bilinmeyen Film";
+  var trTitle = m.title && m.title !== m.original_title ? m.title : "";
+  var year = yearOf(m);
+  var imdb = m.imdbRating || null;
+  var votes = formatVotes(m.imdbVotes);
+  var genres = Array.isArray(m.genres) ? m.genres.join(", ") : "";
+  var countries = Array.isArray(m.production_countries) ? m.production_countries.map(shortCountry).join(", ") : "";
+  var langs = Array.isArray(m.spoken_languages) ? m.spoken_languages.join(", ") : "";
+
+  var directors = Array.isArray(m.director) && m.director.length
+    ? m.director
+    : (m.omdb_directors ? m.omdb_directors.split(",").map(function(s) { return { name: s.trim(), profile_path: null }; }) : []);
+  var writers = Array.isArray(m.writers) ? m.writers : [];
+  var actors = Array.isArray(m.cast) && m.cast.length
+    ? m.cast
+    : (Array.isArray(m.omdb_actors) ? m.omdb_actors.map(function(n) { return { name: n, profile_path: null }; }) : []);
+  var producers = Array.isArray(m.producers) ? m.producers : [];
+  var companies = Array.isArray(m.production_companies) ? m.production_companies : [];
+
+  var topRows = [];
+  if (year) topRows.push('<span class="film-year">' + esc(year) + '</span>');
+  if (imdb) topRows.push('<span class="imdb-rating">IMDb ' + esc(imdb) + (votes ? ' <span class="imdb-votes">(' + esc(votes) + ' oy)</span>' : '') + '</span>');
+  if (genres) topRows.push('<span class="film-genres">' + esc(genres) + '</span>');
+  if (m.runtime != null) topRows.push('<span class="film-runtime">' + esc(m.runtime) + ' dk</span>');
+  if (directors.length) topRows.push('<span class="film-director">Yönetmen: ' + personList(directors) + '</span>');
+  if (countries) topRows.push('<span class="film-countries">' + esc(countries) + '</span>');
+
+  var detailRows = [
+    ["Dil", langs || null],
+    ["Senarist", writers.length ? personList(writers) : null],
+    ["Oyuncular", actors.length ? personList(actors) : null],
+    ["Yapımcı", producers.length ? personList(producers) : null],
+    ["Yapım Şirketi", companies.length ? companies.map(esc).join(", ") : null],
+    ["TMDB Puanı", m.vote_average != null ? Number(m.vote_average).toFixed(1) : null],
+    ["TMDB Oy", m.vote_count != null ? String(m.vote_count) : null],
+    ["Yaş Sınırı", m.rated != null ? m.rated : null],
+    ["Ödüller", m.awards != null ? m.awards : null],
+    ["Metascore", m.metascore != null ? m.metascore : null],
+    ["Hasılat", m.boxOffice != null ? m.boxOffice : null],
+    ["Gece / Gündüz", m.night_ratio != null ? (m.night_ratio + "% / " + (m.day_ratio != null ? m.day_ratio : (100 - m.night_ratio)) + "%") : null],
+    ["İç / Dış Mekân", m.indoor_ratio != null ? (m.indoor_ratio + "% / " + (100 - m.indoor_ratio) + "%") : null],
+    ["Mekân Sayısı", m.location_count != null ? m.location_count : null],
+    ["Diyalog Yoğunluğu", m.dialogue_density != null ? (m.dialogue_density + "%") : null],
+    ["Renk / S&B", m.color_ratio != null ? (m.color_ratio + "% renkli") : null],
+    ["En-Boy Oranı", m.aspect_ratio != null ? m.aspect_ratio : null],
+    ["Mevsim", Array.isArray(m.season) ? m.season.join(", ") : (m.season != null ? m.season : null)],
+    ["Hikâye Yeri", Array.isArray(m.story_locations) ? m.story_locations.join(", ") : null],
+    ["Çekim Yeri", Array.isArray(m.filming_locations) && m.filming_locations.length ? m.filming_locations.join(", ") : null],
+    ["Özgün Eser", m.original_work != null ? m.original_work : null],
+    ["İlişkili Filmler", Array.isArray(m.related_films) && m.related_films.length ? m.related_films.join(", ") : null]
+  ].filter(function(row) { return row[1] !== null && row[1] !== undefined && row[1] !== ""; });
+
+  var detailHtml = detailRows.map(function(row) {
+    return '<div class="detail-row"><span class="label">' + esc(row[0]) + '</span><span class="value">' + esc(row[1]) + '</span></div>';
+  }).join("");
+  var overview = m.overview || "";
+  var overviewHtml = overview ? '<div class="film-overview"><p>' + esc(overview) + '</p></div>' : "";
+  var poster = posterUrl(m);
+  var gUrl = googleUrl(original, year);
+  var watchedInfo = verifyWatched(m);
+  var watchedBadge = watchedInfo.verified ? '<div class="film-watched-badge">İzlendi olarak doğrulandı (' + esc(watchedInfo.reason) + ')</div>' : "";
+
+  return '<article class="film-card" data-movie-id="' + esc(m.id) + '">' +
+    '<button type="button" class="film-refresh" data-refresh-id="' + esc(m.id) + '" title="Yenile" aria-label="Yenile">⟳</button>' +
+    '<div class="film-top">' +
+      '<div class="film-poster-wrap">' +
+        (poster
+          ? '<img class="film-poster" src="' + esc(poster) + '" alt="' + esc(original) + ' posteri" loading="lazy" data-full-src="' + esc(posterUrl(m, "w780")) + '" data-poster="1"/>'
+          : '<div class="film-poster" aria-hidden="true"></div>') +
+      '</div>' +
+      '<div class="film-top-info">' +
+        '<h3 class="film-title"><a href="' + esc(gUrl) + '" target="_blank" rel="noopener">' + esc(original) + '</a></h3>' +
+        (trTitle ? '<div class="film-title-tr">' + esc(trTitle) + '</div>' : '') +
+        '<div class="film-meta-line">' + topRows.join("") + '</div>' +
+        watchedBadge +
+      '</div>' +
+    '</div>' +
+    '<div class="film-bottom">' +
+      '<div class="film-actions">' +
+        '<button type="button" data-toggle="details" data-target="det-' + esc(m.id) + '">Daha fazla</button>' +
+        '<button type="button" data-images-id="' + esc(m.id) + '" data-images-title="' + esc(original) + '" data-images-original="' + esc(m.original_title || original) + '">Görseller</button>' +
+      '</div>' +
+      '<div class="film-gallery" id="gal-' + esc(m.id) + '"></div>' +
+      '<div class="film-details" id="det-' + esc(m.id) + '">' + detailHtml + overviewHtml + '</div>' +
+    '</div>' +
+  '</article>';
+}
+
+function renderFilmList(movies, container, filters) {
+  filters = filters || {};
+  if (!movies.length) {
+    container.innerHTML = '<p class="empty">Sonuç bulunamadı.</p>';
+    return;
+  }
+  var aiRequested = movies.some(function(m) { return m.ai_requested; });
+  var aiAny = movies.some(function(m) { return m.ai_available === true; });
+  var webRequested = movies.some(function(m) { return m.web_requested; });
+  var webAny = movies.some(function(m) { return m.web_available === true; });
+  var notes = [];
+  if (aiRequested && !aiAny) notes.push("YZ devre dışı.");
+  if (webRequested && !webAny) notes.push("Arama servisi devre dışı.");
+  if (movies.some(function(m) { return m.unknown; })) notes.push("Bazı alanlar bilinmiyor.");
+  var header = notes.length ? '<div class="list-note">' + notes.map(esc).join(" ") + '</div>' : "";
+  container.innerHTML = header + movies.map(function(m) { return renderFilmCard(m, filters); }).join("");
+}
+
+var refreshClickAt = new Map();
+
+function bindFilmCardEvents(container) {
+  var lightbox = document.getElementById("lightbox");
+  if (!lightbox) {
+    lightbox = document.createElement("div");
+    lightbox.id = "lightbox";
+    lightbox.className = "lightbox";
+    lightbox.innerHTML = '<button type="button" class="lightbox-close" aria-label="Kapat">✕</button><img alt=""/>';
+    document.body.appendChild(lightbox);
+    lightbox.addEventListener("click", function(e) {
+      if (e.target === lightbox || e.target.classList.contains("lightbox-close")) {
+        lightbox.classList.remove("open");
+      }
+    });
+  }
+  var lightboxImg = lightbox.querySelector("img");
+
+  container.addEventListener("click", async function(e) {
+    var person = e.target.closest("a.person-link");
+    if (person) {
+      e.preventDefault();
+      var src = person.dataset.personSrc;
+      if (src) { lightboxImg.src = src; lightboxImg.alt = person.dataset.personName || ""; lightbox.classList.add("open"); }
+      return;
+    }
+    var poster = e.target.closest("img.film-poster");
+    if (poster && poster.dataset.fullSrc) {
+      lightboxImg.src = poster.dataset.fullSrc;
+      lightboxImg.alt = poster.alt || "";
+      lightbox.classList.add("open");
+      return;
+    }
+    var galleryImg = e.target.closest(".film-gallery img");
+    if (galleryImg) {
+      lightboxImg.src = galleryImg.dataset.fullSrc || galleryImg.src;
+      lightboxImg.alt = galleryImg.alt || "";
+      lightbox.classList.add("open");
+      return;
+    }
+    var btn = e.target.closest("button");
+    if (!btn) return;
+    if (btn.dataset.toggle) {
+      var el = document.getElementById(btn.dataset.target);
+      if (!el) return;
+      el.classList.toggle("open");
+      var isOpen = el.classList.contains("open");
+      if (btn.dataset.toggle === "details") btn.textContent = isOpen ? "Daha az" : "Daha fazla";
+      return;
+    }
+    if (btn.dataset.imagesId) {
+      var card = btn.closest(".film-card");
+      var gallery = card.querySelector(".film-gallery");
+      if (!gallery) return;
+      if (gallery.classList.contains("open")) {
+        gallery.classList.remove("open");
+        btn.textContent = "Görseller";
+        return;
+      }
+      btn.disabled = true; btn.textContent = "Yükleniyor...";
+      try {
+        var params = new URLSearchParams({
+          id: btn.dataset.imagesId,
+          title: btn.dataset.imagesTitle || "",
+          original_title: btn.dataset.imagesOriginal || ""
+        });
+        var res = await fetch(API_BASE + "/images?" + params.toString());
+        if (!res.ok) throw new Error("Görseller: " + res.status);
+        var data = await res.json();
+        var images = Array.isArray(data.images) ? data.images.slice(0, 9) : [];
+        if (!images.length) { gallery.innerHTML = '<p class="empty">Görsel bulunamadı.</p>'; }
+        else {
+          gallery.innerHTML = images.map(function(img) {
+            return '<a href="' + esc(img.pageUrl || img.url) + '" target="_blank" rel="noopener" class="gallery-link">' +
+              '<img src="' + esc(img.url) + '" alt="' + esc(img.title || "") + '" loading="lazy" data-full-src="' + esc(img.url) + '"/>' +
+            '</a>';
+          }).join("");
+        }
+        gallery.classList.add("open");
+        btn.textContent = "Görselleri gizle";
+      } catch (err) {
+        console.error(err);
+        gallery.innerHTML = '<p class="error">' + esc(err.message) + '</p>';
+        gallery.classList.add("open");
+        btn.textContent = "Görselleri gizle";
+      } finally {
+        btn.disabled = false;
+        if (btn.textContent === "Yükleniyor...") btn.textContent = "Görseller";
+      }
+      return;
+    }
+    if (btn.dataset.refreshId) {
+      var card2 = btn.closest(".film-card");
+      var movieId = btn.dataset.refreshId;
+      var now = Date.now();
+      var last = refreshClickAt.get(movieId) || 0;
+      var diff = now - last;
+      if (diff < 1000) return;
+      if (diff >= 1000 && diff < 4000) {
+        refreshClickAt.set(movieId, 0);
+        btn.disabled = true; btn.textContent = "Tam yenileniyor...";
+        refreshMovie(movieId, card2, true).catch(function(err) { console.error(err); btn.textContent = "Hata"; })
+          .finally(function() { btn.disabled = false; btn.textContent = "⟳"; });
+        return;
+      }
+      refreshClickAt.set(movieId, now);
+      btn.disabled = true; btn.textContent = "Yenileniyor...";
+      refreshMovie(movieId, card2, false).catch(function(err) { console.error(err); btn.textContent = "Hata"; })
+        .finally(function() { btn.disabled = false; btn.textContent = "⟳"; });
+    }
+  });
+}
+
+async function refreshMovie(movieId, cardEl, forceAll) {
+  if (forceAll === undefined) forceAll = false;
+  var movie = window.__lastMovies && window.__lastMovies.find(function(m) { return String(m.id) === String(movieId); });
+  if (!movie) return;
+  var filters = window.__lastFilters || {};
+  var data = await runResearch([movie], filters, { refresh: true, forceAll: forceAll });
+  var updated = data[0];
+  if (!updated || !cardEl) return;
+  var wrapper = document.createElement("div");
+  wrapper.innerHTML = renderFilmCard(updated, filters);
+  cardEl.replaceWith(wrapper.firstElementChild);
+}
+
+var MS_STATE = new WeakMap();
+function msInit(root) {
+  if (MS_STATE.get(root)) return;
+  var state = { selected: new Map(), freeText: [] };
+  MS_STATE.set(root, state);
+  var box = root.querySelector(".ms-box");
+  var chips = root.querySelector(".ms-chips");
+  var input = root.querySelector(".ms-input");
+  var arrow = root.querySelector(".ms-arrow");
+  var panel = root.querySelector(".ms-panel");
+  var optionsEl = root.querySelector(".ms-options");
+  var selectAllBtn = root.querySelector(".ms-select-all");
+
+  var name = root.dataset.name;
+  var options = STATIC_OPTIONS[name] || [];
+  if (!options.length) {
+    try { options = JSON.parse(root.dataset.options || "[]"); } catch { options = []; }
+  }
+
+  var renderOptions = function() {
+    var q = norm(input.value);
+    var filtered = q ? options.filter(function(o) { return norm(o.label).indexOf(q) !== -1; }) : options;
+    optionsEl.innerHTML = filtered.map(function(o) {
+      var st = state.selected.get(String(o.id)) || "";
+      return '<div class="ms-option" data-id="' + esc(o.id) + '">' +
+        '<span>' + esc(o.label) + '</span>' +
+        '<button type="button" class="ms-check" data-id="' + esc(o.id) + '" data-state="' + st + '">' + (st === "include" ? "✓" : st === "exclude" ? "×" : "") + '</button>' +
+      '</div>';
+    }).join("");
+    if (!filtered.length) {
+      optionsEl.innerHTML = '<div class="ms-empty" style="padding:8px 10px;font-size:0.8rem;color:var(--text-muted);">Eşleşen seçenek yok. Yazdığınız değer serbest değer olarak eklenecek.</div>';
+    }
+  };
+  var renderChips = function() {
+    var items = [];
+    state.selected.forEach(function(st, id) {
+      var opt = options.find(function(o) { return String(o.id) === String(id); });
+      if (opt) items.push({ label: opt.label, id: id, st: st, free: false });
+    });
+    state.freeText.forEach(function(t) { items.push({ label: t, st: "include", free: true }); });
+    chips.innerHTML = items.map(function(it) {
+      return '<span class="ms-chip" data-state="' + it.st + '" ' + (it.free ? 'data-free="1"' : 'data-id="' + esc(it.id) + '"') + '>' +
+        esc(it.label) + '<button type="button" data-remove="1" ' + (it.free ? 'data-free="1"' : 'data-id="' + esc(it.id) + '"') + '>✕</button>' +
+      '</span>';
+    }).join("");
+  };
+  var cycle = function(c) { return c === "" ? "include" : c === "include" ? "exclude" : ""; };
+
+  optionsEl.addEventListener("click", function(e) {
+    var btn = e.target.closest(".ms-check");
+    if (!btn) return;
+    e.stopPropagation();
+    var id = String(btn.dataset.id);
+    var next = cycle(state.selected.get(id) || "");
+    if (next) state.selected.set(id, next); else state.selected.delete(id);
+    input.value = "";
+    renderOptions(); renderChips();
+  });
+  chips.addEventListener("click", function(e) {
+    var btn = e.target.closest("button[data-remove]");
+    if (!btn) return;
+    if (btn.dataset.free) {
+      var label = btn.closest(".ms-chip").childNodes[0].textContent.trim();
+      state.freeText = state.freeText.filter(function(t) { return t !== label; });
+    } else state.selected.delete(String(btn.dataset.id));
+    renderOptions(); renderChips();
+  });
+  selectAllBtn.addEventListener("click", function(e) {
+    e.stopPropagation();
+    var cur = selectAllBtn.dataset.state || "";
+    var next = cycle(cur);
+    selectAllBtn.dataset.state = next;
+    selectAllBtn.textContent = next === "include" ? "Tümünü seç ✓" : next === "exclude" ? "Tümünü seç ×" : "Tümünü seç";
+    if (!next) state.selected.clear();
+    else options.forEach(function(o) { state.selected.set(String(o.id), next); });
+    input.value = "";
+    renderOptions(); renderChips();
+  });
+  arrow.addEventListener("click", function(e) {
+    e.stopPropagation();
+    var willOpen = !panel.classList.contains("open");
+    panel.classList.toggle("open", willOpen);
+    arrow.classList.toggle("open", willOpen);
+  });
+  box.addEventListener("click", function(e) {
+    if (e.target.closest(".ms-arrow")) return;
+    if (e.target === input || !e.target.closest(".ms-chip")) {
+      if (!panel.classList.contains("open")) {
+        panel.classList.add("open");
+        arrow.classList.add("open");
+      }
+    }
+    input.focus();
+  });
+  document.addEventListener("click", function(e) {
+    if (!root.contains(e.target)) {
+      panel.classList.remove("open");
+      arrow.classList.remove("open");
+    }
+  });
+
+  input.addEventListener("input", renderOptions);
+  input.addEventListener("keydown", function(e) {
+    if (e.key !== "Enter" && e.key !== ",") return;
+    e.preventDefault();
+    var raw = input.value.trim();
+    if (!raw) return;
+    var parts = raw.split(";");
+    var inc = (parts[0] || "").split(",").map(function(t) { return t.trim(); }).filter(Boolean);
+    var exc = (parts[1] || "").split(",").map(function(t) { return t.trim(); }).filter(Boolean);
+    inc.forEach(function(tok) {
+      var opt = options.find(function(o) { return norm(o.label) === norm(tok); });
+      if (opt) state.selected.set(String(opt.id), "include");
+      else if (state.freeText.indexOf(tok) === -1) state.freeText.push(tok);
+    });
+    exc.forEach(function(tok) {
+      var opt = options.find(function(o) { return norm(o.label) === norm(tok); });
+      if (opt) state.selected.set(String(opt.id), "exclude");
+      else if (state.freeText.indexOf("!" + tok) === -1) state.freeText.push("!" + tok);
+    });
+    input.value = "";
+    renderOptions(); renderChips();
+  });
+
+  renderOptions(); renderChips();
+}
+function msGetValues(root) {
+  var st = MS_STATE.get(root);
+  if (!st) return { include: [], exclude: [] };
+  var name = root.dataset.name;
+  var options = STATIC_OPTIONS[name] || [];
+  if (!options.length) { try { options = JSON.parse(root.dataset.options || "[]"); } catch { options = []; } }
+  var include = [], exclude = [];
+  st.selected.forEach(function(s, id) {
+    var opt = options.find(function(o) { return String(o.id) === id; });
+    var label = opt ? opt.label : id;
+    if (s === "include") include.push({ id: id, label: label });
+    else if (s === "exclude") exclude.push({ id: id, label: label });
+  });
+  st.freeText.forEach(function(t) {
+    if (t.charAt(0) === "!") exclude.push({ id: null, label: t.slice(1) });
+    else include.push({ id: null, label: t });
+  });
+  return { include: include, exclude: exclude };
+}
+
+function syncRatioLabels() {
+  var pairs = [
+    ["nightRatio", "gece", "gündüz"],
+    ["indoorRatio", "iç mekân", "dış mekân"],
+    ["locationCount", "tek mekân", "çoklu mekân"],
+    ["dialogueDensity", "sessizlik", "yoğun konuşma"],
+    ["colorRatio", "siyah beyaz", "renkli"]
+  ];
+  pairs.forEach(function(p) {
+    var id = p[0], leftLabel = p[1], rightLabel = p[2];
+    var el = document.getElementById(id);
+    if (!el) return;
+    var v = Number(el.value);
+    var val = document.getElementById("val-" + id);
+    var l = document.getElementById("lbl-" + id + "-left");
+    var r = document.getElementById("lbl-" + id + "-right");
+    if (val) val.textContent = "%" + v;
+    if (l) l.textContent = leftLabel + " %" + (100 - v);
+    if (r) r.textContent = rightLabel + " %" + v;
+  });
+}
+function bindRatioToggles() {
+  var map = {
+    enableLight: "nightRatio",
+    enablePlace: "indoorRatio",
+    enablePlaceCount: "locationCount",
+    enableDialogue: "dialogueDensity",
+    enableColor: "colorRatio"
+  };
+  Object.entries(map).forEach(function(entry) {
+    var enId = entry[0], sliderId = entry[1];
+    var en = document.getElementById(enId);
+    var sl = document.getElementById(sliderId);
+    if (!en || !sl) return;
+    en.addEventListener("change", function() { sl.disabled = !en.checked; });
+    sl.addEventListener("input", syncRatioLabels);
+    sl.disabled = !en.checked;
+  });
+  syncRatioLabels();
+}
+
+var searchState = {
+  query: "",
+  page: 1,
+  totalPages: 1,
+  filters: null,
+  lastMovies: [],
+  processedIds: new Set(),
+  queue: []
+};
+
+async function fetchMoviesPage(opts) {
+  var query = opts.query, filters = opts.filters, page = opts.page;
+  if (query) {
+    var params = new URLSearchParams();
+    params.set("query", query);
+    params.set("language", "tr-TR");
+    params.set("page", String(page));
+    var res = await fetch(API_BASE + "/tmdb/search/movie?" + params.toString());
+    if (!res.ok) throw new Error("TMDB arama hatası: " + res.status);
+    var data = await res.json();
+    return { results: data.results || [], totalPages: data.total_pages || 1 };
+  } else {
+    var params2 = buildDiscoverParams(filters, page);
+    var res2 = await fetch(API_BASE + "/tmdb/discover/movie?" + params2.toString());
+    if (!res2.ok) throw new Error("TMDB discover hatası: " + res2.status);
+    var data2 = await res2.json();
+    return { results: data2.results || [], totalPages: data2.total_pages || 1 };
+  }
+}
+
+async function performSearch() {
+  var container = document.getElementById("results");
+  var qEl = document.getElementById("searchQuery");
+  var query = qEl ? qEl.value.trim() : "";
+  if (!container) return;
+
+  var filters = collectFilters();
+  var hasQuery = query.length > 0;
+  var hasFilters = Object.keys(filters).some(function(k) {
+    var v = filters[k];
+    if (v == null) return false;
+    if (typeof v === "object") return true;
+    if (typeof v === "number") return v > 0 && v !== 10;
+    return false;
+  });
+  if (!hasQuery && !hasFilters) { container.innerHTML = '<p class="error">Film adı veya en az bir filtre girin.</p>'; return; }
+
+  searchState.query = query;
+  searchState.page = 1;
+  searchState.totalPages = 1;
+  searchState.filters = filters;
+  searchState.lastMovies = [];
+  searchState.processedIds = new Set();
+  searchState.queue = [];
+
+  container.innerHTML = '<div class="progress" id="progressBox"><div class="progress-bar"><div class="progress-fill" id="progressFill" style="width:0%"></div></div><div class="progress-text" id="progressText">Hazırlanıyor...</div></div><div id="resultsList"></div><div id="moreWrap" style="text-align:center;margin-top:12px;"></div>';
+
+  await loadNextPage();
+}
+
+async function loadNextPage() {
+  var listEl = document.getElementById("resultsList");
+  var moreWrap = document.getElementById("moreWrap");
+  if (!listEl) return;
+
+  try {
+    var batch = searchState.queue.slice(0, TARGET_COUNT);
+    searchState.queue = searchState.queue.slice(TARGET_COUNT);
+
+    while (batch.length < TARGET_COUNT && searchState.page <= (searchState.totalPages || 1)) {
+      var pageData = await fetchMoviesPage({ query: searchState.query, filters: searchState.filters, page: searchState.page });
+      var tp = pageData.totalPages || 1;
+      searchState.totalPages = tp;
+      var results = pageData.results || [];
+      searchState.page += 1;
+      if (!results.length) break;
+      var fresh = results.filter(function(m) { return !searchState.processedIds.has(String(m.id)); });
+      fresh.forEach(function(m) { searchState.processedIds.add(String(m.id)); });
+      var visible = filterWatchedLocally(fresh);
+      batch = batch.concat(visible);
+    }
+
+    var toResearch = batch.slice(0, TARGET_COUNT);
+    searchState.queue = batch.slice(TARGET_COUNT);
+
+    if (toResearch.length > 0) {
+      window.__searchMovies = toResearch;
+      var researched = await runResearch(toResearch, searchState.filters, {
+        refresh: false,
+        onProgress: function(p) {
+          var fill = document.getElementById("progressFill");
+          var txt = document.getElementById("progressText");
+          if (fill) fill.style.width = p.percent + "%";
+          if (txt) txt.textContent = "%" + p.percent + " — " + p.text;
+        }
+      });
+      var passing = researched.filter(function(m) { return m.filter_match !== false; });
+      searchState.lastMovies = searchState.lastMovies.concat(passing);
+      window.__lastMovies = searchState.lastMovies;
+      window.__lastFilters = searchState.filters;
+    }
+
+    var pb = document.getElementById("progressBox");
+    if (pb) pb.remove();
+
+    if (searchState.lastMovies.length) {
+      renderFilmList(searchState.lastMovies, listEl, searchState.filters);
+    } else {
+      listEl.innerHTML = '<p class="empty">Sonuç bulunamadı.</p>';
+    }
+
+    if (moreWrap) {
+      moreWrap.innerHTML = '<button type="button" id="moreBtn" class="more-btn">Aramayı sürdür</button>';
+      var mb = document.getElementById("moreBtn");
+      if (mb) mb.addEventListener("click", async function() {
+        if (searchState.queue.length === 0 && searchState.page > (searchState.totalPages || 1)) {
+          searchState.page = 1;
+        }
+        var btn = document.getElementById("moreBtn");
+        if (btn) { btn.disabled = true; btn.textContent = "Yükleniyor..."; }
+        await loadNextPage();
+      });
+    }
+  } catch (e) {
+    console.error(e);
+    var pb2 = document.getElementById("progressBox");
+    if (pb2) pb2.remove();
+    if (listEl) listEl.insertAdjacentHTML("beforeend", '<p class="error">' + esc(e.message) + '</p>');
+    if (moreWrap) {
+      moreWrap.innerHTML = '<button type="button" id="moreBtn" class="more-btn">Aramayı sürdür</button>';
+      var mb2 = document.getElementById("moreBtn");
+      if (mb2) mb2.addEventListener("click", async function() {
+        if (searchState.queue.length === 0 && searchState.page > (searchState.totalPages || 1)) {
+          searchState.page = 1;
+        }
+        await loadNextPage();
+      });
+    }
+  }
+}
+
+function clearAllFilters() {
+  document.querySelectorAll("[data-ms]").forEach(function(root) {
+    var st = MS_STATE.get(root);
+    if (st) { st.selected.clear(); st.freeText = []; }
+    var chips = root.querySelector(".ms-chips");
+    if (chips) chips.innerHTML = "";
+    var opts = root.querySelector(".ms-options");
+    if (opts) opts.querySelectorAll(".ms-check").forEach(function(b) { b.dataset.state = ""; b.textContent = ""; });
+    var sel = root.querySelector(".ms-select-all");
+    if (sel) { sel.dataset.state = ""; sel.textContent = "Tümünü seç"; }
+    var conf = root.querySelector(".ms-conflict");
+    if (conf) conf.checked = false;
+    var panel = root.querySelector(".ms-panel");
+    if (panel) panel.classList.remove("open");
+    var arrow = root.querySelector(".ms-arrow");
+    if (arrow) arrow.classList.remove("open");
+    var inp = root.querySelector(".ms-input");
+    if (inp) inp.value = "";
+  });
+  ["imdbMin","tmdbMin","imdbVotesMin","tmdbVotesMin"].forEach(function(id) { var el = document.getElementById(id); if (el) el.value = "0"; });
+  ["imdbMax","tmdbMax"].forEach(function(id) { var el = document.getElementById(id); if (el) el.value = "10"; });
+  ["yearMin","yearMax","runtimeMin","runtimeMax","charMainMin","charMainMax","charSuppMin","charSuppMax","charExtraMin","charExtraMax"].forEach(function(id) { var el = document.getElementById(id); if (el) el.value = ""; });
+  ["nightRatio","indoorRatio","locationCount","dialogueDensity","colorRatio"].forEach(function(id) { var el = document.getElementById(id); if (el) { el.value = "50"; el.disabled = true; } });
+  ["enableLight","enablePlace","enablePlaceCount","enableDialogue","enableColor"].forEach(function(id) { var el = document.getElementById(id); if (el) el.checked = false; });
+  document.querySelectorAll("[data-family-key]").forEach(function(el) {
+    el.querySelectorAll('input[type="radio"]').forEach(function(r) { r.checked = false; r.dataset.wasChecked = ""; });
+    var inv = el.querySelector(".family-invisible-check"); if (inv) inv.checked = false;
+  });
+  syncSexDetails();
+  syncRatioLabels();
+  var q = document.getElementById("searchQuery"); if (q) q.value = "";
+  var r = document.getElementById("results"); if (r) r.innerHTML = "";
+  searchState.lastMovies = [];
+  searchState.page = 1;
+  searchState.totalPages = 1;
+  searchState.processedIds = new Set();
+  searchState.queue = [];
+}
+
+document.addEventListener("DOMContentLoaded", async function() {
+  renderFamilyGuide();
+
+  var fillOptions = async function(name, endpoint, mapper) {
+    var root = document.querySelector('[data-ms][data-name="' + name + '"]');
+    if (!root) return;
+    try {
+      var res = await fetch(API_BASE + endpoint);
+      if (!res.ok) return;
+      var data = await res.json();
+      STATIC_OPTIONS[name] = mapper(data);
+    } catch (e) { console.warn(name + " listesi:", e.message); }
+  };
+  await Promise.all([
+    fillOptions("genres", "/tmdb/genre/movie/list?language=tr-TR", function(d) { return (d.genres || []).map(function(g) { return { id: g.id, label: g.name }; }); }),
+    fillOptions("original_language", "/tmdb/configuration/languages", function(d) { return (d || []).map(function(l) { return { id: l.iso_639_1, label: l.turkish_name || l.english_name || l.name }; }); }),
+    fillOptions("production_countries", "/tmdb/configuration/countries?language=tr-TR", function(d) { return (d || []).map(function(c) { return { id: c.iso_3166_1, label: c.native_name || c.english_name || c.iso_3166_1 }; }); })
+  ]);
+
+  if (STATIC_OPTIONS.production_countries) {
+    var regions = STATIC_OPTIONS.production_countries.map(function(c) { return { id: c.id, label: c.label }; });
+    regions.push({ id: "__studio__", label: "Stüdyo" });
+    STATIC_OPTIONS.story_locations = regions;
+    STATIC_OPTIONS.filming_locations = regions;
+  }
+
+  document.querySelectorAll("[data-ms]").forEach(msInit);
+  bindRatioToggles();
+  var uw = document.getElementById("useWebResearch"); if (uw) uw.addEventListener("change", updateModeHint);
+  var ua = document.getElementById("useAI"); if (ua) ua.addEventListener("change", updateModeHint);
+  updateModeHint();
+
+  var csvInput = document.getElementById("csvWatched");
+  var csvClear = document.getElementById("csvClear");
+  var csvStatus = document.getElementById("csvStatus");
+  if (csvInput) {
+    csvInput.addEventListener("change", function(e) {
+      var file = e.target.files && e.target.files[0];
+      if (!file) return;
+      var reader = new FileReader();
+      reader.onload = function() {
+        try {
+          watchedList = parseWatchedCSV(String(reader.result || ""));
+          if (csvStatus) csvStatus.textContent = watchedList.length + " izlenen film yüklendi.";
+          if (csvClear) csvClear.style.display = "inline-block";
+        } catch (err) {
+          if (csvStatus) csvStatus.textContent = "CSV hatası: " + err.message;
+          if (csvClear) csvClear.style.display = "none";
+        }
+      };
+      reader.onerror = function() { if (csvStatus) csvStatus.textContent = "CSV okunamadı."; };
+      reader.readAsText(file, "UTF-8");
+    });
+  }
+  if (csvClear) {
+    csvClear.addEventListener("click", function() {
+      watchedList = [];
+      if (csvInput) csvInput.value = "";
+      if (csvStatus) csvStatus.textContent = "CSV yüklenmedi.";
+      csvClear.style.display = "none";
+    });
+  }
+
+  var resultsContainer = document.getElementById("results");
+  if (resultsContainer) bindFilmCardEvents(resultsContainer);
+  var sb = document.getElementById("searchBtn"); if (sb) sb.addEventListener("click", performSearch);
+  var sq = document.getElementById("searchQuery");
+  if (sq) sq.addEventListener("keydown", function(e) { if (e.key === "Enter") performSearch(); });
+  var ca = document.getElementById("clearAllBtn"); if (ca) ca.addEventListener("click", clearAllFilters);
+});
+//]]>
+</script>
+
+</body>
+</html>

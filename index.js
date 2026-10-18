@@ -117,22 +117,19 @@ async function omdb(env, params) {
   return data;
 }
 
-// ---------- Wikidata: toplu sorgu ----------
+// ---------- Wikidata: toplu sorgu (sadeleştirilmiş) ----------
 function buildWikidataBatchQuery(movies) {
   const rows = movies.map(m => {
     const title = (m.original_title || m.title || "").replace(/\\/g, "\\\\").replace(/"/g, '\\"');
-    const year = yearOf(m);
-    return `("${title}" ${year || 0} ${m.id})`;
+    return `("${title}" ${m.id})`;
   }).join(" ");
   return `
-SELECT ?movieId ?item ?itemLabel ?itemDescription ?originalWorkLabel ?filmingLocationLabel WHERE {
-  VALUES (?title ?year ?movieId) { ${rows} }
+SELECT ?movieId ?item ?itemLabel ?originalWorkLabel ?filmingLocationLabel WHERE {
+  VALUES (?title ?movieId) { ${rows} }
   ?item wdt:P31 wd:Q11424; rdfs:label ?label.
   FILTER(LANG(?label)="en" && LCASE(STR(?label))=LCASE(?title))
-  OPTIONAL {?item wdt:P577 ?date. FILTER(!BOUND(?date) || YEAR(?date) >= ?year - 1 && YEAR(?date) <= ?year + 1)}
   OPTIONAL {?item wdt:P144 ?originalWork.}
   OPTIONAL {?item wdt:P915 ?filmingLocation.}
-  OPTIONAL {?item schema:description ?itemDescription. FILTER(LANG(?itemDescription)="en")}
   SERVICE wikibase:label { bd:serviceParam wikibase:language "en,tr". }
 }
 LIMIT 200`;
@@ -146,7 +143,7 @@ async function wikidataBatch(env, movies) {
   try {
     const data = await fetchJSON(url, {
       headers: { "Accept": "application/sparql-results+json", "User-Agent": "FilmKesifMotoru/1.0" }
-    }, "Wikidata", 10000);
+    }, "Wikidata", 40000);
     const bindings = data.results?.bindings || [];
     const byId = new Map();
     for (const b of bindings) {
@@ -201,14 +198,12 @@ async function tavily(env, query) {
 function extractText(data) {
   if (typeof data?.output_text === "string") return data.output_text;
   if (typeof data?.text === "string") return data.text;
-  // generateContent biçimi
   const cand = data?.candidates?.[0];
   if (cand) {
     const parts = cand?.content?.parts || [];
     const texts = parts.map(p => (typeof p?.text === "string" ? p.text : "")).filter(Boolean);
     if (texts.length) return texts.join("\n");
   }
-  // Interactions biçimi
   const outputs = data?.outputs || data?.output || [];
   const list = Array.isArray(outputs) ? outputs : [outputs];
   const texts = [];
@@ -256,7 +251,10 @@ async function callInteractions(env, key, model, prompt, useThinkingLow) {
     body: JSON.stringify(body)
   }, `Gemini Interactions ${model}`, 60000);
   const text = extractText(data);
-  if (!text) throw new Error(`Gemini Interactions ${model} yanıtında metin yok.`);
+  if (!text) {
+    console.warn(`gemini: interactions ${model} yanıtında metin yok — gövde: ${JSON.stringify(data).slice(0, 2000)}`);
+    throw new Error(`Gemini Interactions ${model} yanıtında metin yok.`);
+  }
   return text;
 }
 
@@ -268,7 +266,10 @@ async function callGenerateContent(env, key, model, prompt) {
     body: JSON.stringify({ contents: [{ parts: [{ text: prompt }] }] })
   }, `Gemini generateContent ${model}`, 60000);
   const text = extractText(data);
-  if (!text) throw new Error(`Gemini generateContent ${model} yanıtında metin yok.`);
+  if (!text) {
+    console.warn(`gemini: generateContent ${model} yanıtında metin yok — gövde: ${JSON.stringify(data).slice(0, 2000)}`);
+    throw new Error(`Gemini generateContent ${model} yanıtında metin yok.`);
+  }
   return text;
 }
 
@@ -286,25 +287,20 @@ async function callGemini(env, prompt) {
     for (const { key, index } of keys) {
       if (exhaustedKeys.has(index)) continue;
 
-      // 1) Interactions API (thinking_level: low)
       try {
         const text = await callInteractions(env, key, model, prompt, true);
-        console.log(`gemini: model=${model} key=${index} interactions başarılı`);
         return text;
       } catch (e) {
         const msg = String(e.message || e);
         if (/thinking_level|unknown field|invalid argument|unknown name/i.test(msg)) {
-          // thinking_level desteklenmiyor; aynı model/anahtarla alansız dene
           try {
             const text = await callInteractions(env, key, model, prompt, false);
-            console.log(`gemini: model=${model} key=${index} interactions başarılı (thinking_level yok)`);
             return text;
           } catch (e2) {
             const m2 = String(e2.message || e2);
             errors.push(`interactions model=${model} key=${index}: ${m2}`);
             console.warn(`gemini: interactions model=${model} key=${index} başarısız — ${m2}`);
             if (/429|quota|rate.?limit|exceeded/i.test(m2)) exhaustedKeys.add(index);
-            // generateContent'e düş
           }
         } else {
           errors.push(`interactions model=${model} key=${index}: ${msg}`);
@@ -315,10 +311,8 @@ async function callGemini(env, prompt) {
 
       if (exhaustedKeys.has(index)) continue;
 
-      // 2) generateContent (klasik uç nokta)
       try {
         const text = await callGenerateContent(env, key, model, prompt);
-        console.log(`gemini: model=${model} key=${index} generateContent başarılı`);
         return text;
       } catch (e) {
         const msg = String(e.message || e);
@@ -392,7 +386,7 @@ async function enrichClassic(env, movie, staleFields, settings, filters) {
   const need = new Set(staleFields);
   const updates = {};
   const covered = new Set();
-  let webAvailable = false;
+  let webAvailable = null;
 
   const tmdbNeeded = ["genres", "spoken_languages", "production_countries", "runtime"].filter(f => need.has(f));
   if (tmdbNeeded.length && movie.id) {
@@ -437,6 +431,7 @@ async function enrichClassic(env, movie, staleFields, settings, filters) {
 
   const remainingAfterClassic = [...need].filter(f => !covered.has(f));
   if (settings.useWebResearch && remainingAfterClassic.length) {
+    webAvailable = false;
     try {
       const freeTerms = [];
       const f = filters || {};
@@ -589,7 +584,7 @@ async function handleResearchStream(env, body, controller) {
     if (!profile.release_date && movie.release_date) profile.release_date = movie.release_date;
 
     const stale = findStaleFields(profile, fieldRows, forceRefresh);
-    prepared.push({ movie, movieId, profile, stale, webAvailable: false, aiNeeded: [] });
+    prepared.push({ movie, movieId, profile, stale, webAvailable: null, aiNeeded: [] });
   }
 
   for (let i = 0; i < prepared.length; i++) {

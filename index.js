@@ -184,31 +184,49 @@ function extractText(data) {
   }
   return texts.join("\n");
 }
+
+// Yedek anahtara geçilmesi gereken durumları yakalayan geniş kontrol.
+// HTTP durum kodu ne olursa olsun; kota, limit, geçici hata, kimlik doğrulama
+// ve ağ hatalarında sıradaki anahtar denenir.
+function isKeyRetryable(msg) {
+  const m = String(msg || "").toLowerCase();
+  return /(http\s*(401|403|408|409|425|429|500|502|503|504))/.test(m)
+    || /quota|rate.?limit|resource.?exhausted|too many requests|exceeded/.test(m)
+    || /temporar|timeout|timed out|network|fetch failed|connection|econn|socket|abort/.test(m)
+    || /api.?key|permission|unauthor|forbidden|invalid.?key|not.?authorized/.test(m);
+}
+
 async function callGemini(env, prompt) {
   const keys = [env.GEMINI_API_KEY_1, env.GEMINI_API_KEY_2, env.GEMINI_API_KEY_3].filter(Boolean);
   if (!keys.length) throw new Error("GEMINI_API_KEY_1/2/3 Secret'larından en az biri gerekli.");
   const model = env.GEMINI_MODEL || MODEL_DEFAULT;
-  let lastError;
+  const errors = [];
   for (let i = 0; i < keys.length; i++) {
+    const keyIndex = i + 1;
     try {
       const data = await fetchJSON(GOOGLE_INTERACTIONS, {
         method: "POST",
         headers: { "Content-Type": "application/json", "x-goog-api-key": keys[i] },
         body: JSON.stringify({ model, input: prompt })
-      }, "Gemini Interactions");
+      }, `Gemini Interactions (key ${keyIndex})`);
       const text = extractText(data);
-      if (!text) throw new Error("Gemini yanıtında metin bulunamadı.");
+      if (!text) throw new Error(`Gemini yanıtında metin bulunamadı (key ${keyIndex}).`);
+      console.log(`gemini: key ${keyIndex} başarılı`);
       return text;
     } catch (e) {
-      lastError = e;
       const msg = String(e.message || e);
-      const retryable = /HTTP (429|500|502|503|504)|quota|rate.?limit|temporar/i.test(msg);
-      if (!retryable) throw e;
-      if (i < keys.length - 1) await wait(1200 * (i + 1));
+      errors.push(`key${keyIndex}: ${msg}`);
+      console.warn(`gemini: key ${keyIndex} başarısız — ${msg}`);
+      if (!isKeyRetryable(msg)) {
+        // Bu hata anahtarla ilgili değilse (ör. prompt biçimi) diğer anahtarları denemek anlamsız.
+        throw new Error(errors.join(" | "));
+      }
+      if (i < keys.length - 1) await wait(800 * (i + 1));
     }
   }
-  throw lastError || new Error("Gemini isteği başarısız.");
+  throw new Error(`Gemini tüm anahtarlarda başarısız: ${errors.join(" | ")}`);
 }
+
 function extractJSON(text) {
   const clean = String(text).replace(/^```(?:json)?\s*/i, "").replace(/\s*```$/,"").trim();
   const start = clean.indexOf("{"), end = clean.lastIndexOf("}");

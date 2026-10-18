@@ -1,10 +1,17 @@
 const API_BASE = "https://film-proxy.stavaft.workers.dev";
-const TARGET_COUNT = 18;
+const TARGET_COUNT = 5;
 
 function esc(s) {
   return String(s ?? "").replace(/&/g, "&amp;").replace(/</g, "&lt;").replace(/>/g, "&gt;").replace(/"/g, "&quot;").replace(/'/g, "&#39;");
 }
-function norm(s) { return String(s || "").trim().toLowerCase().replace(/\s+/g, " "); }
+function norm(s) {
+  return String(s || "").trim().toLowerCase()
+    .replace(/İ/g, "i").replace(/I/g, "ı")
+    .replace(/Ş/g, "ş").replace(/Ğ/g, "ğ")
+    .replace(/Ü/g, "ü").replace(/Ö/g, "ö").replace(/Ç/g, "ç")
+    .replace(/Â/g, "a").replace(/Î/g, "i").replace(/Û/g, "u")
+    .replace(/\s+/g, " ");
+}
 function yearOf(m) { return Number(String(m.release_date || "").slice(0, 4)) || Number(m.year) || null; }
 function formatVotes(v) {
   if (v == null) return "";
@@ -13,7 +20,7 @@ function formatVotes(v) {
   return n >= 1000 ? `${(n / 1000).toFixed(n >= 10000 ? 0 : 1)}B` : String(n);
 }
 function posterUrl(m, size = "w342") {
-  const p = m.poster_path || m.poster || "";
+  const p = m.original_poster_path || m.poster_path || m.poster || "";
   if (!p) return "";
   if (p.startsWith("http")) return p;
   return `https://image.tmdb.org/t/p/${size}${p}`;
@@ -21,6 +28,23 @@ function posterUrl(m, size = "w342") {
 function googleUrl(title, year) {
   const q = `${title || ""} ${year || ""}`.trim();
   return `https://www.google.com/search?q=${encodeURIComponent(q)}`;
+}
+function profileUrl(path, size = "w45") {
+  if (!path) return "";
+  return `https://image.tmdb.org/t/p/${size}${path}`;
+}
+const COUNTRY_ABBR = {
+  "united states of america": "USA", "amerika birleşik devletleri": "ABD",
+  "united states": "USA", "abd": "ABD",
+  "united kingdom": "UK", "birleşik krallık": "UK",
+  "russian federation": "Rusya", "rusya federasyonu": "Rusya",
+  "south korea": "Güney Kore", "güney kore": "Güney Kore",
+  "north korea": "Kuzey Kore", "kuzey kore": "Kuzey Kore",
+  "czech republic": "Çekya", "çek cumhuriyeti": "Çekya"
+};
+function shortCountry(name) {
+  const n = norm(name);
+  return COUNTRY_ABBR[n] || name;
 }
 
 const STATIC_OPTIONS = {
@@ -37,7 +61,7 @@ const STATIC_OPTIONS = {
     { id: "city", label: "Şehir" }, { id: "town", label: "Kasaba" }, { id: "village", label: "Köy" },
     { id: "mountain", label: "Dağlık ve yüksek kesimler" }, { id: "desert", label: "Çöl" }, { id: "steppe", label: "Bozkır" },
     { id: "forest", label: "Orman" }, { id: "seaside", label: "Deniz kenarı" }, { id: "riverside", label: "Nehir kenarı" },
-    { id: "opensea", label: "Açık deniz" }, { id: "air", label: "Hava" }, { id: "space", label: "Dünya dışı" }
+    { id: "opensea", label: "Açık deniz" }, { id: "air", label: "Hava" }
   ],
   season: [
     { id: "spring", label: "İlkbahar" }, { id: "summer", label: "Yaz" },
@@ -164,7 +188,7 @@ function renderFamilyGuide() {
       ${t.key === "sex_nudity" ? `
         <div class="ms" data-ms data-name="sex_details">
           <span class="ms-label">Diğer şeyler</span>
-          <div class="ms-box"><div class="ms-chips-and-input"><div class="ms-chips"></div><input class="ms-input" type="text" placeholder="Ayrıntı ara veya yaz..."></div><button type="button" class="ms-arrow">▼</button></div>
+          <div class="ms-box"><div class="ms-chips"></div><input class="ms-input" type="text" placeholder="Ayrıntı ara veya yaz..."><button type="button" class="ms-arrow">▼</button></div>
           <div class="ms-panel"><div class="ms-panel-head"><button type="button" class="ms-select-all" data-state="">Tümünü seç</button></div><div class="ms-options"></div><div class="ms-suggestions"></div></div>
           <div class="ms-extra"><label><input type="checkbox" class="ms-conflict"> Çakışan filmleri dahil et</label></div>
         </div>
@@ -231,15 +255,20 @@ function parseWatchedCSV(text) {
 }
 function filterWatchedLocally(movies) {
   if (!watchedList.length) return movies;
-  const key = (t, y) => `${norm(t)}|${y || 0}`;
-  const set = new Set(watchedList.map(w => key(w.originalTitle, w.year)));
-  return movies.filter(m => !set.has(key(m.original_title || m.title, yearOf(m))));
+  const titleKey = (t, y) => `${norm(t)}|${y || 0}`;
+  const titleSet = new Set(watchedList.map(w => titleKey(w.originalTitle, w.year)));
+  const imdbSet = new Set(watchedList.filter(w => w.imdbId).map(w => w.imdbId));
+  return movies.filter(m => {
+    if (m.imdb_id && imdbSet.has(m.imdb_id)) return false;
+    if (m.imdbID && imdbSet.has(m.imdbID)) return false;
+    return !titleSet.has(titleKey(m.original_title || m.title, yearOf(m)));
+  });
 }
 function verifyWatched(result) {
-  const w = watchedList.find(x => x.imdbId && x.imdbId === result.imdbID);
+  const w = watchedList.find(x => x.imdbId && (x.imdbId === result.imdbID || x.imdbId === result.imdb_id));
   if (!w) return { verified: false, reason: "IMDb ID eşleşmedi" };
   if (w.directors) {
-    const a = norm(result.directors || "");
+    const a = norm(result.omdb_directors || "");
     const b = norm(w.directors);
     if (a && !a.includes(b.split(",")[0].trim())) return { verified: false, reason: "Yönetmen eşleşmedi" };
   }
@@ -324,16 +353,16 @@ function buildDiscoverParams(filters, page) {
   params.set("language", "tr-TR");
   params.set("page", String(page || 1));
   params.set("include_adult", "false");
+  params.set("sort_by", "vote_average.desc");
 
-  const votesActive = (filters.tmdbVotesMin != null && filters.tmdbVotesMin > 0) || (filters.imdbVotesMin != null && filters.imdbVotesMin > 0);
-  params.set("sort_by", votesActive ? "vote_average.desc" : "popularity.desc");
-  if (votesActive) {
-    const vc = Math.max(filters.tmdbVotesMin || 0, filters.imdbVotesMin || 0);
-    if (vc > 0) params.set("vote_count.gte", String(vc));
-  }
+  const vc = filters.tmdbVotesMin > 0
+    ? filters.tmdbVotesMin
+    : filters.imdbVotesMin > 0
+      ? Math.max(200, Math.round(filters.imdbVotesMin / 10))
+      : 200;
+  params.set("vote_count.gte", String(vc));
 
-  const validId = (id) => id != null && id !== "" && id !== "__space__";
-
+  const validId = (id) => id != null && id !== "" && id !== "__space__" && id !== "__studio__";
   if (filters.genres?.include?.length) {
     const ids = filters.genres.include.map(g => g.id).filter(validId);
     if (ids.length) params.set("with_genres", ids.join(","));
@@ -361,12 +390,12 @@ function buildDiscoverParams(filters, page) {
   return params;
 }
 
-async function runResearch(movies, filters, { refresh = false, onProgress } = {}) {
+async function runResearch(movies, filters, { refresh = false, forceAll = false, onProgress } = {}) {
   const { useWebResearch, useAI } = currentMode();
   const res = await fetch(`${API_BASE}/research`, {
     method: "POST",
     headers: { "Content-Type": "application/json", "Accept": "text/event-stream" },
-    body: JSON.stringify({ movies: movies.slice(0, TARGET_COUNT), filters, useWebResearch, useAI, refresh })
+    body: JSON.stringify({ movies: movies.slice(0, TARGET_COUNT), filters, useWebResearch, useAI, refresh, forceAll })
   });
   if (!res.ok || !res.body) {
     const err = await res.json().catch(() => ({}));
@@ -411,19 +440,61 @@ async function runResearch(movies, filters, { refresh = false, onProgress } = {}
   return collected.map(m => ({ ...m, ai_requested: useAI, web_requested: useWebResearch }));
 }
 
+function nameLink(name, profilePath) {
+  if (profilePath) {
+    const src = profileUrl(profilePath);
+    return `<a href="#" class="person-link" data-person-src="${esc(src)}" data-person-name="${esc(name)}">${esc(name)}</a>`;
+  }
+  return esc(name);
+}
+function personList(items, includeProfile = true) {
+  if (!Array.isArray(items) || !items.length) return "";
+  return items.map(it => {
+    if (typeof it === "string") return esc(it);
+    return includeProfile ? nameLink(it.name, it.profile_path) : esc(it.name);
+  }).filter(Boolean).join(", ");
+}
+
 function renderFilmCard(m, filters = {}) {
   const original = m.original_title || m.title || "Bilinmeyen Film";
   const trTitle = m.title && m.title !== m.original_title ? m.title : "";
   const year = yearOf(m);
   const imdb = m.imdbRating || null;
   const votes = formatVotes(m.imdbVotes);
-  const genres = Array.isArray(m.genres) ? m.genres.map(g => g.name || g).join(", ") : "";
-  const countries = Array.isArray(m.production_countries) ? m.production_countries.map(c => c.name || c).join(", ") : "";
-  const langs = Array.isArray(m.spoken_languages) ? m.spoken_languages.map(l => l.name || l).join(", ") : "";
+  const genres = Array.isArray(m.genres) ? m.genres.join(", ") : "";
+  const countries = Array.isArray(m.production_countries) ? m.production_countries.map(shortCountry).join(", ") : "";
+  const langs = Array.isArray(m.spoken_languages) ? m.spoken_languages.join(", ") : "";
+
+  const directors = Array.isArray(m.director) && m.director.length
+    ? m.director
+    : (m.omdb_directors ? m.omdb_directors.split(",").map(s => ({ name: s.trim(), profile_path: null })) : []);
+  const writers = Array.isArray(m.writers) ? m.writers : [];
+  const actors = Array.isArray(m.cast) && m.cast.length
+    ? m.cast
+    : (Array.isArray(m.omdb_actors) ? m.omdb_actors.map(n => ({ name: n, profile_path: null })) : []);
+  const producers = Array.isArray(m.producers) ? m.producers : [];
+  const companies = Array.isArray(m.production_companies) ? m.production_companies : [];
+
+  const topRows = [];
+  if (year) topRows.push(`<span class="film-year">${esc(year)}</span>`);
+  if (imdb) topRows.push(`<span class="imdb-rating">IMDb ${esc(imdb)}${votes ? ` <span class="imdb-votes">(${esc(votes)} oy)</span>` : ""}</span>`);
+  if (genres) topRows.push(`<span class="film-genres">${esc(genres)}</span>`);
+  if (m.runtime != null) topRows.push(`<span class="film-runtime">${esc(m.runtime)} dk</span>`);
+  if (directors.length) topRows.push(`<span class="film-director">Yönetmen: ${personList(directors)}</span>`);
+  if (countries) topRows.push(`<span class="film-countries">${esc(countries)}</span>`);
 
   const detailRows = [
+    ["Dil", langs || null],
+    ["Senarist", writers.length ? personList(writers) : null],
+    ["Oyuncular", actors.length ? personList(actors) : null],
+    ["Yapımcı", producers.length ? personList(producers) : null],
+    ["Yapım Şirketi", companies.length ? companies.map(esc).join(", ") : null],
     ["TMDB Puanı", m.vote_average != null ? Number(m.vote_average).toFixed(1) : null],
-    ["Süre", m.runtime != null ? `${m.runtime} dk` : null],
+    ["TMDB Oy", m.vote_count != null ? String(m.vote_count) : null],
+    ["Yaş Sınırı", m.rated ?? null],
+    ["Ödüller", m.awards ?? null],
+    ["Metascore", m.metascore ?? null],
+    ["Hasılat", m.boxOffice ?? null],
     ["Gece / Gündüz", m.night_ratio != null ? `${m.night_ratio}% / ${m.day_ratio ?? (100 - m.night_ratio)}%` : null],
     ["İç / Dış Mekân", m.indoor_ratio != null ? `${m.indoor_ratio}% / ${100 - m.indoor_ratio}%` : null],
     ["Mekân Sayısı", m.location_count ?? null],
@@ -434,68 +505,106 @@ function renderFilmCard(m, filters = {}) {
     ["Hikâye Yeri", Array.isArray(m.story_locations) ? m.story_locations.join(", ") : null],
     ["Çekim Yeri", Array.isArray(m.filming_locations) && m.filming_locations.length ? m.filming_locations.join(", ") : null],
     ["Özgün Eser", m.original_work ?? null],
-    ["İlişkili Filmler", Array.isArray(m.related_films) && m.related_films.length ? m.related_films.join(", ") : null],
-    ["Filtre Eşleşmesi", m.filter_match === true ? "Uyuyor" : m.filter_match === false ? "Uymuyor" : null],
-    ["Filtre Notları", Array.isArray(m.filter_reasons) && m.filter_reasons.length ? m.filter_reasons.join("; ") : null],
-    ["Bilinmeyen Alan", m.unknown ? "Bazı alanlar değerlendirilemedi (mod kapalı olabilir)" : null]
+    ["İlişkili Filmler", Array.isArray(m.related_films) && m.related_films.length ? m.related_films.join(", ") : null]
   ].filter(([, v]) => v !== null && v !== undefined && v !== "");
 
-  const detailsHtml = detailRows.map(([label, value]) => `<div class="detail-row"><span class="label">${esc(label)}</span><span class="value">${esc(value)}</span></div>`).join("");
-  const overview = m.overview || m.summary || "";
-  const overviewHtml = overview ? `<div class="film-overview" id="ov-${esc(m.id)}"><p>${esc(overview)}</p></div>` : "";
-  const images = Array.isArray(m.commons_images) ? m.commons_images.slice(0, 10) : [];
-  const imagesHtml = images.length ? `
-    <div class="film-gallery" id="gal-${esc(m.id)}">
-      ${images.map(img => `<a href="${esc(img.pageUrl || img.url)}" target="_blank" rel="noopener"><img src="${esc(img.url)}" alt="${esc(img.title || "")}" loading="lazy"></a>`).join("")}
-    </div>` : "";
+  const detailHtml = detailRows.map(([label, value]) => `<div class="detail-row"><span class="label">${esc(label)}</span><span class="value">${esc(value)}</span></div>`).join("");
+  const overview = m.overview || "";
+  const overviewHtml = overview ? `<div class="film-overview"><p>${esc(overview)}</p></div>` : "";
   const poster = posterUrl(m);
+  const gUrl = googleUrl(original, year);
   const watchedInfo = verifyWatched(m);
   const watchedBadge = watchedInfo.verified ? `<div class="film-watched-badge">İzlendi olarak doğrulandı (${esc(watchedInfo.reason)})</div>` : "";
-  const unknownClass = m.unknown ? " film-card--unknown" : "";
-  const gUrl = googleUrl(original, year);
-
-  const notes = [];
-  if (m.ai_requested && m.ai_available === false) notes.push("AI analizi şu an kullanılamıyor; sonuçlar sabit kaynaklardan gösteriliyor.");
-  if (m.web_requested && m.web_available === false) notes.push("Web araştırması şu an kullanılamıyor; sonuçlar sabit kaynaklardan gösteriliyor.");
-  const availabilityNote = notes.length ? `<div class="film-note">${notes.map(esc).join(" ")}</div>` : "";
 
   return `
-    <article class="film-card${unknownClass}" data-movie-id="${esc(m.id)}">
-      <a class="film-poster-link" href="${esc(gUrl)}" target="_blank" rel="noopener">
-        ${poster ? `<img class="film-poster" src="${esc(poster)}" alt="${esc(original)} posteri" loading="lazy">` : `<div class="film-poster" aria-hidden="true"></div>`}
-      </a>
-      <div class="film-info">
-        <button type="button" class="film-refresh" data-refresh-id="${esc(m.id)}" title="Yenile" aria-label="Yenile">⟳</button>
-        <h3 class="film-title">
-          <a href="${esc(gUrl)}" target="_blank" rel="noopener">${esc(original)}</a>
-          ${trTitle ? ` <span class="tr-title">(${esc(trTitle)})</span>` : ""}
-        </h3>
-        <div class="film-meta-line">
-          ${year ? `<span class="film-year">${esc(year)}</span>` : ""}
-          ${imdb ? `<span class="imdb-rating">IMDb ${esc(imdb)}</span>${votes ? ` <span class="imdb-votes">(${esc(votes)} oy)</span>` : ""}` : ""}
+    <article class="film-card" data-movie-id="${esc(m.id)}">
+      <button type="button" class="film-refresh" data-refresh-id="${esc(m.id)}" title="Yenile" aria-label="Yenile">⟳</button>
+      <div class="film-top">
+        <div class="film-poster-wrap">
+          ${poster
+            ? `<img class="film-poster" src="${esc(poster)}" alt="${esc(original)} posteri" loading="lazy" data-full-src="${esc(posterUrl(m, "w780"))}" data-poster="1">`
+            : `<div class="film-poster" aria-hidden="true"></div>`}
         </div>
-        ${genres ? `<div class="film-genres">${esc(genres)}</div>` : ""}
-        ${countries ? `<div class="film-countries">${esc(countries)}</div>` : ""}
-        ${langs ? `<div class="film-languages">${esc(langs)}</div>` : ""}
-        ${watchedBadge}
-        ${availabilityNote}
+        <div class="film-top-info">
+          <h3 class="film-title">
+            <a href="${esc(gUrl)}" target="_blank" rel="noopener">${esc(original)}</a>
+          </h3>
+          ${trTitle ? `<div class="film-title-tr">${esc(trTitle)}</div>` : ""}
+          <div class="film-meta-line">${topRows.join("")}</div>
+          ${watchedBadge}
+        </div>
+      </div>
+      <div class="film-bottom">
         <div class="film-actions">
           <button type="button" data-toggle="details" data-target="det-${esc(m.id)}">Daha fazla</button>
-          ${overview ? `<button type="button" data-toggle="overview" data-target="ov-${esc(m.id)}">Özeti göster</button>` : ""}
-          ${images.length ? `<button type="button" data-toggle="gallery" data-target="gal-${esc(m.id)}">Görseller</button>` : ""}
+          <button type="button" data-images-id="${esc(m.id)}" data-images-title="${esc(original)}" data-images-original="${esc(m.original_title || original)}">Görseller</button>
         </div>
-        <div class="film-details" id="det-${esc(m.id)}">${detailsHtml}</div>
-        ${overviewHtml}
-        ${imagesHtml}
+        <div class="film-gallery" id="gal-${esc(m.id)}"></div>
+        <div class="film-details" id="det-${esc(m.id)}">
+          ${detailHtml}
+          ${overviewHtml}
+        </div>
       </div>
     </article>`;
 }
+
 function renderFilmList(movies, container, filters = {}) {
-  container.innerHTML = movies.length ? movies.map(m => renderFilmCard(m, filters)).join("") : `<p class="empty">Sonuç bulunamadı.</p>`;
+  if (!movies.length) {
+    container.innerHTML = `<p class="empty">Sonuç bulunamadı.</p>`;
+    return;
+  }
+  const aiRequested = movies.some(m => m.ai_requested);
+  const aiAny = movies.some(m => m.ai_available === true);
+  const webRequested = movies.some(m => m.web_requested);
+  const webAny = movies.some(m => m.web_available === true);
+  const notes = [];
+  if (aiRequested && !aiAny) notes.push("YZ devre dışı.");
+  if (webRequested && !webAny) notes.push("Arama servisi devre dışı.");
+  if (movies.some(m => m.unknown)) notes.push("Bazı alanlar bilinmiyor.");
+  const header = notes.length ? `<div class="list-note">${notes.map(esc).join(" ")}</div>` : "";
+  container.innerHTML = header + movies.map(m => renderFilmCard(m, filters)).join("");
 }
 
+const refreshClickAt = new Map();
+
 function bindFilmCardEvents(container) {
-  container.addEventListener("click", (e) => {
+  let lightbox = document.getElementById("lightbox");
+  if (!lightbox) {
+    lightbox = document.createElement("div");
+    lightbox.id = "lightbox";
+    lightbox.className = "lightbox";
+    lightbox.innerHTML = `<button type="button" class="lightbox-close" aria-label="Kapat">✕</button><img alt="">`;
+    document.body.appendChild(lightbox);
+    lightbox.addEventListener("click", (e) => {
+      if (e.target === lightbox || e.target.classList.contains("lightbox-close")) {
+        lightbox.classList.remove("open");
+      }
+    });
+  }
+  const lightboxImg = lightbox.querySelector("img");
+
+  container.addEventListener("click", async (e) => {
+    const person = e.target.closest("a.person-link");
+    if (person) {
+      e.preventDefault();
+      const src = person.dataset.personSrc;
+      if (src) { lightboxImg.src = src; lightboxImg.alt = person.dataset.personName || ""; lightbox.classList.add("open"); }
+      return;
+    }
+    const poster = e.target.closest("img.film-poster");
+    if (poster && poster.dataset.fullSrc) {
+      lightboxImg.src = poster.dataset.fullSrc;
+      lightboxImg.alt = poster.alt || "";
+      lightbox.classList.add("open");
+      return;
+    }
+    const galleryImg = e.target.closest(".film-gallery img");
+    if (galleryImg) {
+      lightboxImg.src = galleryImg.dataset.fullSrc || galleryImg.src;
+      lightboxImg.alt = galleryImg.alt || "";
+      lightbox.classList.add("open");
+      return;
+    }
     const btn = e.target.closest("button");
     if (!btn) return;
     if (btn.dataset.toggle) {
@@ -504,23 +613,75 @@ function bindFilmCardEvents(container) {
       el.classList.toggle("open");
       const isOpen = el.classList.contains("open");
       if (btn.dataset.toggle === "details") btn.textContent = isOpen ? "Daha az" : "Daha fazla";
-      if (btn.dataset.toggle === "overview") btn.textContent = isOpen ? "Özeti gizle" : "Özeti göster";
-      if (btn.dataset.toggle === "gallery") btn.textContent = isOpen ? "Görselleri gizle" : "Görseller";
+      return;
+    }
+    if (btn.dataset.imagesId) {
+      const card = btn.closest(".film-card");
+      const gallery = card.querySelector(".film-gallery");
+      if (!gallery) return;
+      if (gallery.classList.contains("open")) {
+        gallery.classList.remove("open");
+        btn.textContent = "Görseller";
+        return;
+      }
+      btn.disabled = true; btn.textContent = "Yükleniyor...";
+      try {
+        const params = new URLSearchParams({
+          id: btn.dataset.imagesId,
+          title: btn.dataset.imagesTitle || "",
+          original_title: btn.dataset.imagesOriginal || ""
+        });
+        const res = await fetch(`${API_BASE}/images?${params.toString()}`);
+        if (!res.ok) throw new Error(`Görseller: ${res.status}`);
+        const data = await res.json();
+        const images = Array.isArray(data.images) ? data.images.slice(0, 9) : [];
+        if (!images.length) { gallery.innerHTML = `<p class="empty">Görsel bulunamadı.</p>`; }
+        else {
+          gallery.innerHTML = images.map(img => `
+            <a href="${esc(img.pageUrl || img.url)}" target="_blank" rel="noopener" class="gallery-link">
+              <img src="${esc(img.url)}" alt="${esc(img.title || "")}" loading="lazy" data-full-src="${esc(img.url)}">
+            </a>`).join("");
+        }
+        gallery.classList.add("open");
+        btn.textContent = "Görselleri gizle";
+      } catch (err) {
+        console.error(err);
+        gallery.innerHTML = `<p class="error">${esc(err.message)}</p>`;
+        gallery.classList.add("open");
+        btn.textContent = "Görselleri gizle";
+      } finally {
+        btn.disabled = false;
+        if (btn.textContent === "Yükleniyor...") btn.textContent = "Görseller";
+      }
       return;
     }
     if (btn.dataset.refreshId) {
       const card = btn.closest(".film-card");
-      btn.disabled = true; btn.textContent = "…";
-      refreshMovie(btn.dataset.refreshId, card).catch(err => { console.error(err); btn.textContent = "⟳"; })
-        .finally(() => { btn.disabled = false; if (btn.textContent === "…") btn.textContent = "⟳"; });
+      const movieId = btn.dataset.refreshId;
+      const now = Date.now();
+      const last = refreshClickAt.get(movieId) || 0;
+      const diff = now - last;
+      if (diff < 1000) return;
+      if (diff >= 1000 && diff < 4000) {
+        refreshClickAt.set(movieId, 0);
+        btn.disabled = true; btn.textContent = "Tam yenileniyor...";
+        refreshMovie(movieId, card, true).catch(err => { console.error(err); btn.textContent = "Hata"; })
+          .finally(() => { btn.disabled = false; btn.textContent = "⟳"; });
+        return;
+      }
+      refreshClickAt.set(movieId, now);
+      btn.disabled = true; btn.textContent = "Yenileniyor...";
+      refreshMovie(movieId, card, false).catch(err => { console.error(err); btn.textContent = "Hata"; })
+        .finally(() => { btn.disabled = false; btn.textContent = "⟳"; });
     }
   });
 }
-async function refreshMovie(movieId, cardEl) {
+
+async function refreshMovie(movieId, cardEl, forceAll = false) {
   const movie = window.__lastMovies?.find(m => String(m.id) === String(movieId));
   if (!movie) return;
   const filters = window.__lastFilters || {};
-  const data = await runResearch([movie], filters, { refresh: true });
+  const data = await runResearch([movie], filters, { refresh: true, forceAll });
   const updated = data[0];
   if (!updated || !cardEl) return;
   const wrapper = document.createElement("div");
@@ -608,23 +769,23 @@ function msInit(root) {
   });
   arrow.addEventListener("click", (e) => {
     e.stopPropagation();
-    panel.classList.toggle("open");
-    box.classList.toggle("open", panel.classList.contains("open"));
-    arrow.classList.toggle("open", panel.classList.contains("open"));
+    const willOpen = !panel.classList.contains("open");
+    panel.classList.toggle("open", willOpen);
+    arrow.classList.toggle("open", willOpen);
   });
   box.addEventListener("click", (e) => {
     if (e.target.closest(".ms-arrow")) return;
     if (e.target === input || !e.target.closest(".ms-chip")) {
-      panel.classList.add("open");
-      box.classList.add("open");
-      arrow.classList.add("open");
+      if (!panel.classList.contains("open")) {
+        panel.classList.add("open");
+        arrow.classList.add("open");
+      }
     }
     input.focus();
   });
   document.addEventListener("click", (e) => {
     if (!root.contains(e.target)) {
       panel.classList.remove("open");
-      box.classList.remove("open");
       arrow.classList.remove("open");
     }
   });
@@ -716,9 +877,11 @@ function bindRatioToggles() {
 const searchState = {
   query: "",
   page: 1,
+  totalPages: 1,
   filters: null,
   lastMovies: [],
-  exhausted: false
+  processedIds: new Set(),
+  queue: []
 };
 
 async function fetchMoviesPage({ query, filters, page }) {
@@ -730,14 +893,12 @@ async function fetchMoviesPage({ query, filters, page }) {
     const res = await fetch(`${API_BASE}/tmdb/search/movie?${params.toString()}`);
     if (!res.ok) throw new Error(`TMDB arama hatası: ${res.status}`);
     const data = await res.json();
-    console.warn("search page", page, "results", (data.results || []).length, "totalPages", data.total_pages);
     return { results: data.results || [], totalPages: data.total_pages || 1 };
   } else {
     const params = buildDiscoverParams(filters, page);
     const res = await fetch(`${API_BASE}/tmdb/discover/movie?${params.toString()}`);
     if (!res.ok) throw new Error(`TMDB discover hatası: ${res.status}`);
     const data = await res.json();
-    console.warn("discover page", page, "results", (data.results || []).length, "totalPages", data.total_pages);
     return { results: data.results || [], totalPages: data.total_pages || 1 };
   }
 }
@@ -760,9 +921,11 @@ async function performSearch() {
 
   searchState.query = query;
   searchState.page = 1;
+  searchState.totalPages = 1;
   searchState.filters = filters;
   searchState.lastMovies = [];
-  searchState.exhausted = false;
+  searchState.processedIds = new Set();
+  searchState.queue = [];
 
   container.innerHTML = `
     <div class="progress" id="progressBox">
@@ -781,75 +944,56 @@ async function loadNextPage() {
   if (!listEl) return;
 
   try {
-    let collected = [];
-    let totalPages = 1;
+    let batch = searchState.queue.slice(0, TARGET_COUNT);
+    searchState.queue = searchState.queue.slice(TARGET_COUNT);
 
-    while (collected.length < TARGET_COUNT && searchState.page <= totalPages) {
-      const pageData = await fetchMoviesPage({
-        query: searchState.query,
-        filters: searchState.filters,
-        page: searchState.page
-      });
-      totalPages = pageData.totalPages || 1;
+    while (batch.length < TARGET_COUNT && searchState.page <= (searchState.totalPages || 1)) {
+      const pageData = await fetchMoviesPage({ query: searchState.query, filters: searchState.filters, page: searchState.page });
+      const tp = pageData.totalPages || 1;
+      searchState.totalPages = tp;
       const results = pageData.results || [];
+      searchState.page += 1;
       if (!results.length) break;
-
-      const fresh = results.filter(m => !searchState.lastMovies.some(x => String(x.id) === String(m.id)));
+      const fresh = results.filter(m => !searchState.processedIds.has(String(m.id)));
+      for (const m of fresh) searchState.processedIds.add(String(m.id));
       const visible = filterWatchedLocally(fresh);
-      collected = collected.concat(visible);
-
-      if (collected.length < TARGET_COUNT) searchState.page += 1;
-      else break;
+      batch = batch.concat(visible);
     }
 
-    if (!collected.length) {
-      if (searchState.page === 1 || searchState.lastMovies.length === 0) {
-        listEl.innerHTML = `<p class="empty">Sonuç bulunamadı.</p>`;
-      }
-      if (moreWrap) moreWrap.innerHTML = "";
-      document.getElementById("progressBox")?.remove();
-      return;
+    const toResearch = batch.slice(0, TARGET_COUNT);
+    searchState.queue = batch.slice(TARGET_COUNT);
+
+    if (toResearch.length > 0) {
+      window.__searchMovies = toResearch;
+      const researched = await runResearch(toResearch, searchState.filters, {
+        refresh: false,
+        onProgress: ({ percent, text }) => {
+          const fill = document.getElementById("progressFill");
+          const txt = document.getElementById("progressText");
+          if (fill) fill.style.width = `${percent}%`;
+          if (txt) txt.textContent = `%${percent} — ${text}`;
+        }
+      });
+      const passing = researched.filter(m => m.filter_match !== false);
+      searchState.lastMovies = [...searchState.lastMovies, ...passing];
+      window.__lastMovies = searchState.lastMovies;
+      window.__lastFilters = searchState.filters;
     }
-
-    const toResearch = collected.slice(0, TARGET_COUNT);
-    window.__searchMovies = toResearch;
-
-    const researched = await runResearch(toResearch, searchState.filters, {
-      refresh: false,
-      onProgress: ({ percent, text }) => {
-        const fill = document.getElementById("progressFill");
-        const txt = document.getElementById("progressText");
-        if (fill) fill.style.width = `${percent}%`;
-        if (txt) txt.textContent = `%${percent} — ${text}`;
-      }
-    });
-
-    const passing = researched.filter(m => m.filter_match !== false);
-
-    searchState.lastMovies = [...searchState.lastMovies, ...passing];
-    window.__lastMovies = searchState.lastMovies;
-    window.__lastFilters = searchState.filters;
 
     document.getElementById("progressBox")?.remove();
+
     if (searchState.lastMovies.length) {
       renderFilmList(searchState.lastMovies, listEl, searchState.filters);
     } else {
-      listEl.innerHTML = `<p class="empty">Filtrelere uyan sonuç bulunamadı.</p>`;
+      listEl.innerHTML = `<p class="empty">Sonuç bulunamadı.</p>`;
     }
 
-    // Eğer hedefe ulaşamadıysak ve daha sayfa varsa otomatik devam
-    if (passing.length < TARGET_COUNT && searchState.page < totalPages) {
-      searchState.page += 1;
-      return loadNextPage();
-    }
-
-    if (searchState.page >= totalPages) {
-      if (moreWrap) moreWrap.innerHTML = `<p class="empty">Başka sonuç yok.</p>`;
-      searchState.exhausted = true;
-    } else {
-      if (moreWrap) moreWrap.innerHTML = `<button type="button" id="moreBtn" style="padding:10px 16px;border:1px solid var(--card-border);background:transparent;color:var(--text-main);border-radius:8px;cursor:pointer;font-size:0.85rem;">Aramayı sürdür</button>`;
+    if (moreWrap) {
+      moreWrap.innerHTML = `<button type="button" id="moreBtn" class="more-btn">Aramayı sürdür</button>`;
       document.getElementById("moreBtn")?.addEventListener("click", async () => {
-        searchState.page += 1;
+        if (searchState.queue.length === 0 && searchState.page > (searchState.totalPages || 1)) {
+          searchState.page = 1;
+        }
         const btn = document.getElementById("moreBtn");
         if (btn) { btn.disabled = true; btn.textContent = "Yükleniyor..."; }
         await loadNextPage();
@@ -859,6 +1003,15 @@ async function loadNextPage() {
     console.error(e);
     document.getElementById("progressBox")?.remove();
     if (listEl) listEl.insertAdjacentHTML("beforeend", `<p class="error">${esc(e.message)}</p>`);
+    if (moreWrap) {
+      moreWrap.innerHTML = `<button type="button" id="moreBtn" class="more-btn">Aramayı sürdür</button>`;
+      document.getElementById("moreBtn")?.addEventListener("click", async () => {
+        if (searchState.queue.length === 0 && searchState.page > (searchState.totalPages || 1)) {
+          searchState.page = 1;
+        }
+        await loadNextPage();
+      });
+    }
   }
 }
 
@@ -876,8 +1029,6 @@ function clearAllFilters() {
     if (conf) conf.checked = false;
     const panel = root.querySelector(".ms-panel");
     if (panel) panel.classList.remove("open");
-    const box = root.querySelector(".ms-box");
-    if (box) box.classList.remove("open");
     const arrow = root.querySelector(".ms-arrow");
     if (arrow) arrow.classList.remove("open");
     const inp = root.querySelector(".ms-input");
@@ -900,7 +1051,9 @@ function clearAllFilters() {
   const r = document.getElementById("results"); if (r) r.innerHTML = "";
   searchState.lastMovies = [];
   searchState.page = 1;
-  searchState.exhausted = false;
+  searchState.totalPages = 1;
+  searchState.processedIds = new Set();
+  searchState.queue = [];
 }
 
 document.addEventListener("DOMContentLoaded", async () => {
@@ -924,7 +1077,7 @@ document.addEventListener("DOMContentLoaded", async () => {
 
   if (STATIC_OPTIONS.production_countries) {
     const regions = STATIC_OPTIONS.production_countries.map(c => ({ id: c.id, label: c.label }));
-    regions.push({ id: "__space__", label: "Dünya dışı" });
+    regions.push({ id: "__studio__", label: "Stüdyo" });
     STATIC_OPTIONS.story_locations = regions;
     STATIC_OPTIONS.filming_locations = regions;
   }

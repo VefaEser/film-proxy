@@ -162,6 +162,13 @@ async function wikidataBatch(env, movies) {
   return results;
 }
 
+function isUsefulGalleryImage(img) {
+  const text = `${img.title || ""} ${img.pageUrl || ""} ${img.license || ""}`.toLowerCase();
+  // Oyuncu portresi, afiş, logo, kapak gibi görselleri atla
+  if (/(poster|portrait|headshot|actor|actress|cast|logo|cover|headshot)/.test(text)) return false;
+  return true;
+}
+
 async function commons(env, movie) {
   const title = movie.original_title || movie.title || "";
   if (!title) return { images: [] };
@@ -169,9 +176,9 @@ async function commons(env, movie) {
   url.searchParams.set("action", "query");
   url.searchParams.set("format", "json");
   url.searchParams.set("generator", "search");
-  url.searchParams.set("gsrsearch", `filetype:bitmap "${title}" film`);
+  url.searchParams.set("gsrsearch", `filetype:bitmap "${title}" film still OR scene`);
   url.searchParams.set("gsrnamespace", "6");
-  url.searchParams.set("gsrlimit", "10");
+  url.searchParams.set("gsrlimit", "20");
   url.searchParams.set("prop", "imageinfo");
   url.searchParams.set("iiprop", "url|extmetadata");
   url.searchParams.set("iiurlwidth", "320");
@@ -183,7 +190,7 @@ async function commons(env, movie) {
       title: p.title || "", url: i.thumburl || i.url || "", pageUrl: i.descriptionurl || "",
       license: meta.LicenseShortName?.value || "", artist: meta.Artist?.value || "", attribution: meta.Attribution?.value || ""
     };
-  }).filter(x => x.url).slice(0, 10) };
+  }).filter(x => x.url && isUsefulGalleryImage(x)).slice(0, 10) };
 }
 async function tavily(env, query) {
   if (!env.TAVILY_API_KEY) return { results: [], warning: "TAVILY_API_KEY ayarlanmamış." };
@@ -416,8 +423,9 @@ async function enrichClassic(env, movie, staleFields, settings, filters) {
   if (["imdbRating","imdbVotes","imdbID","directors"].some(f => need.has(f))) {
     try {
       const data = await omdb(env, { t: movie.original_title || movie.title, y: String(yearOf(movie) || "") });
+      const clean = (v) => (v === "N/A" || v === undefined ? null : v);
       for (const f of ["imdbRating","imdbVotes","imdbID","directors"]) {
-        if (need.has(f)) { updates[f] = data[f] ?? null; covered.add(f); }
+        if (need.has(f)) { updates[f] = clean(data[f]); covered.add(f); }
       }
     } catch (e) { console.warn("omdb enrich:", e.message); }
   }
@@ -453,7 +461,12 @@ async function enrichClassic(env, movie, staleFields, settings, filters) {
 }
 
 // ---------- Filtre değerlendirme ----------
-function toNum(v) { if (v === null || v === undefined || v === "") return null; const n = Number(String(v).replace(/[^\d.-]/g, "")); return Number.isFinite(n) ? n : null; }
+function toNum(v) {
+  if (v === null || v === undefined || v === "") return null;
+  if (typeof v === "string" && /^n\/?a$/i.test(v.trim())) return null;
+  const n = Number(String(v).replace(/[^\d.-]/g, ""));
+  return Number.isFinite(n) ? n : null;
+}
 
 function evalSet(profile, field, f, label, state) {
   if (!f) return;
@@ -473,30 +486,34 @@ function evalSet(profile, field, f, label, state) {
     }
   }
 }
-function evalRange(profile, field, min, max, label, state) {
+function evalRange(profile, field, min, max, label, state, strict = false) {
   if (min == null && max == null) return;
   const v = toNum(profile[field]);
-  if (v === null) { state.unknown = true; state.reasons.push(`${label}: bilinmiyor`); return; }
+  if (v === null) {
+    if (strict) { state.match = false; state.reasons.push(`${label}: bilinmiyor (elendi)`); }
+    else { state.unknown = true; state.reasons.push(`${label}: bilinmiyor`); }
+    return;
+  }
   if ((min != null && v < min) || (max != null && v > max)) { state.match = false; state.reasons.push(`${label}: ${v} aralık dışı`); }
   else state.reasons.push(`${label}: ${v} uygun`);
 }
 function evaluateFilters(profile, filters) {
   const state = { match: true, reasons: [], unknown: false, conflicts: false };
-  evalRange(profile, "imdbRating", filters.imdbMin, filters.imdbMax, "IMDb puanı", state);
-  evalRange(profile, "vote_average", filters.tmdbMin, filters.tmdbMax, "TMDB puanı", state);
+  evalRange(profile, "imdbRating", filters.imdbMin, filters.imdbMax, "IMDb puanı", state, true);
+  evalRange(profile, "vote_average", filters.tmdbMin, filters.tmdbMax, "TMDB puanı", state, true);
   const iv = toNum(profile.imdbVotes);
   if (filters.imdbVotesMin != null && filters.imdbVotesMin > 0) {
-    if (iv === null) { state.unknown = true; state.reasons.push("IMDb oy: bilinmiyor"); }
+    if (iv === null) { state.match = false; state.reasons.push("IMDb oy: bilinmiyor (elendi)"); }
     else if (iv < filters.imdbVotesMin) { state.match = false; state.reasons.push(`IMDb oy ${iv} < ${filters.imdbVotesMin}`); }
   }
   const tv = toNum(profile.vote_count);
   if (filters.tmdbVotesMin != null && filters.tmdbVotesMin > 0) {
-    if (tv === null) { state.unknown = true; state.reasons.push("TMDB oy: bilinmiyor"); }
+    if (tv === null) { state.match = false; state.reasons.push("TMDB oy: bilinmiyor (elendi)"); }
     else if (tv < filters.tmdbVotesMin) { state.match = false; state.reasons.push(`TMDB oy ${tv} < ${filters.tmdbVotesMin}`); }
   }
   if (filters.yearMin != null || filters.yearMax != null) {
     const y = yearOf(profile) || null;
-    if (y === null) { state.unknown = true; state.reasons.push("Yıl: bilinmiyor"); }
+    if (y === null) { state.match = false; state.reasons.push("Yıl: bilinmiyor (elendi)"); }
     else if ((filters.yearMin != null && y < filters.yearMin) || (filters.yearMax != null && y > filters.yearMax)) {
       state.match = false; state.reasons.push(`Yıl ${y} aralık dışı`);
     }

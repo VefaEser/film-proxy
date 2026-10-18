@@ -1,0 +1,431 @@
+<!DOCTYPE html>
+<html lang="tr">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>Film Keşif Motoru</title>
+<style>
+  :root {
+    --card-bg: #1f2937;
+    --card-border: #374151;
+    --text-main: #f3f4f6;
+    --text-muted: #9ca3af;
+    --year-color: #60a5fa;
+    --imdb-color: #fbbf24;
+    --genre-color: #c084fc;
+    --country-color: #34d399;
+    --lang-color: #f472b6;
+    --bg: #111827;
+  }
+  * { box-sizing: border-box; }
+  html, body { overflow-x: hidden; max-width: 100%; }
+  body { margin:0; font-family: system-ui, -apple-system, "Segoe UI", Roboto, sans-serif; background: var(--bg); color: var(--text-main); line-height:1.5; color-scheme: dark; }
+  header { padding: 16px 16px 4px; max-width: 960px; margin: 0 auto; }
+  header h1 { margin: 0 0 8px; font-size: 1.35rem; }
+  main { max-width: 960px; margin: 0 auto; padding: 0 12px 48px; }
+  section { background: var(--card-bg); border: 1px solid var(--card-border); border-radius: 12px; padding: 14px; margin-bottom: 14px; max-width: 100%; }
+  section h2 { font-size: 1rem; margin: 0 0 10px; padding-bottom: 8px; border-bottom: 1px solid var(--card-border); }
+
+  .range-row { display: flex; align-items: center; gap: 8px; margin-bottom: 8px; flex-wrap: wrap; }
+  .range-row label { font-size: 0.85rem; color: var(--text-muted); }
+  .range-row input[type="number"], .range-row input[type="text"] { padding: 6px 8px; font-size: 0.85rem; border: 1px solid var(--card-border); border-radius: 6px; background: var(--card-bg); color: var(--text-main); }
+  .range-row input[type="number"] { width: 90px; }
+
+  .score-grid { display: grid; grid-template-columns: 1fr 1fr; gap: 8px; margin-bottom: 12px; }
+  .score-field { display: flex; flex-direction: column; gap: 4px; min-width: 0; }
+  .score-field label { font-size: 0.78rem; color: var(--text-muted); }
+  .score-field input { width: 100%; min-width: 0; padding: 8px 10px; font-size: 0.9rem; border: 1px solid var(--card-border); border-radius: 6px; background: var(--card-bg); color: var(--text-main); }
+
+  /* Çoklu seçim kutusu: açıldığında 3 satır sabit; 1-2. satır chip, 3. satır input; ok 3. satır sağında */
+  .ms { position: relative; margin-bottom: 12px; }
+  .ms-label { display: block; font-size: 0.85rem; font-weight: 600; margin-bottom: 4px; }
+  .ms-box {
+    display: grid;
+    grid-template-columns: 1fr 30px;
+    grid-template-rows: auto;
+    column-gap: 6px;
+    row-gap: 2px;
+    border: 1px solid var(--card-border);
+    border-radius: 6px;
+    padding: 6px 8px;
+    background: var(--card-bg);
+    cursor: text;
+    align-items: start;
+  }
+  .ms-box.open {
+    grid-template-rows: 1fr 1fr auto;
+    height: 92px;
+  }
+  .ms-box:focus-within { border-color: var(--year-color); }
+  .ms-chips-and-input {
+    display: contents;
+  }
+  .ms-box.open .ms-chips {
+    grid-column: 1; grid-row: 1 / 3;
+    max-height: 100%;
+    overflow-y: auto;
+    padding-right: 4px;
+    border-right: 4px solid transparent;
+  }
+  .ms-box:not(.open) .ms-chips {
+    grid-column: 1; grid-row: 1;
+    display: flex; flex-wrap: wrap; gap: 4px;
+  }
+  .ms-chips { display: flex; flex-wrap: wrap; gap: 4px; width: 100%; align-content: flex-start; }
+  .ms-input {
+    grid-column: 1; grid-row: 3;
+    border: none; outline: none; background: transparent; color: var(--text-main);
+    font-size: 0.85rem; padding: 4px 0; width: 100%;
+  }
+  .ms-box:not(.open) .ms-input { grid-row: 2; }
+  .ms-arrow {
+    grid-column: 2;
+    align-self: end; justify-self: end;
+    border: none; background: transparent; cursor: pointer;
+    color: var(--text-muted); font-size: 0.85rem; padding: 2px 4px;
+    width: 26px; height: 26px; line-height: 1;
+  }
+  .ms-box:not(.open) .ms-arrow { grid-row: 1; align-self: start; }
+  .ms-box.open .ms-arrow { grid-row: 3; }
+  .ms-arrow.open { color: var(--text-main); }
+  .ms-chip { display: inline-flex; align-items: center; gap: 4px; font-size: 0.75rem; padding: 2px 6px; border-radius: 4px; background: rgba(37, 99, 235, 0.15); color: var(--text-main); }
+  .ms-chip[data-state="exclude"] { background: rgba(220, 38, 38, 0.15); }
+  .ms-chip[data-state="include"]::before { content: "✓ "; font-weight: 700; }
+  .ms-chip[data-state="exclude"]::before { content: "× "; font-weight: 700; }
+  .ms-chip button { border: none; background: transparent; cursor: pointer; color: inherit; font-size: 0.75rem; padding: 0 2px; }
+  .ms-panel { position: absolute; z-index: 50; top: calc(100% + 4px); left: 0; right: 0; max-width: 100%; max-height: 260px; overflow-y: auto; background: var(--card-bg); border: 1px solid var(--card-border); border-radius: 8px; box-shadow: 0 8px 24px rgba(0,0,0,0.4); display: none; }
+  .ms-panel.open { display: block; }
+  .ms-panel-head { display: flex; justify-content: flex-end; padding: 6px 8px; border-bottom: 1px solid var(--card-border); position: sticky; top: 0; background: var(--card-bg); z-index: 1; }
+  .ms-select-all { font-size: 0.75rem; padding: 2px 8px; border: 1px solid var(--card-border); border-radius: 4px; background: transparent; color: var(--text-main); cursor: pointer; }
+  .ms-select-all[data-state="include"] { background: rgba(37, 99, 235, 0.2); }
+  .ms-select-all[data-state="exclude"] { background: rgba(220, 38, 38, 0.2); }
+  .ms-option { display: flex; align-items: center; justify-content: space-between; padding: 6px 10px; font-size: 0.82rem; color: var(--text-main); gap: 8px; }
+  .ms-option:hover { background: rgba(255,255,255,0.05); }
+  .ms-check { width: 24px; height: 24px; flex: 0 0 24px; border: 1px solid var(--card-border); border-radius: 4px; background: transparent; color: var(--text-main); cursor: pointer; font-size: 0.9rem; }
+  .ms-check[data-state="include"] { background: rgba(37, 99, 235, 0.25); border-color: var(--year-color); }
+  .ms-check[data-state="exclude"] { background: rgba(220, 38, 38, 0.25); border-color: #dc2626; }
+  .ms-suggestions { border-top: 1px solid var(--card-border); padding: 4px 0; }
+  .ms-suggestion { padding: 6px 10px; font-size: 0.8rem; cursor: pointer; color: var(--text-muted); }
+  .ms-suggestion:hover { background: rgba(255,255,255,0.05); color: var(--text-main); }
+  .ms-extra { margin-top: 6px; font-size: 0.78rem; color: var(--text-muted); }
+  .ms-extra label { display: flex; align-items: center; gap: 6px; cursor: pointer; margin-bottom: 2px; }
+  .ms-extra input[type="checkbox"] { accent-color: var(--year-color); }
+
+  .search-mode { border: 1px solid var(--card-border); border-radius: 8px; padding: 10px 12px; margin-bottom: 12px; }
+  .search-mode legend { font-size: 0.85rem; font-weight: 600; padding: 0 4px; }
+  .search-mode label { display: flex; align-items: center; gap: 8px; font-size: 0.85rem; margin-bottom: 4px; cursor: pointer; }
+  .search-mode input[type="checkbox"] { accent-color: var(--year-color); }
+  .search-mode-hint { margin: 6px 0 0; font-size: 0.75rem; color: var(--text-muted); }
+
+  .csv-row { display: flex; align-items: center; gap: 8px; flex-wrap: wrap; }
+  .csv-row input[type="file"] { font-size: 0.8rem; }
+  #csvStatus { font-size: 0.78rem; color: var(--text-muted); }
+  #csvClear { border: 1px solid var(--card-border); background: transparent; color: var(--text-main); border-radius: 6px; padding: 4px 8px; cursor: pointer; font-size: 0.8rem; display: none; }
+
+  #searchBtn { display: block; width: 100%; padding: 12px; font-size: 0.95rem; font-weight: 600; background: var(--year-color); color: #fff; border: none; border-radius: 8px; cursor: pointer; margin-top: 4px; }
+  #searchBtn:hover { opacity: 0.9; }
+  #clearAllBtn { display: block; width: 100%; padding: 10px; font-size: 0.85rem; font-weight: 600; background: transparent; color: var(--text-main); border: 1px solid var(--card-border); border-radius: 8px; cursor: pointer; margin-bottom: 8px; }
+
+  .film-card {
+    display: grid;
+    grid-template-columns: 150px 1fr;
+    gap: 16px;
+    padding: 16px;
+    background: var(--card-bg);
+    border: 1px solid var(--card-border);
+    border-radius: 12px;
+    margin-bottom: 16px;
+    position: relative;
+  }
+  .film-card--unknown { border-style: dashed; }
+  .film-poster-link { width: 150px; display: block; }
+  .film-poster { width: 150px; height: 225px; object-fit: cover; border-radius: 8px; background: #374151; display: block; }
+  .film-info { min-width: 0; word-break: break-word; position: relative; }
+  .film-refresh {
+    position: absolute;
+    top: 0; right: 0;
+    width: 26px; height: 26px;
+    padding: 0;
+    border: 1px solid var(--card-border);
+    border-radius: 6px;
+    background: transparent;
+    color: var(--text-muted);
+    font-size: 0.95rem;
+    line-height: 1;
+    cursor: pointer;
+  }
+  .film-refresh:hover { color: var(--text-main); background: rgba(255,255,255,0.06); }
+  .film-title { font-size: 1.1rem; font-weight: 700; margin: 0 0 4px; line-height: 1.3; word-break: break-word; padding-right: 32px; }
+  .film-title a { color: var(--text-main); text-decoration: none; }
+  .film-title a:hover { text-decoration: underline; }
+  .film-title .tr-title { font-weight: 400; color: var(--text-muted); font-size: 0.9rem; }
+  .film-meta-line { display: flex; flex-wrap: wrap; align-items: baseline; gap: 6px 10px; margin-bottom: 4px; font-size: 0.85rem; }
+  .film-year { color: var(--year-color); font-weight: 700; }
+  .imdb-rating { color: var(--imdb-color); font-weight: 700; }
+  .imdb-votes { color: var(--text-muted); font-weight: 400; }
+  .film-genres { color: var(--genre-color); font-size: 0.8rem; margin-bottom: 4px; word-break: break-word; }
+  .film-countries { color: var(--country-color); font-size: 0.8rem; margin-bottom: 4px; word-break: break-word; }
+  .film-languages { color: var(--lang-color); font-size: 0.8rem; margin-bottom: 8px; word-break: break-word; }
+  .film-watched-badge { display: inline-block; font-size: 0.72rem; font-weight: 600; color: #fbbf24; background: rgba(251, 191, 36, 0.15); padding: 2px 8px; border-radius: 4px; margin-bottom: 8px; }
+  .film-note { font-size: 0.75rem; color: #fbbf24; background: rgba(251, 191, 36, 0.12); padding: 4px 8px; border-radius: 6px; margin: 6px 0; }
+  .film-actions { display: flex; gap: 8px; margin-top: 4px; flex-wrap: wrap; }
+  .film-actions button { font-size: 0.78rem; padding: 4px 10px; border: 1px solid var(--card-border); background: transparent; color: var(--text-main); border-radius: 6px; cursor: pointer; }
+  .film-actions button:hover { background: rgba(255,255,255,0.06); }
+  .film-details, .film-overview, .film-gallery { display: none; margin-top: 10px; }
+  .film-details.open, .film-overview.open, .film-gallery.open { display: block; }
+  .film-details { border-top: 1px dashed var(--card-border); padding-top: 10px; }
+  .detail-row { display: flex; flex-wrap: wrap; justify-content: space-between; gap: 12px; font-size: 0.82rem; padding: 2px 0; }
+  .detail-row .label { color: var(--text-muted); }
+  .detail-row .value { color: var(--text-main); font-weight: 500; text-align: right; word-break: break-word; }
+  .film-overview { border-top: 1px dashed var(--card-border); padding-top: 10px; font-size: 0.85rem; line-height: 1.5; }
+  .film-gallery { border-top: 1px dashed var(--card-border); padding-top: 10px; display: none; grid-template-columns: repeat(auto-fill, minmax(90px, 1fr)); gap: 6px; }
+  .film-gallery.open { display: grid; }
+  .film-gallery img { width: 100%; height: 90px; object-fit: cover; border-radius: 6px; background: #374151; }
+  .loading, .error, .empty { font-size: 0.85rem; color: var(--text-muted); padding: 8px 0; }
+  .error { color: #f87171; }
+
+  .progress { margin-bottom: 12px; }
+  .progress-bar { width: 100%; height: 10px; background: #374151; border-radius: 6px; overflow: hidden; }
+  .progress-fill { height: 100%; width: 0%; background: linear-gradient(90deg, #2563eb, #60a5fa); transition: width 0.3s ease; }
+  .progress-text { font-size: 0.78rem; color: var(--text-muted); margin-top: 4px; word-break: break-word; }
+
+  .ratio-row { margin-bottom: 12px; }
+  .ratio-head { display: flex; align-items: center; gap: 8px; font-size: 0.85rem; margin-bottom: 4px; }
+  .ratio-labels { display: flex; justify-content: space-between; font-size: 0.78rem; color: var(--text-muted); margin-bottom: 2px; }
+  .ratio-slider { width: 100%; }
+  .ratio-slider:disabled { opacity: 0.4; }
+  .ratio-value { font-size: 0.8rem; color: var(--year-color); font-weight: 600; }
+
+  .family-item { border: 1px solid var(--card-border); border-radius: 8px; padding: 10px; margin-bottom: 10px; }
+  .family-title { font-size: 0.85rem; font-weight: 600; margin: 0 0 6px; }
+  .family-subtitle { font-size: 0.75rem; color: var(--text-muted); margin: 6px 0 2px; }
+  .family-levels { display: grid; grid-template-columns: 1fr 1fr; gap: 6px; margin-bottom: 6px; }
+  .family-levels label { font-size: 0.75rem; display: flex; align-items: center; gap: 4px; cursor: pointer; }
+  .family-invisible { font-size: 0.75rem; color: var(--text-muted); display: flex; align-items: center; gap: 6px; margin-top: 4px; }
+
+  @media (max-width: 480px) {
+    header, main { padding-left: 10px; padding-right: 10px; }
+    section { padding: 12px; }
+    .film-card { padding: 12px; gap: 10px; grid-template-columns: 110px 1fr; }
+    .film-poster-link { width: 110px; }
+    .film-poster { width: 110px; height: 165px; }
+    .score-grid { gap: 6px; }
+    .family-levels { grid-template-columns: 1fr; }
+  }
+</style>
+</head>
+<body>
+<header>
+  <h1>Film Keşif Motoru</h1>
+</header>
+<main>
+
+<section>
+  <div class="score-grid">
+    <div class="score-field"><label for="imdbMin">IMDb puanı (en az)</label><input type="number" id="imdbMin" min="0" max="10" step="0.1" value="0"></div>
+    <div class="score-field"><label for="imdbMax">IMDb puanı (en çok)</label><input type="number" id="imdbMax" min="0" max="10" step="0.1" value="10"></div>
+    <div class="score-field"><label for="tmdbMin">TMDB puanı (en az)</label><input type="number" id="tmdbMin" min="0" max="10" step="0.1" value="0"></div>
+    <div class="score-field"><label for="tmdbMax">TMDB puanı (en çok)</label><input type="number" id="tmdbMax" min="0" max="10" step="0.1" value="10"></div>
+    <div class="score-field"><label for="imdbVotesMin">IMDb en az oy sayısı</label><input type="number" id="imdbVotesMin" min="0" step="100" value="0"></div>
+    <div class="score-field"><label for="tmdbVotesMin">TMDB en az oy sayısı</label><input type="number" id="tmdbVotesMin" min="0" step="100" value="0"></div>
+    <div class="score-field"><label for="yearMin">Film yılı (en erken)</label><input type="number" id="yearMin" min="1875" max="2075" step="1" placeholder="1875"></div>
+    <div class="score-field"><label for="yearMax">Film yılı (en geç)</label><input type="number" id="yearMax" min="1875" max="2075" step="1" placeholder="2075"></div>
+    <div class="score-field"><label for="runtimeMin">Film süresi (en düşük dk)</label><input type="number" id="runtimeMin" min="0" step="1" placeholder="0"></div>
+    <div class="score-field"><label for="runtimeMax">Film süresi (en yüksek dk)</label><input type="number" id="runtimeMax" min="0" step="1" placeholder="—"></div>
+  </div>
+
+  <div class="ms" data-ms data-name="genres" data-options='[]'>
+    <span class="ms-label">Film türü</span>
+    <div class="ms-box">
+      <div class="ms-chips"></div>
+      <input class="ms-input" type="text" placeholder="Ara veya değer gir...">
+      <button type="button" class="ms-arrow">▼</button>
+    </div>
+    <div class="ms-panel"><div class="ms-panel-head"><button type="button" class="ms-select-all" data-state="">Tümünü seç</button></div><div class="ms-options"></div><div class="ms-suggestions"></div></div>
+    <div class="ms-extra"><label><input type="checkbox" class="ms-conflict"> Çakışan filmleri dahil et</label></div>
+  </div>
+
+  <div class="ms" data-ms data-name="original_language" data-options='[]'>
+    <span class="ms-label">Film dili (özgün dil)</span>
+    <div class="ms-box">
+      <div class="ms-chips"></div>
+      <input class="ms-input" type="text" placeholder="Dil ara veya yaz...">
+      <button type="button" class="ms-arrow">▼</button>
+    </div>
+    <div class="ms-panel"><div class="ms-panel-head"><button type="button" class="ms-select-all" data-state="">Tümünü seç</button></div><div class="ms-options"></div><div class="ms-suggestions"></div></div>
+    <div class="ms-extra"><label><input type="checkbox" class="ms-conflict"> Çakışan filmleri dahil et</label></div>
+  </div>
+
+  <div class="ms" data-ms data-name="production_countries" data-options='[]'>
+    <span class="ms-label">Yapım ülkeleri</span>
+    <div class="ms-box">
+      <div class="ms-chips"></div>
+      <input class="ms-input" type="text" placeholder="Ülke ara veya yaz...">
+      <button type="button" class="ms-arrow">▼</button>
+    </div>
+    <div class="ms-panel"><div class="ms-panel-head"><button type="button" class="ms-select-all" data-state="">Tümünü seç</button></div><div class="ms-options"></div><div class="ms-suggestions"></div></div>
+    <div class="ms-extra"><label><input type="checkbox" class="ms-conflict"> Çakışan filmleri dahil et</label></div>
+  </div>
+</section>
+
+<section>
+  <h2>Gelişmiş Filtreler</h2>
+
+  <div class="ms" data-ms data-name="story_locations" data-options='[]'>
+    <span class="ms-label">Hikâyenin geçtiği yerler</span>
+    <div class="ms-box"><div class="ms-chips"></div><input class="ms-input" type="text" placeholder="Yer ara veya yaz..."><button type="button" class="ms-arrow">▼</button></div>
+    <div class="ms-panel"><div class="ms-panel-head"><button type="button" class="ms-select-all" data-state="">Tümünü seç</button></div><div class="ms-options"></div><div class="ms-suggestions"></div></div>
+    <div class="ms-extra"><label><input type="checkbox" class="ms-conflict"> Çakışan yerleri dahil et</label></div>
+  </div>
+
+  <div class="ms" data-ms data-name="filming_locations" data-options='[]'>
+    <span class="ms-label">Filmin çekildiği yerler</span>
+    <div class="ms-box"><div class="ms-chips"></div><input class="ms-input" type="text" placeholder="Çekim yeri ara veya yaz..."><button type="button" class="ms-arrow">▼</button></div>
+    <div class="ms-panel"><div class="ms-panel-head"><button type="button" class="ms-select-all" data-state="">Tümünü seç</button></div><div class="ms-options"></div><div class="ms-suggestions"></div></div>
+    <div class="ms-extra"><label><input type="checkbox" class="ms-conflict"> Çakışan yerleri dahil et</label></div>
+  </div>
+
+  <div class="ms" data-ms data-name="story_period" data-options='[]'>
+    <span class="ms-label">Hikâyenin geçtiği dönem</span>
+    <div class="ms-box"><div class="ms-chips"></div><input class="ms-input" type="text" placeholder="Dönem ara veya yaz..."><button type="button" class="ms-arrow">▼</button></div>
+    <div class="ms-panel"><div class="ms-panel-head"><button type="button" class="ms-select-all" data-state="">Tümünü seç</button></div><div class="ms-options"></div><div class="ms-suggestions"></div></div>
+    <div class="ms-extra"><label><input type="checkbox" class="ms-conflict"> Çakışan filmleri dahil et</label></div>
+  </div>
+
+  <div class="ms" data-ms data-name="story_geography" data-options='[]'>
+    <span class="ms-label">Hikâyenin coğrafyası</span>
+    <div class="ms-box"><div class="ms-chips"></div><input class="ms-input" type="text" placeholder="Coğrafya ara veya yaz..."><button type="button" class="ms-arrow">▼</button></div>
+    <div class="ms-panel"><div class="ms-panel-head"><button type="button" class="ms-select-all" data-state="">Tümünü seç</button></div><div class="ms-options"></div><div class="ms-suggestions"></div></div>
+    <div class="ms-extra"><label><input type="checkbox" class="ms-conflict"> Çakışan filmleri dahil et</label></div>
+  </div>
+
+  <div class="ms" data-ms data-name="season" data-options='[]'>
+    <span class="ms-label">Hikâyenin geçtiği mevsim</span>
+    <div class="ms-box"><div class="ms-chips"></div><input class="ms-input" type="text" placeholder="Mevsim ara veya yaz..."><button type="button" class="ms-arrow">▼</button></div>
+    <div class="ms-panel"><div class="ms-panel-head"><button type="button" class="ms-select-all" data-state="">Tümünü seç</button></div><div class="ms-options"></div><div class="ms-suggestions"></div></div>
+    <div class="ms-extra"><label><input type="checkbox" class="ms-conflict"> Çakışan filmleri dahil et</label></div>
+  </div>
+
+  <div class="ms" data-ms data-name="character_traits" data-options='[]'>
+    <span class="ms-label">Karakter niteliği</span>
+    <div class="ms-box"><div class="ms-chips"></div><input class="ms-input" type="text" placeholder="Niteliği ara veya yaz..."><button type="button" class="ms-arrow">▼</button></div>
+    <div class="ms-panel"><div class="ms-panel-head"><button type="button" class="ms-select-all" data-state="">Tümünü seç</button></div><div class="ms-options"></div><div class="ms-suggestions"></div></div>
+    <div class="ms-extra"><label><input type="checkbox" class="ms-conflict"> Çakışan filmleri dahil et</label></div>
+  </div>
+
+  <div class="ms" data-ms data-name="aspect_ratio" data-options='[]'>
+    <span class="ms-label">Filmin en boy oranı</span>
+    <div class="ms-box"><div class="ms-chips"></div><input class="ms-input" type="text" placeholder="Örn. 2.39:1"><button type="button" class="ms-arrow">▼</button></div>
+    <div class="ms-panel"><div class="ms-panel-head"><button type="button" class="ms-select-all" data-state="">Tümünü seç</button></div><div class="ms-options"></div><div class="ms-suggestions"></div></div>
+    <div class="ms-extra"><label><input type="checkbox" class="ms-conflict"> Çakışan filmleri dahil et</label></div>
+  </div>
+
+  <div class="ms" data-ms data-name="narrative_style" data-options='[]'>
+    <span class="ms-label">Hikâye anlatım tarzı</span>
+    <div class="ms-box"><div class="ms-chips"></div><input class="ms-input" type="text" placeholder="Tarz ara veya yaz..."><button type="button" class="ms-arrow">▼</button></div>
+    <div class="ms-panel"><div class="ms-panel-head"><button type="button" class="ms-select-all" data-state="">Tümünü seç</button></div><div class="ms-options"></div><div class="ms-suggestions"></div></div>
+    <div class="ms-extra"><label><input type="checkbox" class="ms-conflict"> Çakışan filmleri dahil et</label></div>
+  </div>
+
+  <div class="ms" data-ms data-name="production_process" data-options='[]'>
+    <span class="ms-label">Filmin çekim süreci</span>
+    <div class="ms-box"><div class="ms-chips"></div><input class="ms-input" type="text" placeholder="Süreç ara veya yaz..."><button type="button" class="ms-arrow">▼</button></div>
+    <div class="ms-panel"><div class="ms-panel-head"><button type="button" class="ms-select-all" data-state="">Tümünü seç</button></div><div class="ms-options"></div><div class="ms-suggestions"></div></div>
+    <div class="ms-extra"><label><input type="checkbox" class="ms-conflict"> Çakışan filmleri dahil et</label></div>
+  </div>
+
+  <div class="ms" data-ms data-name="sound" data-options='[]'>
+    <span class="ms-label">Film sesi</span>
+    <div class="ms-box"><div class="ms-chips"></div><input class="ms-input" type="text" placeholder="Ses özelliği ara veya yaz..."><button type="button" class="ms-arrow">▼</button></div>
+    <div class="ms-panel"><div class="ms-panel-head"><button type="button" class="ms-select-all" data-state="">Tümünü seç</button></div><div class="ms-options"></div><div class="ms-suggestions"></div></div>
+    <div class="ms-extra"><label><input type="checkbox" class="ms-conflict"> Çakışan filmleri dahil et</label></div>
+  </div>
+
+  <div class="ms" data-ms data-name="reality" data-options='[]'>
+    <span class="ms-label">Hikâyenin gerçekliği</span>
+    <div class="ms-box"><div class="ms-chips"></div><input class="ms-input" type="text" placeholder="Gerçeklik ara veya yaz..."><button type="button" class="ms-arrow">▼</button></div>
+    <div class="ms-panel"><div class="ms-panel-head"><button type="button" class="ms-select-all" data-state="">Tümünü seç</button></div><div class="ms-options"></div><div class="ms-suggestions"></div></div>
+    <div class="ms-extra"><label><input type="checkbox" class="ms-conflict"> Çakışan filmleri dahil et</label></div>
+  </div>
+
+  <div class="ms" data-ms data-name="story_dimensions" data-options='[]'>
+    <span class="ms-label">Hikâyenin boyutları</span>
+    <div class="ms-box"><div class="ms-chips"></div><input class="ms-input" type="text" placeholder="Boyut ara veya yaz..."><button type="button" class="ms-arrow">▼</button></div>
+    <div class="ms-panel"><div class="ms-panel-head"><button type="button" class="ms-select-all" data-state="">Tümünü seç</button></div><div class="ms-options"></div><div class="ms-suggestions"></div></div>
+    <div class="ms-extra"><label><input type="checkbox" class="ms-conflict"> Çakışan filmleri dahil et</label></div>
+  </div>
+</section>
+
+<section>
+  <h2>Oransal Seçimler</h2>
+  <div class="ratio-row" data-ratio="nightRatio">
+    <div class="ratio-head"><label><input type="checkbox" id="enableLight"> Işık Seçimi</label><span class="ratio-value" id="val-nightRatio">%50</span></div>
+    <div class="ratio-labels"><span id="lbl-nightRatio-left">gece %50</span><span id="lbl-nightRatio-right">gündüz %50</span></div>
+    <input class="ratio-slider" type="range" id="nightRatio" min="0" max="100" value="50" disabled>
+  </div>
+  <div class="ratio-row" data-ratio="indoorRatio">
+    <div class="ratio-head"><label><input type="checkbox" id="enablePlace"> Mekân Yeri Seçimi</label><span class="ratio-value" id="val-indoorRatio">%50</span></div>
+    <div class="ratio-labels"><span id="lbl-indoorRatio-left">iç mekân %50</span><span id="lbl-indoorRatio-right">dış mekân %50</span></div>
+    <input class="ratio-slider" type="range" id="indoorRatio" min="0" max="100" value="50" disabled>
+  </div>
+  <div class="ratio-row" data-ratio="locationCount">
+    <div class="ratio-head"><label><input type="checkbox" id="enablePlaceCount"> Tekli/Çoklu Mekân Seçimi</label><span class="ratio-value" id="val-locationCount">%50</span></div>
+    <div class="ratio-labels"><span id="lbl-locationCount-left">tek mekân %50</span><span id="lbl-locationCount-right">çoklu mekân %50</span></div>
+    <input class="ratio-slider" type="range" id="locationCount" min="0" max="100" value="50" disabled>
+  </div>
+  <div class="ratio-row" data-ratio="dialogueDensity">
+    <div class="ratio-head"><label><input type="checkbox" id="enableDialogue"> Konuşma Yoğunluğu</label><span class="ratio-value" id="val-dialogueDensity">%50</span></div>
+    <div class="ratio-labels"><span id="lbl-dialogueDensity-left">sessizlik %50</span><span id="lbl-dialogueDensity-right">yoğun konuşma %50</span></div>
+    <input class="ratio-slider" type="range" id="dialogueDensity" min="0" max="100" value="50" disabled>
+  </div>
+  <div class="ratio-row" data-ratio="colorRatio">
+    <div class="ratio-head"><label><input type="checkbox" id="enableColor"> Filmin Rengi</label><span class="ratio-value" id="val-colorRatio">%50</span></div>
+    <div class="ratio-labels"><span id="lbl-colorRatio-left">siyah beyaz %50</span><span id="lbl-colorRatio-right">renkli %50</span></div>
+    <input class="ratio-slider" type="range" id="colorRatio" min="0" max="100" value="50" disabled>
+  </div>
+</section>
+
+<section>
+  <h2>Hikâyedeki karakter sayısı</h2>
+  <div class="score-grid">
+    <div class="score-field"><label>Ana karakter (en az)</label><input type="number" id="charMainMin" min="0" step="1"></div>
+    <div class="score-field"><label>Ana karakter (en çok)</label><input type="number" id="charMainMax" min="0" step="1"></div>
+    <div class="score-field"><label>Yan karakter (en az)</label><input type="number" id="charSuppMin" min="0" step="1"></div>
+    <div class="score-field"><label>Yan karakter (en çok)</label><input type="number" id="charSuppMax" min="0" step="1"></div>
+    <div class="score-field"><label>Figüran (en az)</label><input type="number" id="charExtraMin" min="0" step="1"></div>
+    <div class="score-field"><label>Figüran (en çok)</label><input type="number" id="charExtraMax" min="0" step="1"></div>
+  </div>
+</section>
+
+<section id="familyDetails">
+  <h2>Aile rehberi</h2>
+  <div id="familyList"></div>
+</section>
+
+<section>
+  <h2>İzlenen filmler (CSV)</h2>
+  <div class="csv-row">
+    <input type="file" id="csvWatched" accept=".csv,text/csv">
+    <button type="button" id="csvClear">✕ İptal</button>
+    <span id="csvStatus">CSV yüklenmedi.</span>
+  </div>
+</section>
+
+<section>
+  <h2>Arama</h2>
+  <button type="button" id="clearAllBtn">Tüm filtreleri temizle</button>
+  <div class="range-row" style="margin-bottom:12px;"><input type="text" id="searchQuery" placeholder="Film adı girin (ör. Inception)" style="flex:1;width:100%;"></div>
+  <fieldset class="search-mode">
+    <legend>Arama modu</legend>
+    <label><input type="checkbox" id="useWebResearch" checked> Web araştırması (Tavily)</label>
+    <label><input type="checkbox" id="useAI" checked> Yapay zeka analizi (Gemini)</label>
+    <p class="search-mode-hint" id="modeHint"></p>
+  </fieldset>
+  <button type="button" id="searchBtn">Ara</button>
+  <div id="results" style="margin-top:16px;"></div>
+</section>
+
+</main>
+<script src="app.js"></script>
+</body>
+  </html>

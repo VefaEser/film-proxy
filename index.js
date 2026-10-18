@@ -123,21 +123,21 @@ async function omdb(env, params) {
   if (data.Response === "False") throw new Error(data.Error || "OMDb sonucu bulunamadı.");
   return data;
 }
+// OMDb'yi iki aşamalı dene: önce t+y, başarısızsa IMDb ID (i) ile
 async function omdbBest(env, movie) {
   const title = movie.original_title || movie.title || "";
   const year = String(yearOf(movie) || "");
-  const tries = [];
-  if (title) tries.push({ t: title, y: year });
-  if (title) tries.push({ t: title });
-  if (movie.imdb_id) tries.push({ i: movie.imdb_id });
   let lastErr = null;
-  for (const p of tries) {
-    try { return await omdb(env, p); } catch (e) { lastErr = e; }
+  if (title) {
+    try { return await omdb(env, { t: title, y: year }); } catch (e) { lastErr = e; }
   }
-  throw lastErr || new Error("OMDb sonucu bulunamadı.");
+  if (movie.imdb_id) {
+    try { return await omdb(env, { i: movie.imdb_id }); } catch (e) { lastErr = e; }
+  }
+  throw lastErr || new Error("OMDb: arama yapılamadı");
 }
 
-// ---------- Wikidata: toplu sorgu (P31 filtreli, filming country dahil) ----------
+// ---------- Wikidata: toplu sorgu ----------
 function buildWikidataBatchQuery(movies) {
   const rows = movies.map(m => {
     const title = (m.original_title || m.title || "").replace(/\\/g, "\\\\").replace(/"/g, '\\"');
@@ -153,9 +153,8 @@ SELECT ?movieId ?item ?originalWorkLabel ?filmingLocationLabel ?filmingCountryLa
   OPTIONAL { ?filmingLocation wdt:P17 ?filmingCountry. }
   SERVICE wikibase:label { bd:serviceParam wikibase:language "en,tr". }
 }
-LIMIT 400`;
+LIMIT 200`;
 }
-
 async function wikidataBatchOnce(env, movies, timeoutMs) {
   const results = new Map();
   if (!movies.length) return results;
@@ -185,27 +184,22 @@ async function wikidataBatchOnce(env, movies, timeoutMs) {
 }
 async function wikidataBatch(env, movies) {
   try {
-    return await wikidataBatchOnce(env, movies, 40000);
+    return await wikidataBatchOnce(env, movies, 30000);
   } catch (e) {
-    console.warn("wikidata batch (1. deneme):", e.message);
-    await wait(1500);
-    try {
-      return await wikidataBatchOnce(env, movies, 40000);
-    } catch (e2) {
-      console.warn("wikidata batch (2. deneme):", e2.message);
-      return new Map();
-    }
+    console.warn("wikidata batch:", e.message);
+    return new Map();
   }
 }
 
-function isUsefulGalleryImage(img) {
-  const text = `${img.title || ""} ${img.pageUrl || ""} ${img.license || ""}`.toLowerCase();
-  if (/(poster|portrait|headshot|actor|actress|cast|logo|cover)/.test(text)) return false;
-  return true;
+// ---------- Commons: sahne görselleri ----------
+function isLikelySceneImage(img) {
+  const text = `${img.title || ""} ${img.description || ""} ${img.categories || ""}`.toLowerCase();
+  if (/(poster|portrait|headshot|actor|actress|cast|logo|cover|selfie|signature)/.test(text)) return false;
+  return /(still|scene|screenshot|frame|film)/.test(text);
 }
-async function commons(env, movie) {
+async function commonsScenes(env, movie) {
   const title = movie.original_title || movie.title || "";
-  if (!title) return { images: [] };
+  if (!title) return [];
   const url = new URL("https://commons.wikimedia.org/w/api.php");
   url.searchParams.set("action", "query");
   url.searchParams.set("format", "json");
@@ -215,17 +209,43 @@ async function commons(env, movie) {
   url.searchParams.set("gsrlimit", "20");
   url.searchParams.set("prop", "imageinfo");
   url.searchParams.set("iiprop", "url|extmetadata");
-  url.searchParams.set("iiurlwidth", "320");
+  url.searchParams.set("iiurlwidth", "640");
   const data = await fetchJSON(url.toString(), { headers: { "User-Agent": "FilmKesifMotoru/1.0" } }, "Wikimedia Commons");
   const pages = Object.values(data.query?.pages || {});
-  return { images: pages.map(p => {
+  return pages.map(p => {
     const i = p.imageinfo?.[0] || {}, meta = i.extmetadata || {};
     return {
-      title: p.title || "", url: i.thumburl || i.url || "", pageUrl: i.descriptionurl || "",
-      license: meta.LicenseShortName?.value || "", artist: meta.Artist?.value || "", attribution: meta.Attribution?.value || ""
+      source: "commons",
+      title: p.title || "",
+      url: i.thumburl || i.url || "",
+      pageUrl: i.descriptionurl || "",
+      description: meta.ImageDescription?.value || "",
+      categories: meta.Categories?.value || "",
+      license: meta.LicenseShortName?.value || ""
     };
-  }).filter(x => x.url && isUsefulGalleryImage(x)).slice(0, 10) };
+  }).filter(x => x.url && isLikelySceneImage(x)).slice(0, 9);
 }
+
+// ---------- TMDB sahne görselleri ----------
+async function tmdbBackdrops(env, movie) {
+  if (!movie.id) return [];
+  try {
+    const data = await tmdb(env, `/movie/${movie.id}/images`, { include_image_language: "en,null" });
+    const backdrops = Array.isArray(data.backdrops) ? data.backdrops : [];
+    return backdrops.slice(0, 9).map(b => ({
+      source: "tmdb",
+      title: movie.original_title || movie.title || "",
+      url: `https://image.tmdb.org/t/p/w780${b.file_path}`,
+      pageUrl: `https://www.themoviedb.org/movie/${movie.id}`,
+      license: "TMDB",
+      description: ""
+    })).filter(x => x.url);
+  } catch (e) {
+    console.warn("tmdb backdrops:", e.message);
+    return [];
+  }
+}
+
 async function tavily(env, query) {
   if (!env.TAVILY_API_KEY) return { results: [], warning: "TAVILY_API_KEY ayarlanmamış." };
   const data = await fetchJSON("https://api.tavily.com/search", {
@@ -318,11 +338,9 @@ async function callGemini(env, prompt) {
     .map((k, i) => ({ key: k, index: i + 1 }))
     .filter(x => x.key);
   if (!keys.length) throw new Error("GEMINI_API_KEY_1/2/3 Secret'larından en az biri gerekli.");
-
   const models = buildModelChain(env);
   const exhaustedKeys = new Set();
   const errors = [];
-
   for (const model of models) {
     for (const { key, index } of keys) {
       if (exhaustedKeys.has(index)) continue;
@@ -389,7 +407,7 @@ Kullanıcı filtreleri (include = olumlu, exclude = olumsuz): ${JSON.stringify(f
 Her film için, "fields" listesindeki alanları doldur.
 Sayısal alanlar 0-100 veya null; location_count string; family_content nesne; related_films string[]; story_locations/story_geography/character_traits/narrative_style/production_process/sound/reality/story_dimensions string[]; story_period string[]; aspect_ratio string; season string[].
 Yanıt biçimi yalnızca şu JSON dizisi: [{"id": <film_id>, "<alan>": <değer>, ...}, ...]
-Filmler: ${JSON.stringify(payload).slice(0, 16000)}`;
+Filmler: ${JSON.stringify(payload).slice(0, 12000)}`;
 }
 function buildSearchQuery(movie, fields) {
   const title = movie.original_title || movie.title || "";
@@ -422,12 +440,12 @@ async function enrichClassic(env, movie, staleFields, settings, filters) {
   const covered = new Set();
   let webAvailable = null;
 
-  const tmdbNeeded = ["genres","spoken_languages","production_countries","runtime","director","writers","producers","production_companies","cast","original_poster_path"].filter(f => need.has(f));
-  if (tmdbNeeded.length && movie.id) {
+  if (movie.id) {
     try {
-      const detail = await tmdb(env, `/movie/${movie.id}`, { language: "tr-TR" });
-      const credits = await tmdb(env, `/movie/${movie.id}/credits`).catch(() => null);
-      const images = await tmdb(env, `/movie/${movie.id}/images`, { include_image_language: "en,null" }).catch(() => null);
+      const detail = await tmdb(env, `/movie/${movie.id}`, {
+        language: "tr-TR",
+        append_to_response: "credits,images"
+      });
       if (need.has("genres")) {
         updates.genres = Array.isArray(detail.genres) ? detail.genres.map(g => g.name) : [];
         covered.add("genres");
@@ -451,10 +469,10 @@ async function enrichClassic(env, movie, staleFields, settings, filters) {
           ? detail.production_companies.map(c => c.name) : [];
         covered.add("production_companies");
       }
-      if (need.has("original_poster_path")) {
-        const poster = (images?.posters || []).find(p => !p.iso_639_1 || p.iso_639_1 === "en") || (images?.posters || [])[0];
-        if (poster) { updates.original_poster_path = poster.file_path; covered.add("original_poster_path"); }
-      }
+      const posters = detail.images?.posters || [];
+      const originalPoster = posters.find(p => !p.iso_639_1 || p.iso_639_1 === "en") || posters[0];
+      if (originalPoster) updates.original_poster_path = originalPoster.file_path;
+      const credits = detail.credits;
       if (credits) {
         const crew = credits.crew || [];
         if (need.has("director")) {
@@ -499,13 +517,6 @@ async function enrichClassic(env, movie, staleFields, settings, filters) {
     } catch (e) { console.warn("omdb enrich:", e.message); }
   }
 
-  if (need.has("commons_images")) {
-    try {
-      const c = await commons(env, movie);
-      updates.commons_images = c.images || []; covered.add("commons_images");
-    } catch (e) { console.warn("commons enrich:", e.message); }
-  }
-
   const remainingAfterClassic = [...need].filter(f => !covered.has(f));
   if (settings.useWebResearch && remainingAfterClassic.length) {
     webAvailable = false;
@@ -536,14 +547,17 @@ function toNum(v) {
   const n = Number(String(v).replace(/[^\d.-]/g, ""));
   return Number.isFinite(n) ? n : null;
 }
-function evalSet(profile, field, f, label, state) {
+function evalSet(profile, field, f, label, state, unknownIfEmpty = false) {
   if (!f) return;
   const raw = profile[field];
   const have = Array.isArray(raw) ? raw.map(norm) : (raw ? [norm(raw)] : []);
+  const empty = have.length === 0;
   if (f.include?.length) {
     const missing = f.include.filter(x => !have.includes(norm(x.label || x)));
-    if (missing.length) { state.match = false; state.reasons.push(`${label}: eksik ${missing.map(x => x.label || x).join(", ")}`); }
-    else state.reasons.push(`${label}: dahil edilenler tamam`);
+    if (missing.length) {
+      if (empty && unknownIfEmpty) { state.unknown = true; state.reasons.push(`${label}: bilinmiyor (elendi değil)`); }
+      else { state.match = false; state.reasons.push(`${label}: eksik ${missing.map(x => x.label || x).join(", ")}`); }
+    } else state.reasons.push(`${label}: dahil edilenler tamam`);
   }
   if (f.exclude?.length) {
     const hit = f.exclude.filter(x => have.includes(norm(x.label || x)));
@@ -635,21 +649,21 @@ function evaluateFilters(profile, filters) {
       state.match = false; state.reasons.push(`Mekân sayısı ${v} aralık dışı`);
     }
   }
-  evalSet(profile, "genres", filters.genres, "Tür", state);
-  evalSet(profile, "spoken_languages", filters.original_language, "Dil", state);
-  evalSet(profile, "production_countries", filters.production_countries, "Ülke", state);
-  evalSet(profile, "story_locations", filters.story_locations, "Hikâye yeri", state);
+  evalSet(profile, "genres", filters.genres, "Tür", state, true);
+  evalSet(profile, "spoken_languages", filters.original_language, "Dil", state, true);
+  evalSet(profile, "production_countries", filters.production_countries, "Ülke", state, true);
+  evalSet(profile, "story_locations", filters.story_locations, "Hikâye yeri", state, true);
   evalFilmingLocations(profile, filters.filming_locations, state);
-  evalSet(profile, "story_period", filters.story_period, "Dönem", state);
-  evalSet(profile, "story_geography", filters.story_geography, "Coğrafya", state);
-  evalSet(profile, "season", filters.season, "Mevsim", state);
-  evalSet(profile, "character_traits", filters.character_traits, "Karakter niteliği", state);
-  evalSet(profile, "aspect_ratio", filters.aspect_ratio, "En-boy oranı", state);
-  evalSet(profile, "narrative_style", filters.narrative_style, "Anlatım tarzı", state);
-  evalSet(profile, "production_process", filters.production_process, "Çekim süreci", state);
-  evalSet(profile, "sound", filters.sound, "Ses", state);
-  evalSet(profile, "reality", filters.reality, "Gerçeklik", state);
-  evalSet(profile, "story_dimensions", filters.story_dimensions, "Hikâye boyutları", state);
+  evalSet(profile, "story_period", filters.story_period, "Dönem", state, true);
+  evalSet(profile, "story_geography", filters.story_geography, "Coğrafya", state, true);
+  evalSet(profile, "season", filters.season, "Mevsim", state, true);
+  evalSet(profile, "character_traits", filters.character_traits, "Karakter niteliği", state, true);
+  evalSet(profile, "aspect_ratio", filters.aspect_ratio, "En-boy oranı", state, true);
+  evalSet(profile, "narrative_style", filters.narrative_style, "Anlatım tarzı", state, true);
+  evalSet(profile, "production_process", filters.production_process, "Çekim süreci", state, true);
+  evalSet(profile, "sound", filters.sound, "Ses", state, true);
+  evalSet(profile, "reality", filters.reality, "Gerçeklik", state, true);
+  evalSet(profile, "story_dimensions", filters.story_dimensions, "Hikâye boyutları", state, true);
 
   const conflictKeys = ["genres","original_language","production_countries","story_locations","filming_locations","story_period","story_geography","season","character_traits","aspect_ratio","narrative_style","production_process","sound","reality","story_dimensions"];
   for (const k of conflictKeys) {
@@ -671,7 +685,7 @@ async function handleResearchStream(env, body, controller) {
   const enc = new TextEncoder();
   const send = (obj) => controller.enqueue(enc.encode(`data: ${JSON.stringify(obj)}\n\n`));
 
-  const movies = Array.isArray(body.movies) ? body.movies.slice(0, 18) : [];
+  const movies = Array.isArray(body.movies) ? body.movies.slice(0, 5) : [];
   const total = movies.length;
   if (!total) { send({ type: "done", movies: [] }); controller.close(); return; }
 
@@ -713,15 +727,19 @@ async function handleResearchStream(env, body, controller) {
     p.webAvailable = classic.webAvailable;
   }
 
-  const wikiNeeded = prepared.filter(p => p.stale.includes("original_work") || p.stale.includes("filming_locations"));
-  if (wikiNeeded.length) {
-    const wikiResults = await wikidataBatch(env, wikiNeeded.map(p => p.movie));
-    for (const p of wikiNeeded) {
-      const rec = wikiResults.get(String(p.movie.id));
-      if (!rec) continue;
-      if (p.stale.includes("original_work") && rec.originalWork) { p.profile.original_work = rec.originalWork; await putFieldRow(env, p.movieId, "original_work", "wikidata"); }
-      if (p.stale.includes("filming_locations") && rec.filmingLocations.length) { p.profile.filming_locations = rec.filmingLocations; await putFieldRow(env, p.movieId, "filming_locations", "wikidata"); }
-      if (rec.filmingCountries && rec.filmingCountries.length) { p.profile.filming_countries = rec.filmingCountries; }
+  const needWiki = !!(filters.original_work?.include?.length || filters.original_work?.exclude?.length
+    || filters.filming_locations?.include?.length || filters.filming_locations?.exclude?.length);
+  if (needWiki) {
+    const wikiNeeded = prepared.filter(p => p.stale.includes("original_work") || p.stale.includes("filming_locations"));
+    if (wikiNeeded.length) {
+      const wikiResults = await wikidataBatch(env, wikiNeeded.map(p => p.movie));
+      for (const p of wikiNeeded) {
+        const rec = wikiResults.get(String(p.movie.id));
+        if (!rec) continue;
+        if (p.stale.includes("original_work") && rec.originalWork) { p.profile.original_work = rec.originalWork; await putFieldRow(env, p.movieId, "original_work", "wikidata"); }
+        if (p.stale.includes("filming_locations") && rec.filmingLocations.length) { p.profile.filming_locations = rec.filmingLocations; await putFieldRow(env, p.movieId, "filming_locations", "wikidata"); }
+        if (rec.filmingCountries && rec.filmingCountries.length) { p.profile.filming_countries = rec.filmingCountries; }
+      }
     }
   }
 
@@ -793,6 +811,20 @@ async function handleResearchStream(env, body, controller) {
   controller.close();
 }
 
+// ---------- /images (tembel yükleme) ----------
+async function handleImages(env, url) {
+  const id = url.searchParams.get("id");
+  const title = url.searchParams.get("title") || "";
+  const originalTitle = url.searchParams.get("original_title") || title;
+  const movie = { id, title, original_title: originalTitle };
+  const [tmdbList, commonsList] = await Promise.all([
+    tmdbBackdrops(env, movie).catch(e => { console.warn("tmdb backdrops:", e.message); return []; }),
+    commonsScenes(env, movie).catch(e => { console.warn("commons scenes:", e.message); return []; })
+  ]);
+  const merged = [...tmdbList, ...commonsList].slice(0, 9);
+  return { images: merged };
+}
+
 // ---------- Yönlendirme ----------
 async function tmdbRoute(env, url) {
   const path = url.pathname.replace(/^\/tmdb/, "");
@@ -836,6 +868,9 @@ async function handleRequest(request, env) {
       for (const k of ["i","t","y","type"]) if (url.searchParams.has(k)) params[k] = url.searchParams.get(k);
       return response(await omdb(env, params));
     }
+    if (url.pathname === "/images") {
+      return response(await handleImages(env, url));
+    }
     if (url.pathname === "/wikidata") {
       const movie = { id: url.searchParams.get("id"), title: url.searchParams.get("title"), original_title: url.searchParams.get("title"), year: url.searchParams.get("year") };
       const res = await wikidataBatch(env, [movie]);
@@ -843,7 +878,7 @@ async function handleRequest(request, env) {
     }
     if (url.pathname === "/commons") {
       const movie = { title: url.searchParams.get("title"), original_title: url.searchParams.get("title") };
-      return response(await commons(env, movie));
+      return response({ images: await commonsScenes(env, movie) });
     }
     if (url.pathname === "/research" || url.pathname === "/gemini-interactions") {
       if (request.method !== "POST") return jsonError("Bu uç nokta POST bekliyor.", 405);

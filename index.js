@@ -26,13 +26,10 @@ const CORS = {
   "Access-Control-Allow-Headers": "Content-Type,Authorization"
 };
 
-// Groq ücretsiz katman limitleri (TPM 8000) için güvenli bütçe.
 const GROQ_TPM_BUDGET = 7000;
 const GROQ_MAX_OUTPUT_TOKENS = 1500;
 const GROQ_MAX_MOVIES_PER_CALL = 3;
 const GROQ_MAX_PROMPT_CHARS = 9000;
-
-// LLM katmanı için genel zaman bütçesi (Groq + Gemini toplamı).
 const LLM_DEADLINE_MS = 50000;
 
 function response(data, status = 200) {
@@ -148,7 +145,6 @@ async function fetchJSON(url, options = {}, label = "Uzak servis", timeoutMs = 1
   return data;
 }
 
-// Groq için 429 yanıtında Retry-After başlığını okuyup bekler.
 async function fetchGroqJSON(url, options, label, timeoutMs, outerSignal) {
   const signal = combineSignals(outerSignal, timeoutMs);
   const res = await fetch(url, { ...options, signal });
@@ -346,7 +342,6 @@ function buildGeminiModelChain(env) {
   return chain;
 }
 
-// Gemini yanıtından metin çıkarır (Interactions ve generateContent biçimleri).
 function extractGeminiText(data) {
   if (typeof data?.output_text === "string") return data.output_text;
   if (typeof data?.text === "string") return data.text;
@@ -377,10 +372,6 @@ function extractGeminiText(data) {
   return "";
 }
 
-// Groq çağrısı.
-// useSearch=true → browser_search tool'u zorunlu; JSON modu KULLANILMAZ
-//                  (Groq structured outputs ile browser_search uyumsuz).
-// useSearch=false → response_format: json_object kullanılır.
 async function callGroq(env, key, model, prompt, maxOutputTokens, useSearch, outerSignal) {
   const promptTokens = estimateTokens(prompt);
   const safeOutput = Math.max(256, Math.min(maxOutputTokens, GROQ_TPM_BUDGET - promptTokens));
@@ -403,13 +394,12 @@ async function callGroq(env, key, model, prompt, maxOutputTokens, useSearch, out
       "Authorization": `Bearer ${key}`
     },
     body: JSON.stringify(body)
-  }, `Groq ${model}`, 30000, outerSignal);
+  }, `Groq ${model}`, 60000, outerSignal);
   const text = data?.choices?.[0]?.message?.content || "";
   if (!text) throw new Error(`Groq ${model} yanıtında metin yok.`);
   return text;
 }
 
-// Gemini Interactions API: POST /v1beta/interactions  { model, input }
 async function callGeminiInteractions(env, key, model, prompt, outerSignal) {
   const data = await fetchJSON(GOOGLE_INTERACTIONS, {
     method: "POST",
@@ -421,7 +411,6 @@ async function callGeminiInteractions(env, key, model, prompt, outerSignal) {
   return text;
 }
 
-// Gemini generateContent: POST /v1beta/models/{model}:generateContent
 async function callGeminiGenerate(env, key, model, prompt, outerSignal) {
   const url = `${GOOGLE_GENERATE}/${encodeURIComponent(model)}:generateContent`;
   const data = await fetchJSON(url, {
@@ -434,7 +423,6 @@ async function callGeminiGenerate(env, key, model, prompt, outerSignal) {
   return text;
 }
 
-// Bir Gemini modeli için önce Interactions, başarısızsa generateContent dener.
 async function callGeminiModel(env, key, model, prompt, outerSignal) {
   const errors = [];
   try {
@@ -443,7 +431,6 @@ async function callGeminiModel(env, key, model, prompt, outerSignal) {
     const msg = String(e.message || e);
     errors.push(`interactions: ${msg}`);
     console.warn(`gemini: interactions model=${model} başarısız — ${msg}`);
-    // 401/403 gibi kalıcı hatalarda generateContent de denemeyelim.
     if (/HTTP 40[13]|invalid.?key|forbidden|unauthor/i.test(msg)) {
       throw new Error(`Gemini ${model} anahtar geçersiz: ${msg}`);
     }
@@ -467,13 +454,11 @@ function buildSearchQuery(movie, fields) {
   if (fields.includes("original_work")) hints.push("based on");
   if (fields.includes("night_ratio")) hints.push("night scenes");
   return `${title} ${year} film ${hints.join(" ")}`.trim();
-                      }
-// ---------- Hibrit yönlendirici: Groq (birincil) + Gemini (yedek) ----------
+            }
 async function callLLMWithFallback(env, prompt, maxOutputTokens, useSearch, outerSignal) {
   const deadline = Date.now() + LLM_DEADLINE_MS;
   const errors = [];
 
-  // 1) Groq
   const groqKeys = [env.GROQ_API_KEY_1, env.GROQ_API_KEY_2, env.GROQ_API_KEY_3]
     .map((k, i) => ({ key: k, index: i + 1 }))
     .filter(x => x.key);
@@ -487,15 +472,12 @@ async function callLLMWithFallback(env, prompt, maxOutputTokens, useSearch, oute
       if (Date.now() > deadline) break;
       if (outerSignal?.aborted) throw new Error("İstemci isteği iptal etti.");
       try {
-        return await callGroq(env, key, model, prompt, maxOutputTokens, useSearch, outerSignal);
+        return await callGroq(env, key, model, prompt, maxOutputTokens, false, outerSignal);
       } catch (e) {
         const msg = String(e.message || e);
-        errors.push(`groq ${model} key=${index}: ${msg}`);
-        console.warn(`groq: model=${model} key=${index} başarısız — ${msg}`);
-        if (e.retryAfterMs) {
-          await sleep(Math.min(e.retryAfterMs, 10000));
-          continue;
-        }
+        errors.push(`groq(no-search) ${model} key=${index}: ${msg}`);
+        console.warn(`groq(no-search): model=${model} key=${index} başarısız — ${msg}`);
+        if (e.retryAfterMs) { await sleep(Math.min(e.retryAfterMs, 5000)); continue; }
         if (/429|quota|rate.?limit|exceeded|aborted due to timeout|timed? ?out|network|fetch failed|socket|forbidden|unauthor|invalid.?key/i.test(msg)) {
           groqDead.add(index);
         }
@@ -503,7 +485,28 @@ async function callLLMWithFallback(env, prompt, maxOutputTokens, useSearch, oute
     }
   }
 
-  // 2) Gemini (yedek)
+  if (useSearch && groqDead.size < groqKeys.length) {
+    for (const model of groqModels) {
+      if (Date.now() > deadline) break;
+      for (const { key, index } of groqKeys) {
+        if (groqDead.has(index)) continue;
+        if (Date.now() > deadline) break;
+        if (outerSignal?.aborted) throw new Error("İstemci isteği iptal etti.");
+        try {
+          return await callGroq(env, key, model, prompt, maxOutputTokens, true, outerSignal);
+        } catch (e) {
+          const msg = String(e.message || e);
+          errors.push(`groq(search) ${model} key=${index}: ${msg}`);
+          console.warn(`groq(search): model=${model} key=${index} başarısız — ${msg}`);
+          if (e.retryAfterMs) { await sleep(Math.min(e.retryAfterMs, 5000)); continue; }
+          if (/429|quota|rate.?limit|exceeded|aborted due to timeout|timed? ?out|network|fetch failed|socket|forbidden|unauthor|invalid.?key/i.test(msg)) {
+            groqDead.add(index);
+          }
+        }
+      }
+    }
+  }
+
   const geminiKeys = [env.GEMINI_API_KEY_1, env.GEMINI_API_KEY_2, env.GEMINI_API_KEY_3]
     .map((k, i) => ({ key: k, index: i + 1 }))
     .filter(x => x.key);
@@ -539,7 +542,6 @@ async function callLLMWithFallback(env, prompt, maxOutputTokens, useSearch, oute
   throw new Error(`${providers.join(" + ")} tüm modellerde başarısız: ${errors.join(" | ")}`);
 }
 
-// ---------- JSON ayıklama ----------
 function extractJSON(text) {
   const clean = String(text).replace(/^```(?:json)?\s*/i, "").replace(/\s*```\s*$/, "").trim();
   const start = clean.indexOf("{"), end = clean.lastIndexOf("}");
@@ -553,7 +555,6 @@ function extractJSONArray(text) {
   try { return JSON.parse(clean.slice(start, end + 1)); } catch { return null; }
 }
 
-// ---------- Prompt ----------
 function buildBatchLLMPrompt(movies, fieldsByMovie, knownByMovie, filters, useSearch) {
   const f = filters || {};
   const payload = movies.map(m => ({
@@ -603,7 +604,6 @@ function extractCoveredFields(results, need) {
   return covered;
 }
 
-// ---------- Zenginleştirme ----------
 async function enrichClassic(env, movie, staleFields, settings, filters, outerSignal) {
   const need = new Set(staleFields);
   const updates = {};
@@ -696,7 +696,6 @@ async function enrichClassic(env, movie, staleFields, settings, filters, outerSi
   return { updates, covered, webAvailable };
 }
 
-// ---------- Filtre değerlendirme ----------
 function toNum(v) {
   if (v === null || v === undefined || v === "") return null;
   if (typeof v === "string" && /^n\/?a$/i.test(v.trim())) return null;
@@ -854,149 +853,151 @@ function evaluateFilters(profile, filters) {
     if (hasInc && hasExc) { state.match = false; state.reasons.push(`${k}: çakışan dahil/hariç (izin verilmedi)`); }
   }
   return state;
-}
-
-// ---------- /research (SSE) ----------
+    }
 async function handleResearchStream(env, body, controller, signal) {
   const enc = new TextEncoder();
   const send = (obj) => controller.enqueue(enc.encode(`data: ${JSON.stringify(obj)}\n\n`));
+  try {
+    const movies = Array.isArray(body.movies) ? body.movies.slice(0, 5) : [];
+    const total = movies.length;
+    if (!total) { send({ type: "done", movies: [] }); return; }
 
-  const movies = Array.isArray(body.movies) ? body.movies.slice(0, 5) : [];
-  const total = movies.length;
-  if (!total) { send({ type: "done", movies: [] }); controller.close(); return; }
+    const filters = body.filters || {};
+    const settings = { useAI: body.useAI === true, useWebResearch: body.useWebResearch === true };
+    const forceRefresh = body.refresh === true || body.forceAll === true;
+    const forceAll = body.forceAll === true;
 
-  const filters = body.filters || {};
-  const settings = { useAI: body.useAI === true, useWebResearch: body.useWebResearch === true };
-  const forceRefresh = body.refresh === true || body.forceAll === true;
-  const forceAll = body.forceAll === true;
+    send({ type: "start", total });
 
-  send({ type: "start", total });
+    const prepared = [];
+    for (let i = 0; i < movies.length; i++) {
+      const movie = movies[i];
+      const movieId = movieKey(movie);
+      const title = movie.original_title || movie.title || movieId;
+      send({ type: "step", index: i, total, title, stage: "okunuyor" });
 
-  const prepared = [];
-  for (let i = 0; i < movies.length; i++) {
-    const movie = movies[i];
-    const movieId = movieKey(movie);
-    const title = movie.original_title || movie.title || movieId;
-    send({ type: "step", index: i, total, title, stage: "okunuyor" });
+      const existing = await getProfileRow(env, movieId);
+      const fieldRows = await getFieldRows(env, movieId);
+      const profile = existing?.data || {};
 
-    const existing = await getProfileRow(env, movieId);
-    const fieldRows = await getFieldRows(env, movieId);
-    const profile = existing?.data || {};
+      if (!profile.vote_average && movie.vote_average != null) profile.vote_average = movie.vote_average;
+      if (!profile.vote_count && movie.vote_count != null) profile.vote_count = movie.vote_count;
+      if (!profile.overview && movie.overview) profile.overview = movie.overview;
+      if (!profile.poster_path && movie.poster_path) profile.poster_path = movie.poster_path;
+      if (!profile.release_date && movie.release_date) profile.release_date = movie.release_date;
 
-    if (!profile.vote_average && movie.vote_average != null) profile.vote_average = movie.vote_average;
-    if (!profile.vote_count && movie.vote_count != null) profile.vote_count = movie.vote_count;
-    if (!profile.overview && movie.overview) profile.overview = movie.overview;
-    if (!profile.poster_path && movie.poster_path) profile.poster_path = movie.poster_path;
-    if (!profile.release_date && movie.release_date) profile.release_date = movie.release_date;
-
-    let stale = findStaleFields(profile, fieldRows, forceRefresh);
-    if (forceAll) stale = Object.keys(FIELD_DEFS);
-    prepared.push({ movie, movieId, profile, stale, webAvailable: null, aiNeeded: [] });
-  }
-
-  for (let i = 0; i < prepared.length; i++) {
-    if (signal?.aborted) { try { controller.close(); } catch {} return; }
-    const p = prepared[i];
-    send({ type: "step", index: i, total, title: p.movie.original_title || p.movie.title, stage: p.stale.length ? "zenginleştiriliyor" : "önbellekten", fields: p.stale.slice(0, 6) });
-    const classic = await enrichClassic(env, p.movie, p.stale, settings, filters, signal);
-    Object.assign(p.profile, classic.updates);
-    const covered = [...classic.covered].filter(f => p.profile[f] !== undefined && p.profile[f] !== null);
-    await putFieldRows(env, p.movieId, covered, Object.fromEntries(covered.map(f => [f, FIELD_DEFS[f]?.source || "unknown"])));
-    p.webAvailable = classic.webAvailable;
-  }
-
-  const needWiki = !!(filters.original_work?.include?.length || filters.original_work?.exclude?.length
-    || filters.filming_locations?.include?.length || filters.filming_locations?.exclude?.length);
-  if (needWiki) {
-    const wikiNeeded = prepared.filter(p => p.stale.includes("original_work") || p.stale.includes("filming_locations"));
-    if (wikiNeeded.length) {
-      const wikiResults = await wikidataBatch(env, wikiNeeded.map(p => p.movie), signal);
-      for (const p of wikiNeeded) {
-        const rec = wikiResults.get(String(p.movie.id));
-        if (!rec) continue;
-        const covered = [];
-        if (p.stale.includes("original_work") && rec.originalWork) { p.profile.original_work = rec.originalWork; covered.push("original_work"); }
-        if (p.stale.includes("filming_locations") && rec.filmingLocations.length) { p.profile.filming_locations = rec.filmingLocations; covered.push("filming_locations"); }
-        if (rec.filmingCountries && rec.filmingCountries.length) { p.profile.filming_countries = rec.filmingCountries; }
-        await putFieldRows(env, p.movieId, covered, Object.fromEntries(covered.map(f => [f, "wikidata"])));
-      }
+      let stale = findStaleFields(profile, fieldRows, forceRefresh);
+      if (forceAll) stale = Object.keys(FIELD_DEFS);
+      prepared.push({ movie, movieId, profile, stale, webAvailable: null, aiNeeded: [] });
     }
-  }
 
-  for (const p of prepared) {
-    const coveredNow = new Set();
-    for (const f of p.stale) {
-      if (p.profile[f] !== undefined && p.profile[f] !== null) coveredNow.add(f);
+    for (let i = 0; i < prepared.length; i++) {
+      if (signal?.aborted) return;
+      const p = prepared[i];
+      send({ type: "step", index: i, total, title: p.movie.original_title || p.movie.title, stage: p.stale.length ? "zenginleştiriliyor" : "önbellekten", fields: p.stale.slice(0, 6) });
+      const classic = await enrichClassic(env, p.movie, p.stale, settings, filters, signal);
+      Object.assign(p.profile, classic.updates);
+      const covered = [...classic.covered].filter(f => p.profile[f] !== undefined && p.profile[f] !== null);
+      await putFieldRows(env, p.movieId, covered, Object.fromEntries(covered.map(f => [f, FIELD_DEFS[f]?.source || "unknown"])));
+      p.webAvailable = classic.webAvailable;
     }
-    p.aiNeeded = [...p.stale].filter(f => !coveredNow.has(f) && FIELD_DEFS[f]?.source === "llm");
-  }
 
-  let aiAvailable = false;
-  const aiRequested = settings.useAI && prepared.some(p => p.aiNeeded.length);
-  const useLLMSearch = settings.useWebResearch;
-  if (aiRequested) {
-    const aiMovies = prepared.filter(p => p.aiNeeded.length);
-    for (let start = 0; start < aiMovies.length; start += GROQ_MAX_MOVIES_PER_CALL) {
-      const chunk = aiMovies.slice(start, start + GROQ_MAX_MOVIES_PER_CALL);
-      if (signal?.aborted) break;
-      const fieldsByMovie = {};
-      const knownByMovie = {};
-      for (const p of chunk) {
-        fieldsByMovie[p.movie.id] = p.aiNeeded;
-        knownByMovie[p.movie.id] = { title: p.movie.title, original_title: p.movie.original_title, year: yearOf(p.movie) };
-      }
-      try {
-        const prompt = buildBatchLLMPrompt(chunk.map(p => p.movie), fieldsByMovie, knownByMovie, filters, useLLMSearch);
-        const raw = await callLLMWithFallback(env, prompt, GROQ_MAX_OUTPUT_TOKENS, useLLMSearch, signal);
-        const arr = extractJSONArray(raw) || (() => {
-          try { const obj = extractJSON(raw); return obj.movies || []; } catch { return []; }
-        })();
-        const byId = new Map();
-        for (const item of arr) {
-          const id = item && (item.id ?? item.movie_id);
-          if (id != null) byId.set(String(id), item);
+    const needWiki = !!(filters.original_work?.include?.length || filters.original_work?.exclude?.length
+      || filters.filming_locations?.include?.length || filters.filming_locations?.exclude?.length);
+    if (needWiki) {
+      const wikiNeeded = prepared.filter(p => p.stale.includes("original_work") || p.stale.includes("filming_locations"));
+      if (wikiNeeded.length) {
+        const wikiResults = await wikidataBatch(env, wikiNeeded.map(p => p.movie), signal);
+        for (const p of wikiNeeded) {
+          const rec = wikiResults.get(String(p.movie.id));
+          if (!rec) continue;
+          const covered = [];
+          if (p.stale.includes("original_work") && rec.originalWork) { p.profile.original_work = rec.originalWork; covered.push("original_work"); }
+          if (p.stale.includes("filming_locations") && rec.filmingLocations.length) { p.profile.filming_locations = rec.filmingLocations; covered.push("filming_locations"); }
+          if (rec.filmingCountries && rec.filmingCountries.length) { p.profile.filming_countries = rec.filmingCountries; }
+          await putFieldRows(env, p.movieId, covered, Object.fromEntries(covered.map(f => [f, "wikidata"])));
         }
+      }
+    }
+
+    for (const p of prepared) {
+      const coveredNow = new Set();
+      for (const f of p.stale) {
+        if (p.profile[f] !== undefined && p.profile[f] !== null) coveredNow.add(f);
+      }
+      p.aiNeeded = [...p.stale].filter(f => !coveredNow.has(f) && FIELD_DEFS[f]?.source === "llm");
+    }
+
+    let aiAvailable = false;
+    const aiRequested = settings.useAI && prepared.some(p => p.aiNeeded.length);
+    const useLLMSearch = settings.useWebResearch;
+    if (aiRequested) {
+      const aiMovies = prepared.filter(p => p.aiNeeded.length);
+      for (let start = 0; start < aiMovies.length; start += GROQ_MAX_MOVIES_PER_CALL) {
+        const chunk = aiMovies.slice(start, start + GROQ_MAX_MOVIES_PER_CALL);
+        if (signal?.aborted) break;
+        const fieldsByMovie = {};
+        const knownByMovie = {};
         for (const p of chunk) {
-          const item = byId.get(String(p.movie.id));
-          if (item) {
-            const covered = [];
-            for (const f of p.aiNeeded) {
-              if (item[f] !== undefined && item[f] !== null) { p.profile[f] = item[f]; covered.push(f); }
-            }
-            await putFieldRows(env, p.movieId, covered, Object.fromEntries(covered.map(f => [f, "llm"])));
-          }
+          fieldsByMovie[p.movie.id] = p.aiNeeded;
+          knownByMovie[p.movie.id] = { title: p.movie.title, original_title: p.movie.original_title, year: yearOf(p.movie) };
         }
-        aiAvailable = true;
-      } catch (e) {
-        console.warn("llm toplu enrich:", e.message);
-        aiAvailable = false;
+        try {
+          const prompt = buildBatchLLMPrompt(chunk.map(p => p.movie), fieldsByMovie, knownByMovie, filters, useLLMSearch);
+          const raw = await callLLMWithFallback(env, prompt, GROQ_MAX_OUTPUT_TOKENS, useLLMSearch, signal);
+          const arr = extractJSONArray(raw) || (() => {
+            try { const obj = extractJSON(raw); return obj.movies || []; } catch { return []; }
+          })();
+          const byId = new Map();
+          for (const item of arr) {
+            const id = item && (item.id ?? item.movie_id);
+            if (id != null) byId.set(String(id), item);
+          }
+          for (const p of chunk) {
+            const item = byId.get(String(p.movie.id));
+            if (item) {
+              const covered = [];
+              for (const f of p.aiNeeded) {
+                if (item[f] !== undefined && item[f] !== null) { p.profile[f] = item[f]; covered.push(f); }
+              }
+              await putFieldRows(env, p.movieId, covered, Object.fromEntries(covered.map(f => [f, "llm"])));
+            }
+          }
+          aiAvailable = true;
+        } catch (e) {
+          console.warn("llm toplu enrich:", e.message);
+          aiAvailable = false;
+        }
       }
     }
-  }
 
-  const results = [];
-  for (const p of prepared) {
-    if (p.stale.length) {
-      await putProfileRow(env, p.movieId, p.movie.title, yearOf(p.movie), p.profile, forceRefresh);
+    const results = [];
+    for (const p of prepared) {
+      if (p.stale.length) {
+        await putProfileRow(env, p.movieId, p.movie.title, yearOf(p.movie), p.profile, forceRefresh);
+      }
+      const evalResult = evaluateFilters(p.profile, filters);
+      const result = {
+        id: p.movie.id, ...p.movie, ...p.profile,
+        filter_match: evalResult.match, filter_reasons: evalResult.reasons,
+        unknown: evalResult.unknown, conflicts: evalResult.conflicts,
+        ai_available: aiAvailable,
+        web_available: p.webAvailable,
+        _fromCache: p.stale.length === 0
+      };
+      results.push(result);
+      send({ type: "movie", index: results.length - 1, total, movie: result });
     }
-    const evalResult = evaluateFilters(p.profile, filters);
-    const result = {
-      id: p.movie.id, ...p.movie, ...p.profile,
-      filter_match: evalResult.match, filter_reasons: evalResult.reasons,
-      unknown: evalResult.unknown, conflicts: evalResult.conflicts,
-      ai_available: aiAvailable,
-      web_available: p.webAvailable,
-      _fromCache: p.stale.length === 0
-    };
-    results.push(result);
-    send({ type: "movie", index: results.length - 1, total, movie: result });
-  }
 
-  send({ type: "done", movies: results });
-  controller.close();
+    send({ type: "done", movies: results });
+  } catch (err) {
+    console.error("handleResearchStream fatal:", err);
+    try { controller.enqueue(new TextEncoder().encode(`data: ${JSON.stringify({ type: "error", message: String(err.message || err) })}\n\n`)); } catch {}
+  } finally {
+    try { controller.close(); } catch {}
+  }
 }
 
-// ---------- /images ----------
 async function handleImages(env, url, signal) {
   const id = url.searchParams.get("id");
   const title = url.searchParams.get("title") || "";
@@ -1010,7 +1011,6 @@ async function handleImages(env, url, signal) {
   return { images: merged };
 }
 
-// ---------- Yönlendirme ----------
 async function tmdbRoute(env, url, signal) {
   const path = url.pathname.replace(/^\/tmdb/, "");
   if (path === "/genre/movie/list") return tmdb(env, path, { language: url.searchParams.get("language") || "tr-TR" }, signal);

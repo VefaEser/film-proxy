@@ -2,8 +2,12 @@
   "name": "film-proxy",
   "main": "index.js",
   "compatibility_date": "2026-10-14",
+  "migrations_dir": "migrations",
+  "placement": { "mode": "smart" },
   "observability": {
-    "enabled": true
+    "enabled": true,
+    "head_sampling_rate": 1,
+    "logs": { "invocation_logs": true }
   },
   "d1_databases": [
     {

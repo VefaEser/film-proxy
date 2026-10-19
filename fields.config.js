@@ -1,20 +1,13 @@
 /**
  * ttl: saniye cinsinden cache ömrü.
- *   sayı  → bu süre sonunda alan stale sayılır, yeniden çekilir
- *   null  → SADECE "her zaman stale" anlamına gelir (cache'lenmez). Bu dosyada
- *           kullanılmıyor; tüm alanlar somut TTL'e sahiptir.
- *
- * required: true → upstream API düşse bile bu alan çekilemezse
- *                 film "kısmi veri" olarak işaretlenir.
- *
  * source: "llm" → Gemini (birincil) veya Groq (yedek) tarafından doldurulur.
  */
 const days = (n) => n * 86400;
 
-export const SCHEMA_VERSION = 2;
+export const SCHEMA_VERSION = 3;
 
 export const FIELD_DEFS = {
-  // TMDB (detay çağrısı) — 90 gün
+  // TMDB (deterministik) — 90 gün
   genres:                 { source: "tmdb", ttl: days(90), required: true },
   genres_ids:             { source: "tmdb", ttl: days(90), required: true },
   spoken_languages:       { source: "tmdb", ttl: days(90), required: true },
@@ -28,7 +21,7 @@ export const FIELD_DEFS = {
   producers:              { source: "tmdb", ttl: days(90) },
   cast:                   { source: "tmdb", ttl: days(90) },
 
-  // LLM (Gemini birincil / Groq yedek) — 90 gün
+  // LLM (Gemini/Groq) — 90 gün
   story_locations:    { source: "llm", ttl: days(90) },
   story_period:       { source: "llm", ttl: days(90) },
   story_geography:    { source: "llm", ttl: days(90) },
@@ -77,8 +70,8 @@ export const LLM_FIELDS = Object.entries(FIELD_DEFS)
 
 export const VALID_SOURCES = [...new Set(Object.values(FIELD_DEFS).map(d => d.source))];
 
-// Kategori alanları için geçerli değerler — {{RULES}} placeholder'ı sadece
-// istenen alanlara ait satırlarla doldurulur (token tasarrufu).
+// Kategori alanları için geçerli slug'lar — {{RULES}} placeholder'ı
+// sadece istenen alanlara ait satırlarla doldurulur.
 export const FIELD_RULES = {
   season: 'season: "winter"|"summer"|"spring"|"autumn"',
   reality: 'reality: "true"|"mostly_true"|"inspired"|"realistic"|"fictional"|"utopic"',
@@ -89,3 +82,24 @@ export const FIELD_RULES = {
   character_traits: 'character_traits: "male_main"|"female_main"|"child_main"|"lgbt_main"|"male_support"|"female_support"|"child_support"|"lgbt_support"|"young_main"|"middle_main"|"old_main"|"disabled_main"|"animal" vb.',
   story_dimensions: 'story_dimensions: "has_sequel"|"is_sequel"|"series_tight"|"series_loose"|"concept"|"has_version"|"same_event"'
 };
+
+// Stage 1'de sınıflandırılan semantik alanlar — bunlarla YZ'ye
+// "aradığın film bu mu?" diye sorulur.
+export const SEMANTIC_FIELDS = [
+  "story_locations", "story_period", "story_geography",
+  "character_traits", "narrative_style", "production_process",
+  "sound", "reality", "story_dimensions", "family_content",
+  "night_ratio", "indoor_ratio", "location_count",
+  "dialogue_density", "color_ratio", "aspect_ratio", "season",
+  "filming_locations", "original_work"
+];
+
+// Stage 1 sınıflandırmasına girmeyen, TMDB/OMDb'den doğrudan gelen
+// kesin filtreler. Bunlar sadece Stage 0'da (Discover parametreleri +
+// local eşleştirme) kullanılır.
+export const DETERMINISTIC_FILTERS = [
+  "yearMin", "yearMax", "runtimeMin", "runtimeMax",
+  "imdbMin", "imdbMax", "imdbVotesMin",
+  "tmdbMin", "tmdbMax", "tmdbVotesMin",
+  "genres", "original_language", "production_countries"
+];

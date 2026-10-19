@@ -28,7 +28,11 @@ ARANAN FİLM:
 FİLTRE BAĞLAMLARI:
 {{FILTER_CONTEXT}}
 
-Her film için tek soru: "Bu film ARANAN FİLM tanımına uyuyor mu?"
+KARAR KURALI:
+- Film tanıma AÇIKÇA uymuyorsa "no".
+- Film tanıma AÇIKÇA uyuyorsa "yes".
+- Kısmen uyuyor ama emin değilsen "unknown" — bu durumda no DEME.
+- Sadece küçük bir detay eksikse "unknown", temel özellik yoksa "no".
 
 Filmler:
 {{MOVIES}}
@@ -45,6 +49,19 @@ Doldurulacak alanlar:
 {{RULES}}
 
 Yanıt YALNIZCA: [{"id": <film_id>, "<alan>": <değer>, ...}]`;
+
+const DEFAULT_FILTER_INFO = {
+  "filter_info.season": "[YZ bağlamı]\n- winter: Hikâye kışın geçiyor (kar, soğuk, Aralık-Şubat).\n- summer: Hikâye yazın geçiyor (sıcak, Haziran-Ağustos).\n- spring: Hikâye ilkbaharda geçiyor.\n- autumn: Hikâye sonbaharda geçiyor.",
+  "filter_info.reality": "[YZ bağlamı]\n- true: Gerçek olaylara birebir sadık.\n- mostly_true: Gerçek olaylara dayalı, sanatsal özgürlük var.\n- inspired: Gerçek olaylardan esinlenmiş.\n- realistic: Kurgusal ama gerçekçi.\n- fictional: Tamamen kurgusal, sıradışı olaylar.\n- utopic: Ütopik/distopik gelecek.",
+  "filter_info.production_process": "[YZ bağlamı]\n- amateur: Öğrenci/hobi, çok düşük bütçe.\n- indie: Stüdyo dışı bağımsız yapım.\n- art: Yönetmenin kişisel vizyonu, deneysel anlatım (Bergman, Tarkovsky).\n- big: 100M$+ bütçe, geniş dağıtım.\n- bmovie: Düşük bütçeli tür sineması (korku, bilimkurgu).\n- avant: Avangart, geleneksel anlatıyı reddeden.\n- studio: Klasik Hollywood stüdyo sistemi.\n- no_music: Müzik kullanılmamış.\n- rare_music: Birkaç sahnede müzik.\n- handheld: Yoğun el kamerası, sarsıntılı.\n- propaganda: Siyasi/ideolojik mesaj.\n- dogme: Dogme 95 kuralları (Lars von Trier).",
+  "filter_info.narrative_style": "[YZ bağlamı]\n- multi: Birbirinden bağımsız hikâyeler.\n- reverse: Sondan başa anlatım.\n- linear: Baştan sona düz.\n- flashback: Geriye dönüşlerle.\n- end_first: Sonu önce gösterilir.\n- mid_first: Orta önce gösterilir.\n- fast: Hızlı tempolu, çok olay.\n- slow: Yavaş, durgun.\n- no_end: Açık uçlu.\n- alt_end: Alternatif son.\n- alt_narr: Alternatif anlatım.",
+  "filter_info.sound": "[YZ bağlamı]\n- ambient: Sürekli doğal ortam sesi.\n- music: Yoğun müzik.\n- effects: Yoğun efekt.\n- voiceover_ext: Dış ses anlatıcı.\n- voiceover_int: İç ses.\n- silent: Sessiz film.\n- dubbed: Stüdyoda dublaj.",
+  "filter_info.story_geography": "[YZ bağlamı]\n- city: Şehir merkezi.\n- town: Kasaba.\n- village: Köy.\n- mountain: Dağlık bölge.\n- desert: Çöl.\n- steppe: Bozkır.\n- forest: Orman.\n- seaside: Deniz kenarı.\n- riverside: Nehir kenarı.\n- opensea: Açık deniz.\n- air: Havada/uçakta.",
+  "filter_info.character_traits": "[YZ bağlamı]\nKarakter ana/yan/figüran ve cinsiyet/yaş/engel durumu kombinasyonu. male_main: erkek ana karakter, female_main: kadın ana karakter, child_main: çocuk ana karakter, vb.",
+  "filter_info.story_dimensions": "[YZ bağlamı]\n- has_sequel: Devam filmi var.\n- is_sequel: Bu bir devam filmi.\n- series_tight: Diziyle sıkı bağlantılı.\n- series_loose: Diziyle gevşek bağlantılı.\n- concept: Konsept film (yüksek kavramsal).\n- has_version: Farklı versiyonu var.\n- same_event: Aynı olayı anlatan başka film.",
+  "filter_info.story_period": "[YZ bağlamı]\nHikâyenin geçtiği dönem (ör. 'd1940' = 1940'lar, 'c20' = 20. yüzyıl, 'bc' = milattan önce, 'future' = gelecek).",
+  "filter_info.family_content": "[YZ bağlamı]\nfamily_content nesnesindeki intensity değerleri: none=hiç yok, few=birkaç sahne, side=yan konu yoğun, main=ana konu. approach: bad=kötü gösteriyor, neutral=tarafsız, legit=meşrulaştırıyor."
+};
 
 const INTENSITY_TR = { none: "hiç yok", few: "bir veya birkaç sahnede var", side: "yan konu (yoğun)", main: "ana konu (çok yoğun)" };
 const APPROACH_TR = { bad: "kötü gösteriyor", neutral: "tarafsız kalıyor", legit: "meşrulaştırıyor" };
@@ -411,8 +428,7 @@ function quotaCooldown(msg) {
   if (/per day|daily/i.test(msg)) return 3600;
   if (/per minute|rpm/i.test(msg)) return 60;
   return 300;
-}
-
+    }
 function extractGeminiText(data) {
   if (typeof data?.output_text === "string") return data.output_text;
   if (typeof data?.text === "string") return data.text;
@@ -572,313 +588,8 @@ async function callLLMWithFallback(env, prompt, maxOutputTokens, useSearch, oute
   if (geminiTried) providers.push("Gemini");
   if (groqTried) providers.push("Groq");
   throw new Error(`${providers.join(" + ") || "LLM"} tüm modellerde başarısız: ${errors.join(" | ")}`);
-  }
-async function handleResearchStream(env, body, controller, signal) {
-  const enc = new TextEncoder();
-  const send = (obj) => controller.enqueue(enc.encode(`data: ${JSON.stringify(obj)}\n\n`));
-  try {
-    const movies = Array.isArray(body.movies) ? body.movies.slice(0, 5) : [];
-    const total = movies.length;
-    if (!total) { send({ type: "done", movies: [] }); return; }
-    const filters = body.filters || {};
-    const settings = { useAI: body.useAI === true, useWebResearch: body.useWebResearch === true };
-    const forceRefresh = body.refresh === true || body.forceAll === true;
-    const forceAll = body.forceAll === true;
-    send({ type: "start", total });
-    const prepared = [];
-    for (let i = 0; i < movies.length; i++) {
-      const movie = movies[i];
-      const movieId = movieKey(movie);
-      const title = movie.original_title || movie.title || movieId;
-      send({ type: "step", index: i, total, title, stage: "okunuyor" });
-      const existing = await getProfileRow(env, movieId);
-      const fieldRows = await getFieldRows(env, movieId);
-      const profile = existing?.data || {};
-      if (!profile.vote_average && movie.vote_average != null) profile.vote_average = movie.vote_average;
-      if (!profile.vote_count && movie.vote_count != null) profile.vote_count = movie.vote_count;
-      if (!profile.overview && movie.overview) profile.overview = movie.overview;
-      if (!profile.poster_path && movie.poster_path) profile.poster_path = movie.poster_path;
-      if (!profile.release_date && movie.release_date) profile.release_date = movie.release_date;
-      let stale = findStaleFields(profile, fieldRows, forceRefresh);
-      if (forceAll) stale = Object.keys(FIELD_DEFS);
-      const deterministicFields = stale.filter(f => FIELD_DEFS[f]?.source !== "llm");
-      prepared.push({ movie, movieId, profile, staleDeterministic: deterministicFields, webAvailable: null });
-    }
-    for (let i = 0; i < prepared.length; i++) {
-      if (signal?.aborted) return;
-      const p = prepared[i];
-      send({ type: "step", index: i, total, title: p.movie.original_title || p.movie.title, stage: p.staleDeterministic.length ? "zenginleştiriliyor" : "önbellekten", fields: p.staleDeterministic.slice(0, 6) });
-      const classic = await enrichClassic(env, p.movie, p.staleDeterministic, signal);
-      Object.assign(p.profile, classic.updates);
-      const covered = [...classic.covered].filter(f => p.profile[f] !== undefined && p.profile[f] !== null);
-      await putFieldRows(env, p.movieId, covered, Object.fromEntries(covered.map(f => [f, FIELD_DEFS[f]?.source || "unknown"])));
-    }
-    const needWiki = !!(filters.original_work?.include?.length || filters.original_work?.exclude?.length
-      || filters.filming_locations?.include?.length || filters.filming_locations?.exclude?.length);
-    if (needWiki) {
-      const wikiNeeded = prepared.filter(p => p.staleDeterministic.includes("original_work") || p.staleDeterministic.includes("filming_locations"));
-      if (wikiNeeded.length) {
-        const wikiResults = await wikidataBatch(env, wikiNeeded.map(p => p.movie), signal);
-        for (const p of wikiNeeded) {
-          const rec = wikiResults.get(String(p.movie.id));
-          if (!rec) continue;
-          const covered = [];
-          if (p.staleDeterministic.includes("original_work") && rec.originalWork) { p.profile.original_work = rec.originalWork; covered.push("original_work"); }
-          if (p.staleDeterministic.includes("filming_locations") && rec.filmingLocations.length) { p.profile.filming_locations = rec.filmingLocations; covered.push("filming_locations"); }
-          if (rec.filmingCountries && rec.filmingCountries.length) p.profile.filming_countries = rec.filmingCountries;
-          await putFieldRows(env, p.movieId, covered, Object.fromEntries(covered.map(f => [f, "wikidata"])));
-        }
-      }
-    }
-    const afterLocal = [];
-    for (const p of prepared) {
-      if (!passesLocalFilters(p.profile, filters)) continue;
-      const filmLoc = evalFilmingLocations(p.profile, filters.filming_locations);
-      if (!filmLoc.match) continue;
-      p.localVerdict = filmLoc;
-      afterLocal.push(p);
-    }
-    const useSemantic = settings.useAI && hasSemanticFilters(filters);
-    const stage1UseSearch = settings.useWebResearch;
-    let semanticVerdicts = new Map();
-    let stage1Error = null;
-    if (useSemantic && afterLocal.length) {
-      send({ type: "step", index: 0, total: afterLocal.length, title: "Semantik filtre uygulanıyor", stage: "sınıflandırılıyor", fields: [] });
-      const signature = semanticSignature(filters);
-      const cacheMisses = [];
-      for (const p of afterLocal) {
-        const cached = await getVerdict(env, p.movieId, signature);
-        if (cached) semanticVerdicts.set(p.movieId, cached);
-        else cacheMisses.push(p);
-      }
-      if (cacheMisses.length) {
-        try {
-          const configAll = await getAllConfig(env);
-          const sentence = buildFilterSentence(filters);
-          const context = buildFilterContext(filters, configAll);
-          const batchSize = Math.min(GROQ_MAX_MOVIES_PER_CALL, cacheMisses.length);
-          for (let start = 0; start < cacheMisses.length; start += batchSize) {
-            if (signal?.aborted) break;
-            const chunk = cacheMisses.slice(start, start + batchSize);
-            try {
-              const verdicts = await classifyBatch(env, chunk.map(p => p.movie), sentence, context, stage1UseSearch, signal);
-              for (const p of chunk) {
-                const v = verdicts.get(String(p.movie.id)) || { verdict: "unknown", reason: "LLM yanıt vermedi" };
-                semanticVerdicts.set(p.movieId, v);
-                await putVerdict(env, p.movieId, signature, v.verdict, v.reason);
-              }
-            } catch (e) {
-              console.warn("stage1 chunk:", e.message);
-              stage1Error = e.message;
-              for (const p of chunk) if (!semanticVerdicts.has(p.movieId)) semanticVerdicts.set(p.movieId, { verdict: "unknown", reason: "LLM başarısız" });
-            }
-          }
-        } catch (e) { console.warn("stage1 fail:", e.message); stage1Error = e.message; }
-      }
-    }
-    const results = [];
-    for (const p of afterLocal) {
-      let filter_match = true;
-      let unknown = false;
-      let reasons = [];
-      if (useSemantic) {
-        const v = semanticVerdicts.get(p.movieId);
-        if (!v) { unknown = true; reasons.push("Semantik sınıflandırma yok"); }
-        else if (v.verdict === "no") { filter_match = false; reasons.push(v.reason || "Semantik filtre uyuşmadı"); }
-        else if (v.verdict === "unknown") { unknown = true; reasons.push(v.reason || "Bilinmiyor"); }
-        else reasons.push(v.reason || "Eşleşti");
-      }
-      if (p.localVerdict?.unknown) unknown = true;
-      if (p.staleDeterministic.length) await putProfileRow(env, p.movieId, p.movie.title, yearOf(p.movie), p.profile, forceRefresh);
-      const verdict = semanticVerdicts.get(p.movieId);
-      const result = {
-        id: p.movie.id, ...p.movie, ...p.profile,
-        filter_match, filter_reasons: reasons,
-        unknown, conflicts: false,
-        semantic_used: useSemantic,
-        semantic_ok: useSemantic && !!verdict && verdict.verdict !== "unknown",
-        stage1_error: stage1Error,
-        web_used: useSemantic && stage1UseSearch,
-        web_ok: false,
-        _fromCache: p.staleDeterministic.length === 0
-      };
-      results.push(result);
-      send({ type: "movie", index: results.length - 1, total, movie: result });
-    }
-    send({ type: "done", movies: results });
-  } catch (err) {
-    console.error("handleResearchStream fatal:", err);
-    try { controller.enqueue(new TextEncoder().encode(`data: ${JSON.stringify({ type: "error", message: String(err.message || err) })}\n\n`)); } catch {}
-  } finally { try { controller.close(); } catch {} }
 }
 
-async function handleMovieDetails(env, body, signal) {
-  const movie = body?.movie;
-  if (!movie || !movie.id) throw Object.assign(new Error("movie gerekli"), { status: 400 });
-  const forceAll = body.forceAll === true;
-  const movieId = movieKey(movie);
-  const existing = await getProfileRow(env, movieId);
-  const fieldRows = await getFieldRows(env, movieId);
-  const profile = existing?.data || {};
-  if (!profile.vote_average && movie.vote_average != null) profile.vote_average = movie.vote_average;
-  if (!profile.vote_count && movie.vote_count != null) profile.vote_count = movie.vote_count;
-  if (!profile.overview && movie.overview) profile.overview = movie.overview;
-  if (!profile.poster_path && movie.poster_path) profile.poster_path = movie.poster_path;
-  if (!profile.release_date && movie.release_date) profile.release_date = movie.release_date;
-  let stale = findStaleFields(profile, fieldRows, forceAll);
-  const staleLLM = stale.filter(f => FIELD_DEFS[f]?.source === "llm");
-  if (staleLLM.length) {
-    try {
-      const updates = await fillDetails(env, movie, staleLLM, signal);
-      Object.assign(profile, updates);
-      const covered = Object.keys(updates).filter(f => profile[f] !== undefined && profile[f] !== null);
-      await putFieldRows(env, movieId, covered, Object.fromEntries(covered.map(f => [f, "llm"])));
-    } catch (e) { console.warn("stage2 fail:", e.message); throw Object.assign(new Error("Detay doldurma başarısız: " + e.message), { status: 503 }); }
-  }
-  await putProfileRow(env, movieId, movie.title, yearOf(movie), profile, forceAll);
-  return { movie: { ...movie, ...profile } };
-}
-
-async function handleImages(env, url, signal) {
-  const id = url.searchParams.get("id");
-  const title = url.searchParams.get("title") || "";
-  const originalTitle = url.searchParams.get("original_title") || title;
-  const movie = { id, title, original_title: originalTitle };
-  const [tmdbList, commonsList] = await Promise.all([
-    tmdbBackdrops(env, movie, signal).catch(e => { console.warn("tmdb backdrops:", e.message); return []; }),
-    commonsScenes(env, movie, signal).catch(e => { console.warn("commons scenes:", e.message); return []; })
-  ]);
-  const tmdbSorted = [...tmdbList].sort((a, b) => (b.vote_average || 0) - (a.vote_average || 0));
-  const seen = new Set(); const merged = [];
-  for (const img of [...tmdbSorted, ...commonsList]) {
-    const key = String(img.url || "").split("/").pop().split("?")[0].toLowerCase();
-    if (!key || seen.has(key)) continue;
-    seen.add(key); merged.push(img);
-    if (merged.length >= 8) break;
-  }
-  return { images: merged };
-}
-
-async function getAllConfig(env) {
-  if (!env.DB) return {};
-  try {
-    const { results } = await env.DB.prepare("SELECT key, value FROM app_config ORDER BY key").all();
-    const obj = {};
-    for (const r of results || []) obj[r.key] = r.value;
-    return obj;
-  } catch (e) { console.warn("config read all:", e.message); return {}; }
-}
-async function getLlmStats(env) {
-  if (!env.DB) return [];
-  try {
-    const since = Math.floor(Date.now() / 1000) - 86400;
-    const { results } = await env.DB.prepare(
-      `SELECT provider, model, SUM(CASE WHEN ok=1 THEN 1 ELSE 0 END) AS ok, SUM(CASE WHEN ok=0 THEN 1 ELSE 0 END) AS fail, MAX(ts) AS last_ts
-       FROM llm_calls WHERE ts > ? GROUP BY provider, model ORDER BY provider, model`
-    ).bind(since).all();
-    return results || [];
-  } catch (e) { console.warn("stats:", e.message); return []; }
-}
-async function getActiveDeadKeys(env) {
-  if (!env.DB) return [];
-  try {
-    const now = Math.floor(Date.now() / 1000);
-    const { results } = await env.DB.prepare("SELECT provider, key_index, until_ts, reason FROM dead_keys WHERE until_ts > ? ORDER BY provider, key_index").bind(now).all();
-    return results || [];
-  } catch { return []; }
-}
-async function getFilterInfoAll(env) {
-  if (!env.DB) return {};
-  try {
-    const { results } = await env.DB.prepare("SELECT key, value FROM app_config WHERE key LIKE 'filter_info.%'").all();
-    const obj = {};
-    for (const r of results || []) obj[r.key] = r.value;
-    return obj;
-  } catch { return {}; }
-}
-
-async function tmdbRoute(env, url, signal) {
-  const path = url.pathname.replace(/^\/tmdb/, "");
-  if (path === "/genre/movie/list") return tmdb(env, path, { language: url.searchParams.get("language") || "tr-TR" }, signal);
-  if (path === "/configuration/languages") return tmdb(env, path, {}, signal);
-  if (path === "/configuration/countries") return tmdb(env, path, { language: url.searchParams.get("language") || "tr-TR" }, signal);
-  if (path === "/discover/movie") {
-    const allowed = ["language","sort_by","vote_average.gte","vote_average.lte","vote_count.gte","page","primary_release_date.gte","primary_release_date.lte","with_genres","without_genres","with_original_language","with_origin_country","with_runtime.gte","with_runtime.lte","with_text_query"];
-    const params = {};
-    for (const k of allowed) if (url.searchParams.has(k)) params[k] = url.searchParams.get(k);
-    return tmdb(env, path, params, signal);
-  }
-  if (path === "/search/movie") return tmdb(env, path, { query: url.searchParams.get("query") || "", language: url.searchParams.get("language") || "tr-TR", page: url.searchParams.get("page") || 1, include_adult: "false" }, signal);
-  throw Object.assign(new Error("Bilinmeyen TMDB uç noktası."), { status: 404 });
-}
-
-async function handleRequest(request, env, ctx) {
-  if (request.method === "OPTIONS") return new Response(null, { status: 204, headers: CORS });
-  const url = new URL(request.url);
-  try {
-    if (url.pathname === "/health") {
-      return response({
-        ok: true,
-        geminiModel: env.GEMINI_MODEL || GEMINI_MODEL_DEFAULT, geminiModels: buildGeminiChain(env),
-        groqModel: env.GROQ_MODEL || GROQ_MODEL_DEFAULT, groqModels: buildGroqChain(env),
-        tmdb: !!env.TMDB_API_KEY, omdb: !!env.OMDB_API_KEY, tavily: !!env.TAVILY_API_KEY,
-        groqKeys: [!!env.GROQ_API_KEY_1, !!env.GROQ_API_KEY_2, !!env.GROQ_API_KEY_3],
-        geminiKeys: [!!env.GEMINI_API_KEY_1, !!env.GEMINI_API_KEY_2, !!env.GEMINI_API_KEY_3],
-        adminToken: !!env.ADMIN_TOKEN, d1: !!env.DB
-      });
-    }
-    if (url.pathname === "/admin/config" && request.method === "GET") return response({ config: await getAllConfig(env) });
-    if (url.pathname === "/admin/config" && request.method === "PUT") {
-      if (!isAdmin(request, env)) return jsonError("Yetkisiz.", 401);
-      let body; try { body = await request.json(); } catch { return jsonError("Geçersiz JSON.", 400); }
-      if (!body.key || typeof body.value !== "string") return jsonError("key ve value gerekli.", 400);
-      await setConfig(env, body.key, body.value);
-      return response({ ok: true, key: body.key });
-    }
-    if (url.pathname === "/admin/filter_info" && request.method === "GET") return response({ config: await getFilterInfoAll(env) });
-    if (url.pathname === "/admin/stats" && request.method === "GET") return response({ stats: await getLlmStats(env), deadKeys: await getActiveDeadKeys(env) });
-    if (url.pathname === "/admin/dead_keys" && request.method === "DELETE") {
-      if (!isAdmin(request, env)) return jsonError("Yetkisiz.", 401);
-      if (env.DB) await env.DB.prepare("DELETE FROM dead_keys").run();
-      deadKeysCache.ts = 0;
-      return response({ ok: true });
-    }
-    if (url.pathname.startsWith("/tmdb/")) return response(await tmdbRoute(env, url, request.signal));
-    if (url.pathname === "/omdb") {
-      const params = {};
-      for (const k of ["i","t","y","type"]) if (url.searchParams.has(k)) params[k] = url.searchParams.get(k);
-      return response(await omdb(env, params, request.signal));
-    }
-    if (url.pathname === "/images") return response(await handleImages(env, url, request.signal));
-    if (url.pathname === "/movie/details" && request.method === "POST") {
-      let body; try { body = await request.json(); } catch { return jsonError("Geçersiz JSON.", 400); }
-      return response(await handleMovieDetails(env, body, request.signal));
-    }
-    if (url.pathname === "/research" || url.pathname === "/llm-interactions") {
-      if (request.method !== "POST") return jsonError("Bu uç nokta POST bekliyor.", 405);
-      let body; try { body = await request.json(); } catch { return jsonError("Geçersiz JSON gövdesi.", 400); }
-      const { readable, writable } = new TransformStream();
-      const writer = writable.getWriter();
-      const controller = { enqueue: (chunk) => writer.write(chunk), close: () => writer.close() };
-      const task = handleResearchStream(env, body, controller, request.signal).catch(err => {
-        try { controller.enqueue(new TextEncoder().encode(`data: ${JSON.stringify({ type: "error", message: String(err.message || err) })}\n\n`)); } catch {}
-        try { controller.close(); } catch {}
-      });
-      if (ctx?.waitUntil) ctx.waitUntil(task);
-      return new Response(readable, {
-        headers: { ...CORS, "Content-Type": "text/event-stream; charset=utf-8", "Cache-Control": "no-cache", "Connection": "keep-alive" }
-      });
-    }
-    return jsonError("Uç nokta bulunamadı.", 404);
-  } catch (e) {
-    console.error(e.stack || e);
-    const message = String(e.message || e);
-    const status = e.status || (/API_KEY|Secret .*tanımlı değil|gerekli/.test(message) ? 503 : 500);
-    return jsonError(message, status);
-  }
-}
-
-export default { fetch(request, env, ctx) { return handleRequest(request, env, ctx); } };
 function extractJSON(text) {
   const clean = String(text).replace(/^```(?:json)?\s*/i, "").replace(/\s*```\s*$/, "").trim();
   const start = clean.indexOf("{"), end = clean.lastIndexOf("}");
@@ -1148,3 +859,316 @@ function evalFilmingLocations(profile, f) {
   }
   return { match: true, unknown: false, reason: null };
     }
+async function handleResearchStream(env, body, controller, signal) {
+  const enc = new TextEncoder();
+  const send = (obj) => controller.enqueue(enc.encode(`data: ${JSON.stringify(obj)}\n\n`));
+  try {
+    const movies = Array.isArray(body.movies) ? body.movies.slice(0, 5) : [];
+    const total = movies.length;
+    if (!total) { send({ type: "done", movies: [] }); return; }
+    const filters = body.filters || {};
+    const settings = { useAI: body.useAI === true, useWebResearch: body.useWebResearch === true };
+    const forceRefresh = body.refresh === true || body.forceAll === true;
+    const forceAll = body.forceAll === true;
+    send({ type: "start", total });
+    const prepared = [];
+    for (let i = 0; i < movies.length; i++) {
+      const movie = movies[i];
+      const movieId = movieKey(movie);
+      const title = movie.original_title || movie.title || movieId;
+      send({ type: "step", index: i, total, title, stage: "okunuyor" });
+      const existing = await getProfileRow(env, movieId);
+      const fieldRows = await getFieldRows(env, movieId);
+      const profile = existing?.data || {};
+      if (!profile.vote_average && movie.vote_average != null) profile.vote_average = movie.vote_average;
+      if (!profile.vote_count && movie.vote_count != null) profile.vote_count = movie.vote_count;
+      if (!profile.overview && movie.overview) profile.overview = movie.overview;
+      if (!profile.poster_path && movie.poster_path) profile.poster_path = movie.poster_path;
+      if (!profile.release_date && movie.release_date) profile.release_date = movie.release_date;
+      let stale = findStaleFields(profile, fieldRows, forceRefresh);
+      if (forceAll) stale = Object.keys(FIELD_DEFS);
+      const deterministicFields = stale.filter(f => FIELD_DEFS[f]?.source !== "llm");
+      prepared.push({ movie, movieId, profile, staleDeterministic: deterministicFields, webAvailable: null });
+    }
+    for (let i = 0; i < prepared.length; i++) {
+      if (signal?.aborted) return;
+      const p = prepared[i];
+      send({ type: "step", index: i, total, title: p.movie.original_title || p.movie.title, stage: p.staleDeterministic.length ? "zenginleştiriliyor" : "önbellekten", fields: p.staleDeterministic.slice(0, 6) });
+      const classic = await enrichClassic(env, p.movie, p.staleDeterministic, signal);
+      Object.assign(p.profile, classic.updates);
+      const covered = [...classic.covered].filter(f => p.profile[f] !== undefined && p.profile[f] !== null);
+      await putFieldRows(env, p.movieId, covered, Object.fromEntries(covered.map(f => [f, FIELD_DEFS[f]?.source || "unknown"])));
+    }
+    const needWiki = !!(filters.original_work?.include?.length || filters.original_work?.exclude?.length
+      || filters.filming_locations?.include?.length || filters.filming_locations?.exclude?.length);
+    if (needWiki) {
+      const wikiNeeded = prepared.filter(p => p.staleDeterministic.includes("original_work") || p.staleDeterministic.includes("filming_locations"));
+      if (wikiNeeded.length) {
+        const wikiResults = await wikidataBatch(env, wikiNeeded.map(p => p.movie), signal);
+        for (const p of wikiNeeded) {
+          const rec = wikiResults.get(String(p.movie.id));
+          if (!rec) continue;
+          const covered = [];
+          if (p.staleDeterministic.includes("original_work") && rec.originalWork) { p.profile.original_work = rec.originalWork; covered.push("original_work"); }
+          if (p.staleDeterministic.includes("filming_locations") && rec.filmingLocations.length) { p.profile.filming_locations = rec.filmingLocations; covered.push("filming_locations"); }
+          if (rec.filmingCountries && rec.filmingCountries.length) p.profile.filming_countries = rec.filmingCountries;
+          await putFieldRows(env, p.movieId, covered, Object.fromEntries(covered.map(f => [f, "wikidata"])));
+        }
+      }
+    }
+    const afterLocal = [];
+    for (const p of prepared) {
+      if (!passesLocalFilters(p.profile, filters)) continue;
+      const filmLoc = evalFilmingLocations(p.profile, filters.filming_locations);
+      if (!filmLoc.match) continue;
+      p.localVerdict = filmLoc;
+      afterLocal.push(p);
+    }
+    const useSemantic = settings.useAI && hasSemanticFilters(filters);
+    const stage1UseSearch = settings.useWebResearch;
+    let semanticVerdicts = new Map();
+    let stage1Error = null;
+    if (useSemantic && afterLocal.length) {
+      send({ type: "step", index: 0, total: afterLocal.length, title: "Semantik filtre uygulanıyor", stage: "sınıflandırılıyor", fields: [] });
+      const signature = semanticSignature(filters);
+      const cacheMisses = [];
+      for (const p of afterLocal) {
+        const cached = await getVerdict(env, p.movieId, signature);
+        if (cached && cached.verdict !== "unknown") semanticVerdicts.set(p.movieId, cached);
+        else cacheMisses.push(p);
+      }
+      if (cacheMisses.length) {
+        try {
+          const configAll = await getAllConfig(env);
+          const sentence = buildFilterSentence(filters);
+          const context = buildFilterContext(filters, configAll);
+          const batchSize = Math.min(GROQ_MAX_MOVIES_PER_CALL, cacheMisses.length);
+          for (let start = 0; start < cacheMisses.length; start += batchSize) {
+            if (signal?.aborted) break;
+            const chunk = cacheMisses.slice(start, start + batchSize);
+            try {
+              const verdicts = await classifyBatch(env, chunk.map(p => p.movie), sentence, context, stage1UseSearch, signal);
+              for (const p of chunk) {
+                const v = verdicts.get(String(p.movie.id)) || { verdict: "unknown", reason: "LLM yanıt vermedi" };
+                semanticVerdicts.set(p.movieId, v);
+                if (v.verdict !== "unknown") await putVerdict(env, p.movieId, signature, v.verdict, v.reason);
+              }
+            } catch (e) {
+              console.warn("stage1 chunk:", e.message);
+              stage1Error = e.message;
+              for (const p of chunk) if (!semanticVerdicts.has(p.movieId)) semanticVerdicts.set(p.movieId, { verdict: "unknown", reason: "LLM başarısız" });
+            }
+          }
+        } catch (e) { console.warn("stage1 fail:", e.message); stage1Error = e.message; }
+      }
+    }
+    const results = [];
+    for (const p of afterLocal) {
+      let filter_match = true;
+      let unknown = false;
+      let reasons = [];
+      if (useSemantic) {
+        const v = semanticVerdicts.get(p.movieId);
+        if (!v) { unknown = true; reasons.push("Semantik sınıflandırma yok"); }
+        else if (v.verdict === "no") { filter_match = false; reasons.push(v.reason || "Semantik filtre uyuşmadı"); }
+        else if (v.verdict === "unknown") { unknown = true; reasons.push(v.reason || "Bilinmiyor"); }
+        else reasons.push(v.reason || "Eşleşti");
+      }
+      if (p.localVerdict?.unknown) unknown = true;
+      if (p.staleDeterministic.length) await putProfileRow(env, p.movieId, p.movie.title, yearOf(p.movie), p.profile, forceRefresh);
+      const verdict = semanticVerdicts.get(p.movieId);
+      const result = {
+        id: p.movie.id, ...p.movie, ...p.profile,
+        filter_match, filter_reasons: reasons,
+        unknown, conflicts: false,
+        semantic_used: useSemantic,
+        semantic_ok: useSemantic && !!verdict && verdict.verdict !== "unknown",
+        stage1_error: stage1Error,
+        web_used: useSemantic && stage1UseSearch,
+        web_ok: false,
+        _fromCache: p.staleDeterministic.length === 0
+      };
+      results.push(result);
+      send({ type: "movie", index: results.length - 1, total, movie: result });
+    }
+    send({ type: "done", movies: results });
+  } catch (err) {
+    console.error("handleResearchStream fatal:", err);
+    try { controller.enqueue(new TextEncoder().encode(`data: ${JSON.stringify({ type: "error", message: String(err.message || err) })}\n\n`)); } catch {}
+  } finally { try { controller.close(); } catch {} }
+}
+
+async function handleMovieDetails(env, body, signal) {
+  const movie = body?.movie;
+  if (!movie || !movie.id) throw Object.assign(new Error("movie gerekli"), { status: 400 });
+  const forceAll = body.forceAll === true;
+  const movieId = movieKey(movie);
+  const existing = await getProfileRow(env, movieId);
+  const fieldRows = await getFieldRows(env, movieId);
+  const profile = existing?.data || {};
+  if (!profile.vote_average && movie.vote_average != null) profile.vote_average = movie.vote_average;
+  if (!profile.vote_count && movie.vote_count != null) profile.vote_count = movie.vote_count;
+  if (!profile.overview && movie.overview) profile.overview = movie.overview;
+  if (!profile.poster_path && movie.poster_path) profile.poster_path = movie.poster_path;
+  if (!profile.release_date && movie.release_date) profile.release_date = movie.release_date;
+  const stale = findStaleFields(profile, fieldRows, forceAll);
+  const staleDet = stale.filter(f => FIELD_DEFS[f]?.source !== "llm");
+  const staleLLM = stale.filter(f => FIELD_DEFS[f]?.source === "llm");
+  if (staleDet.length) {
+    const classic = await enrichClassic(env, movie, staleDet, signal);
+    Object.assign(profile, classic.updates);
+    const covered = [...classic.covered].filter(f => profile[f] !== undefined && profile[f] !== null);
+    await putFieldRows(env, movieId, covered, Object.fromEntries(covered.map(f => [f, FIELD_DEFS[f]?.source || "unknown"])));
+  }
+  if (staleLLM.length) {
+    try {
+      const updates = await fillDetails(env, movie, staleLLM, signal);
+      Object.assign(profile, updates);
+      const covered = Object.keys(updates).filter(f => profile[f] !== undefined && profile[f] !== null);
+      await putFieldRows(env, movieId, covered, Object.fromEntries(covered.map(f => [f, "llm"])));
+    } catch (e) { console.warn("stage2 fail:", e.message); }
+  }
+  await putProfileRow(env, movieId, movie.title, yearOf(movie), profile, forceAll);
+  return { movie: { ...movie, ...profile } };
+}
+
+async function handleImages(env, url, signal) {
+  const id = url.searchParams.get("id");
+  const title = url.searchParams.get("title") || "";
+  const originalTitle = url.searchParams.get("original_title") || title;
+  const movie = { id, title, original_title: originalTitle };
+  const [tmdbList, commonsList] = await Promise.all([
+    tmdbBackdrops(env, movie, signal).catch(e => { console.warn("tmdb backdrops:", e.message); return []; }),
+    commonsScenes(env, movie, signal).catch(e => { console.warn("commons scenes:", e.message); return []; })
+  ]);
+  const tmdbSorted = [...tmdbList].sort((a, b) => (b.vote_average || 0) - (a.vote_average || 0));
+  const seen = new Set(); const merged = [];
+  for (const img of [...tmdbSorted, ...commonsList]) {
+    const key = String(img.url || "").split("/").pop().split("?")[0].toLowerCase();
+    if (!key || seen.has(key)) continue;
+    seen.add(key); merged.push(img);
+    if (merged.length >= 8) break;
+  }
+  return { images: merged };
+}
+
+async function getAllConfig(env) {
+  const obj = { ...DEFAULT_FILTER_INFO };
+  if (!env.DB) return obj;
+  try {
+    const { results } = await env.DB.prepare("SELECT key, value FROM app_config ORDER BY key").all();
+    for (const r of results || []) obj[r.key] = r.value;
+    return obj;
+  } catch (e) { console.warn("config read all:", e.message); return obj; }
+}
+async function getLlmStats(env) {
+  if (!env.DB) return [];
+  try {
+    const since = Math.floor(Date.now() / 1000) - 86400;
+    const { results } = await env.DB.prepare(
+      `SELECT provider, model, SUM(CASE WHEN ok=1 THEN 1 ELSE 0 END) AS ok, SUM(CASE WHEN ok=0 THEN 1 ELSE 0 END) AS fail, MAX(ts) AS last_ts
+       FROM llm_calls WHERE ts > ? GROUP BY provider, model ORDER BY provider, model`
+    ).bind(since).all();
+    return results || [];
+  } catch (e) { console.warn("stats:", e.message); return []; }
+}
+async function getActiveDeadKeys(env) {
+  if (!env.DB) return [];
+  try {
+    const now = Math.floor(Date.now() / 1000);
+    const { results } = await env.DB.prepare("SELECT provider, key_index, until_ts, reason FROM dead_keys WHERE until_ts > ? ORDER BY provider, key_index").bind(now).all();
+    return results || [];
+  } catch { return []; }
+}
+async function getFilterInfoAll(env) {
+  if (!env.DB) return {};
+  try {
+    const { results } = await env.DB.prepare("SELECT key, value FROM app_config WHERE key LIKE 'filter_info.%'").all();
+    const obj = {};
+    for (const r of results || []) obj[r.key] = r.value;
+    return obj;
+  } catch { return {}; }
+}
+
+async function tmdbRoute(env, url, signal) {
+  const path = url.pathname.replace(/^\/tmdb/, "");
+  if (path === "/genre/movie/list") return tmdb(env, path, { language: url.searchParams.get("language") || "tr-TR" }, signal);
+  if (path === "/configuration/languages") return tmdb(env, path, {}, signal);
+  if (path === "/configuration/countries") return tmdb(env, path, { language: url.searchParams.get("language") || "tr-TR" }, signal);
+  if (path === "/discover/movie") {
+    const allowed = ["language","sort_by","vote_average.gte","vote_average.lte","vote_count.gte","page","primary_release_date.gte","primary_release_date.lte","with_genres","without_genres","with_original_language","with_origin_country","with_runtime.gte","with_runtime.lte","with_text_query"];
+    const params = {};
+    for (const k of allowed) if (url.searchParams.has(k)) params[k] = url.searchParams.get(k);
+    return tmdb(env, path, params, signal);
+  }
+  if (path === "/search/movie") return tmdb(env, path, { query: url.searchParams.get("query") || "", language: url.searchParams.get("language") || "tr-TR", page: url.searchParams.get("page") || 1, include_adult: "false" }, signal);
+  throw Object.assign(new Error("Bilinmeyen TMDB uç noktası."), { status: 404 });
+}
+
+async function handleRequest(request, env, ctx) {
+  if (request.method === "OPTIONS") return new Response(null, { status: 204, headers: CORS });
+  const url = new URL(request.url);
+  try {
+    if (url.pathname === "/health") {
+      return response({
+        ok: true,
+        geminiModel: env.GEMINI_MODEL || GEMINI_MODEL_DEFAULT, geminiModels: buildGeminiChain(env),
+        groqModel: env.GROQ_MODEL || GROQ_MODEL_DEFAULT, groqModels: buildGroqChain(env),
+        tmdb: !!env.TMDB_API_KEY, omdb: !!env.OMDB_API_KEY, tavily: !!env.TAVILY_API_KEY,
+        groqKeys: [!!env.GROQ_API_KEY_1, !!env.GROQ_API_KEY_2, !!env.GROQ_API_KEY_3],
+        geminiKeys: [!!env.GEMINI_API_KEY_1, !!env.GEMINI_API_KEY_2, !!env.GEMINI_API_KEY_3],
+        adminToken: !!env.ADMIN_TOKEN, d1: !!env.DB
+      });
+    }
+    if (url.pathname === "/admin/config" && request.method === "GET") return response({ config: await getAllConfig(env) });
+    if (url.pathname === "/admin/config" && request.method === "PUT") {
+      if (!isAdmin(request, env)) return jsonError("Yetkisiz.", 401);
+      let body; try { body = await request.json(); } catch { return jsonError("Geçersiz JSON.", 400); }
+      if (!body.key || typeof body.value !== "string") return jsonError("key ve value gerekli.", 400);
+      await setConfig(env, body.key, body.value);
+      return response({ ok: true, key: body.key });
+    }
+    if (url.pathname === "/admin/filter_info" && request.method === "GET") return response({ config: await getFilterInfoAll(env) });
+    if (url.pathname === "/admin/stats" && request.method === "GET") return response({ stats: await getLlmStats(env), deadKeys: await getActiveDeadKeys(env) });
+    if (url.pathname === "/admin/dead_keys" && request.method === "DELETE") {
+      if (!isAdmin(request, env)) return jsonError("Yetkisiz.", 401);
+      if (env.DB) await env.DB.prepare("DELETE FROM dead_keys").run();
+      deadKeysCache.ts = 0;
+      return response({ ok: true });
+    }
+    if (url.pathname.startsWith("/tmdb/")) return response(await tmdbRoute(env, url, request.signal));
+    if (url.pathname === "/omdb") {
+      const params = {};
+      for (const k of ["i","t","y","type"]) if (url.searchParams.has(k)) params[k] = url.searchParams.get(k);
+      return response(await omdb(env, params, request.signal));
+    }
+    if (url.pathname === "/images") return response(await handleImages(env, url, request.signal));
+    if (url.pathname === "/movie/details" && request.method === "POST") {
+      let body; try { body = await request.json(); } catch { return jsonError("Geçersiz JSON.", 400); }
+      return response(await handleMovieDetails(env, body, request.signal));
+    }
+    if (url.pathname === "/research" || url.pathname === "/llm-interactions") {
+      if (request.method !== "POST") return jsonError("Bu uç nokta POST bekliyor.", 405);
+      let body; try { body = await request.json(); } catch { return jsonError("Geçersiz JSON gövdesi.", 400); }
+      const { readable, writable } = new TransformStream();
+      const writer = writable.getWriter();
+      const controller = { enqueue: (chunk) => writer.write(chunk), close: () => writer.close() };
+      const task = handleResearchStream(env, body, controller, request.signal).catch(err => {
+        try { controller.enqueue(new TextEncoder().encode(`data: ${JSON.stringify({ type: "error", message: String(err.message || err) })}\n\n`)); } catch {}
+        try { controller.close(); } catch {}
+      });
+      if (ctx?.waitUntil) ctx.waitUntil(task);
+      return new Response(readable, {
+        headers: { ...CORS, "Content-Type": "text/event-stream; charset=utf-8", "Cache-Control": "no-cache", "Connection": "keep-alive" }
+      });
+    }
+    return jsonError("Uç nokta bulunamadı.", 404);
+  } catch (e) {
+    console.error(e.stack || e);
+    const message = String(e.message || e);
+    const status = e.status || (/API_KEY|Secret .*tanımlı değil|gerekli/.test(message) ? 503 : 500);
+    return jsonError(message, status);
+  }
+}
+
+export default { fetch(request, env, ctx) { return handleRequest(request, env, ctx); } };

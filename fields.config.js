@@ -7,11 +7,11 @@
  * required: true → upstream API düşse bile bu alan çekilemezse
  *                 film "kısmi veri" olarak işaretlenir.
  *
- * source: "llm" → Groq (birincil) veya Gemini (yedek) tarafından doldurulur.
+ * source: "llm" → Gemini (birincil) veya Groq (yedek) tarafından doldurulur.
  */
 const days = (n) => n * 86400;
 
-export const SCHEMA_VERSION = 1;
+export const SCHEMA_VERSION = 2;
 
 export const FIELD_DEFS = {
   // TMDB (detay çağrısı) — 90 gün
@@ -28,28 +28,28 @@ export const FIELD_DEFS = {
   producers:              { source: "tmdb", ttl: days(90) },
   cast:                   { source: "tmdb", ttl: days(90) },
 
-  // LLM (Groq birincil / Gemini yedek) — 30 gün
-  story_locations:    { source: "llm", ttl: days(30) },
-  story_period:       { source: "llm", ttl: days(30) },
-  story_geography:    { source: "llm", ttl: days(30) },
-  character_traits:   { source: "llm", ttl: days(30) },
-  narrative_style:    { source: "llm", ttl: days(30) },
-  production_process: { source: "llm", ttl: days(30) },
-  sound:              { source: "llm", ttl: days(30) },
-  reality:            { source: "llm", ttl: days(30) },
-  story_dimensions:   { source: "llm", ttl: days(30) },
-  family_content:     { source: "llm", ttl: days(30) },
-  night_ratio:        { source: "llm", ttl: days(30) },
-  day_ratio:          { source: "llm", ttl: days(30) },
-  indoor_ratio:       { source: "llm", ttl: days(30) },
-  location_count:     { source: "llm", ttl: days(30) },
-  dialogue_density:   { source: "llm", ttl: days(30) },
-  color_ratio:        { source: "llm", ttl: days(30) },
-  aspect_ratio:       { source: "llm", ttl: days(30) },
-  season:             { source: "llm", ttl: days(30) },
-  related_films:      { source: "llm", ttl: days(30) },
+  // LLM (Gemini birincil / Groq yedek) — 90 gün
+  story_locations:    { source: "llm", ttl: days(90) },
+  story_period:       { source: "llm", ttl: days(90) },
+  story_geography:    { source: "llm", ttl: days(90) },
+  character_traits:   { source: "llm", ttl: days(90) },
+  narrative_style:    { source: "llm", ttl: days(90) },
+  production_process: { source: "llm", ttl: days(90) },
+  sound:              { source: "llm", ttl: days(90) },
+  reality:            { source: "llm", ttl: days(90) },
+  story_dimensions:   { source: "llm", ttl: days(90) },
+  family_content:     { source: "llm", ttl: days(90) },
+  night_ratio:        { source: "llm", ttl: days(90) },
+  day_ratio:          { source: "llm", ttl: days(90) },
+  indoor_ratio:       { source: "llm", ttl: days(90) },
+  location_count:     { source: "llm", ttl: days(90) },
+  dialogue_density:   { source: "llm", ttl: days(90) },
+  color_ratio:        { source: "llm", ttl: days(90) },
+  aspect_ratio:       { source: "llm", ttl: days(90) },
+  season:             { source: "llm", ttl: days(90) },
+  related_films:      { source: "llm", ttl: days(90) },
 
-  // OMDb — 7 gün (puan/oy sık değişir)
+  // OMDb — 7 gün
   imdbRating:         { source: "omdb", ttl: days(7) },
   imdbVotes:          { source: "omdb", ttl: days(7) },
   imdbID:             { source: "omdb", ttl: days(7) },
@@ -76,3 +76,16 @@ export const LLM_FIELDS = Object.entries(FIELD_DEFS)
   .map(([k]) => k);
 
 export const VALID_SOURCES = [...new Set(Object.values(FIELD_DEFS).map(d => d.source))];
+
+// Kategori alanları için geçerli değerler — {{RULES}} placeholder'ı sadece
+// istenen alanlara ait satırlarla doldurulur (token tasarrufu).
+export const FIELD_RULES = {
+  season: 'season: "winter"|"summer"|"spring"|"autumn"',
+  reality: 'reality: "true"|"mostly_true"|"inspired"|"realistic"|"fictional"|"utopic"',
+  narrative_style: 'narrative_style: "multi"|"reverse"|"linear"|"flashback"|"end_first"|"mid_first"|"fast"|"slow"|"no_end"|"alt_end"|"alt_narr"',
+  production_process: 'production_process: "amateur"|"indie"|"art"|"big"|"bmovie"|"avant"|"studio"|"no_music"|"rare_music"|"handheld"|"propaganda"|"dogme"',
+  sound: 'sound: "ambient"|"music"|"effects"|"voiceover_ext"|"voiceover_int"|"silent"|"dubbed"',
+  story_geography: 'story_geography: "city"|"town"|"village"|"mountain"|"desert"|"steppe"|"forest"|"seaside"|"riverside"|"opensea"|"air"',
+  character_traits: 'character_traits: "male_main"|"female_main"|"child_main"|"lgbt_main"|"male_support"|"female_support"|"child_support"|"lgbt_support"|"young_main"|"middle_main"|"old_main"|"disabled_main"|"animal" vb.',
+  story_dimensions: 'story_dimensions: "has_sequel"|"is_sequel"|"series_tight"|"series_loose"|"concept"|"has_version"|"same_event"'
+};

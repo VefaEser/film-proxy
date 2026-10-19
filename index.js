@@ -456,7 +456,18 @@ async function callGeminiModel(env, key, model, prompt, outerSignal) {
     console.warn(`gemini: generateContent model=${model} başarısız — ${msg}`);
     throw new Error(errors.join(" | "));
   }
-  }
+}
+
+function buildSearchQuery(movie, fields) {
+  const title = movie.original_title || movie.title || "";
+  const year = yearOf(movie) || "";
+  const hints = [];
+  if (fields.includes("filming_locations")) hints.push("filming location");
+  if (fields.includes("season")) hints.push("season");
+  if (fields.includes("original_work")) hints.push("based on");
+  if (fields.includes("night_ratio")) hints.push("night scenes");
+  return `${title} ${year} film ${hints.join(" ")}`.trim();
+                      }
 // ---------- Hibrit yönlendirici: Groq (birincil) + Gemini (yedek) ----------
 async function callLLMWithFallback(env, prompt, maxOutputTokens, useSearch, outerSignal) {
   const deadline = Date.now() + LLM_DEADLINE_MS;
@@ -578,16 +589,6 @@ Yanıt biçimi yalnızca şu JSON dizisi: [{"id": <film_id>, "<alan>": <değer>,
 Filmler: ${payloadStr}`;
 }
 
-function buildSearchQuery(movie, fields) {
-  const title = movie.original_title || movie.title || "";
-  const year = yearOf(movie) || "";
-  const hints = [];
-  if (fields.includes("filming_locations")) hints.push("filming location");
-  if (fields.includes("season")) hints.push("season");
-  if (fields.includes("original_work")) hints.push("based on");
-  if (fields.includes("night_ratio")) hints.push("night scenes");
-  return `${title} ${year} film ${hints.join(" ")}`.trim();
-}
 function extractCoveredFields(results, need) {
   const covered = new Set();
   const text = (results || []).map(r => `${r.title} ${r.content}`).join(" ").toLowerCase();
@@ -932,7 +933,6 @@ async function handleResearchStream(env, body, controller, signal) {
 
   let aiAvailable = false;
   const aiRequested = settings.useAI && prepared.some(p => p.aiNeeded.length);
-  // Web araştırması isteniyorsa LLM katmanına browser search de açılır.
   const useLLMSearch = settings.useWebResearch;
   if (aiRequested) {
     const aiMovies = prepared.filter(p => p.aiNeeded.length);

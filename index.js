@@ -21,35 +21,39 @@ const GROQ_MAX_PROMPT_CHARS = 7000;
 const LLM_DEADLINE_MS = 90000;
 const VERDICT_TTL = 86400;
 
-const DEFAULT_STAGE1 = `Sen bir film sınıflandırma uzmanısın. Yalnızca verilen bilgilerden hareket et; emin değilsen "unknown" de, uydurma.
+const DEFAULT_STAGE1 = [
+  "Sen bir film sınıflandırma uzmanısın. Yalnızca verilen bilgilerden hareket et; emin değilsen unknown de, uydurma.",
+  "",
+  "ARANAN FİLM:",
+  "{{FILTER_SENTENCE}}",
+  "",
+  "FİLTRE BAĞLAMLARI:",
+  "{{FILTER_CONTEXT}}",
+  "",
+  "KARAR KURALI:",
+  "- Film tanıma AÇIKÇA uymuyorsa no.",
+  "- Film tanıma AÇIKÇA uyuyorsa yes.",
+  "- Kısmen uyuyor ama emin değilsen unknown — bu durumda no DEME.",
+  "- Sadece küçük bir detay eksikse unknown, temel özellik yoksa no.",
+  "",
+  "Filmler:",
+  "{{MOVIES}}",
+  "",
+  "Yanıt YALNIZCA: [{'id': <film_id>, 'match': 'yes'|'no'|'unknown', 'reason': '<max 12 kelime>'}]"
+].join("\n");
 
-ARANAN FİLM:
-{{FILTER_SENTENCE}}
-
-FİLTRE BAĞLAMLARI:
-{{FILTER_CONTEXT}}
-
-KARAR KURALI:
-- Film tanıma AÇIKÇA uymuyorsa "no".
-- Film tanıma AÇIKÇA uyuyorsa "yes".
-- Kısmen uyuyor ama emin değilsen "unknown" — bu durumda no DEME.
-- Sadece küçük bir detay eksikse "unknown", temel özellik yoksa "no".
-
-Filmler:
-{{MOVIES}}
-
-Yanıt YALNIZCA: [{"id": <film_id>, "match": "yes"|"no"|"unknown", "reason": "<max 12 kelime>"}]`;
-
-const DEFAULT_STAGE2 = `Sen bir film veri uzmanısın. Aşağıdaki filmler hakkında veri doldur.
-Yalnızca kanıtlanabilir bilgiyi yaz; bilmiyorsan null bırak.
-
-Filmler:
-{{MOVIES}}
-
-Doldurulacak alanlar:
-{{RULES}}
-
-Yanıt YALNIZCA: [{"id": <film_id>, "<alan>": <değer>, ...}]`;
+const DEFAULT_STAGE2 = [
+  "Sen bir film veri uzmanısın. Aşağıdaki filmler hakkında veri doldur.",
+  "Yalnızca kanıtlanabilir bilgiyi yaz; bilmiyorsan null bırak.",
+  "",
+  "Filmler:",
+  "{{MOVIES}}",
+  "",
+  "Doldurulacak alanlar:",
+  "{{RULES}}",
+  "",
+  "Yanıt YALNIZCA: [{'id': <film_id>, '<alan>': <değer>}]"
+].join("\n");
 
 const DEFAULT_FILTER_INFO = {
   "filter_info.season": "[YZ bağlamı]\n- winter: Hikâye kışın geçiyor.\n- summer: Hikâye yazın geçiyor.\n- spring: Hikâye ilkbaharda geçiyor.\n- autumn: Hikâye sonbaharda geçiyor.",

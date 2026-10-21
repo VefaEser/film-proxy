@@ -6,7 +6,7 @@
   "observability": {
     "enabled": true,
     "head_sampling_rate": 1,
-    "logs": { "invocation_logs": true }
+    "logs": { "invocation_logs": false }
   },
   "d1_databases": [
     {

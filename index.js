@@ -785,6 +785,7 @@ async function filmmapLocations(env, movie, outerSignal) {
     const rawPlaces = payload.places || payload.locations || payload.films || payload.results || payload.data || [];
     const places = Array.isArray(rawPlaces) ? rawPlaces : [];
     const locations = places.map(p => ({
+    const locations = places.map(p => ({
       name: String(p.place || p.name || p.location || p.title || "").trim(),
       country: String(p.country || "").trim(),
       city: String(p.city || "").trim(),
@@ -808,7 +809,6 @@ async function filmmapLocations(env, movie, outerSignal) {
                                   }
 
 // ============ Metatake extended API ============
-async function metatakeExtended(env, movie, outerSignal) {
 async function metatakeExtended(env, movie, outerSignal) {
   const movieId = movieKey(movie);
   const cached = await getMetatakeExtendedCache(env, movieId);
@@ -1339,8 +1339,8 @@ function classifyCount(n) {
 function deriveLocationModeFromSources(profile, metatakeLocations, filmmapLocations, wdLocations) {
   if (profile.location_mode) return { mode: profile.location_mode, estimated: false, source: "llm" };
   const mt = metatakeLocations || [];
+  const layerOf = (x) => String(x.layer || x.relation || "").toLowerCase(); 
   if (mt.length) {
-    const layerOf = (x) => String(x.layer || x.relation || "").toLowerCase();
 const settingCount = mt.filter(l => layerOf(l) === "setting").length;
 const filmedCount = mt.filter(l => layerOf(l) !== "setting").length;
     const count = settingCount || filmedCount;

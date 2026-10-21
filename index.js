@@ -9,6 +9,8 @@ const GOOGLE_INTERACTIONS = "https://generativelanguage.googleapis.com/v1beta/in
 const GOOGLE_GENERATE = "https://generativelanguage.googleapis.com/v1beta/models";
 const TMDB_BASE = "https://api.themoviedb.org/3";
 const METATAKE_BASE = "https://metatake.net/api/v1";
+const USER_AGENT = "FilmKesifMotoru/1.0 (https://github.com/VefaEser/film-proxy; contact: vefaeser@ornitonerenk.com)";
+const CORS = {
 const CORS = {
   "Access-Control-Allow-Origin": "*",
   "Access-Control-Allow-Methods": "GET,POST,PUT,DELETE,OPTIONS",
@@ -82,7 +84,7 @@ const TRAIT_TR = {
 
 let geminiRR = 0;
 let groqRR = 0;
-let deadKeysCache = { ts: 0, gemini: new Set(), groq: new Set() };
+let deadKeysCache = { ts: 0, gemini: new Map(), groq: new Set() };
 const promptCache = { stage1: { ts: 0, template: null }, stage2: { ts: 0, template: null } };
 
 function response(data, status = 200) {
@@ -176,25 +178,35 @@ function findStaleFields(profile, fieldRows, forceRefresh) {
 }
 
 async function loadDeadKeys(env) {
+async function loadDeadKeys(env) {
   const now = Date.now();
   if (now - deadKeysCache.ts < 30000) return deadKeysCache;
   if (!env.DB) return deadKeysCache;
   try {
-    const { results } = await env.DB.prepare("SELECT provider, key_index FROM dead_keys WHERE until_ts > ?").bind(Math.floor(now / 1000)).all();
-    const gemini = new Set(), groq = new Set();
-    for (const r of results || []) { if (r.provider === "gemini") gemini.add(r.key_index); else if (r.provider === "groq") groq.add(r.key_index); }
+    const { results } = await env.DB.prepare("SELECT provider, key_index, model FROM dead_keys WHERE until_ts > ?").bind(Math.floor(now / 1000)).all();
+    const gemini = new Map();
+    const groq = new Set();
+    for (const r of results || []) {
+      if (r.provider === "gemini") {
+        if (!gemini.has(r.model)) gemini.set(r.model, new Set());
+        gemini.get(r.model).add(r.key_index);
+      } else if (r.provider === "groq") {
+        groq.add(r.key_index);
+      }
+    }
     deadKeysCache = { ts: now, gemini, groq };
     return deadKeysCache;
   } catch (e) { console.warn("dead_keys read:", e.message); return deadKeysCache; }
-}
+    }
 async function markDeadKey(env, provider, keyIndex, untilTs, reason) {
+async function markDeadKey(env, provider, keyIndex, untilTs, reason, model) {
   deadKeysCache.ts = 0;
   if (!env.DB) return;
   try {
     await env.DB.prepare(
-      `INSERT INTO dead_keys (provider, key_index, until_ts, reason) VALUES (?, ?, ?, ?)
-       ON CONFLICT(provider, key_index) DO UPDATE SET until_ts = excluded.until_ts, reason = excluded.reason`
-    ).bind(provider, keyIndex, untilTs, reason || "").run();
+      `INSERT INTO dead_keys (provider, key_index, model, until_ts, reason) VALUES (?, ?, ?, ?, ?)
+       ON CONFLICT(provider, key_index, model) DO UPDATE SET until_ts = excluded.until_ts, reason = excluded.reason`
+    ).bind(provider, keyIndex, model || "", untilTs, reason || "").run();
   } catch (e) { console.warn("dead_keys write:", e.message); }
 }
 function logLlmCall(env, provider, model, keyIndex, ok, latencyMs, errSnippet, context) {
@@ -354,7 +366,7 @@ async function wikidataBatchOnce(env, movies, timeoutMs, outerSignal) {
   const query = buildWikidataBatchQuery(movies);
   const url = "https://query.wikidata.org/sparql?query=" + encodeURIComponent(query);
   const data = await fetchJSON(url, {
-    headers: { "Accept": "application/sparql-results+json", "User-Agent": "FilmKesifMotoru/1.0" }
+    headers: { "Accept": "application/sparql-results+json", "User-Agent": USER_AGENT" }
   }, "Wikidata", timeoutMs, outerSignal);
   const bindings = data.results?.bindings || [];
   const byId = new Map();
@@ -392,7 +404,7 @@ async function metatakeLocations(env, movie, outerSignal) {
   if (cached) return { locations: cached, fromCache: true };
   const title = movie.original_title || movie.title || "";
   if (!title) return { locations: [], fromCache: false };
-  const headers = { "Accept": "application/json", "User-Agent": "FilmKesifMotoru/1.0" };
+  const headers = { "Accept": "application/json", "User-Agent": USER_AGENT" };
   if (env.METATAKE_API_KEY) headers["Authorization"] = `Bearer ${env.METATAKE_API_KEY}`;
   try {
     const url = `${METATAKE_BASE}/movies?title=${encodeURIComponent(title)}&limit=5`;
@@ -441,7 +453,7 @@ async function commonsScenes(env, movie, outerSignal) {
   url.searchParams.set("gsrsearch", `filetype:bitmap "${title}" film still OR scene`);
   url.searchParams.set("gsrnamespace", "6"); url.searchParams.set("gsrlimit", "20");
   url.searchParams.set("prop", "imageinfo"); url.searchParams.set("iiprop", "url|extmetadata"); url.searchParams.set("iiurlwidth", "640");
-  const data = await fetchJSON(url.toString(), { headers: { "User-Agent": "FilmKesifMotoru/1.0" } }, "Wikimedia Commons", 18000, outerSignal);
+  const data = await fetchJSON(url.toString(), { headers: { "User-Agent": USER_AGENT" } }, "Wikimedia Commons", 18000, outerSignal);
   const pages = Object.values(data.query?.pages || {});
   return pages.map(p => {
     const i = p.imageinfo?.[0] || {}, meta = i.extmetadata || {};
@@ -507,11 +519,15 @@ function orderGroqModels(chain, promptLen) {
 
 function classifyError(msg) {
   if (/HTTP 40[13]|invalid.?key|forbidden|unauthor/i.test(msg)) return { type: "invalid", cooldown: 3600, modelWide: false };
-  if (/HTTP 429|rate.?limit|quota|exceeded/i.test(msg)) return { type: "ratelimit", cooldown: null, modelWide: false };
+  if (/HTTP 429|rate.?limit|quota|exceeded/i.test(msg)) {
+    if (/per day|daily|RPD|requests per day/i.test(msg)) return { type: "ratelimit-daily", cooldown: null, modelWide: false };
+    if (/per minute|RPM|requests per minute/i.test(msg)) return { type: "ratelimit-minute", cooldown: 60, modelWide: false };
+    return { type: "ratelimit", cooldown: null, modelWide: false };
+  }
   if (/HTTP 503|service_unavailable|high demand/i.test(msg)) return { type: "model_down", cooldown: 300, modelWide: true };
   if (/aborted due to timeout|timed? ?out|network|fetch failed|socket/i.test(msg)) return { type: "network", cooldown: 60, modelWide: false };
   return { type: "unknown", cooldown: 120, modelWide: false };
-}
+    }
 
 function extractGeminiText(data) {
   if (typeof data?.output_text === "string") return data.output_text;
@@ -616,8 +632,8 @@ async function callLLMWithFallback(env, prompt, maxOutputTokens, useSearch, oute
   for (const model of geminiModels) {
     if (Date.now() > deadline) break;
     let modelWideIssue = false;
-    for (const { key, index } of rotatedG) {
-      if (modelWideIssue || dead.gemini.has(index)) continue;
+        for (const { key, index } of rotatedG) {
+      if (modelWideIssue || (dead.gemini.get(model) || new Set()).has(index)) continue;
       if (Date.now() > deadline) break;
       if (outerSignal?.aborted) throw new Error("İstemci isteği iptal etti.");
       geminiTried = true;
@@ -632,9 +648,16 @@ async function callLLMWithFallback(env, prompt, maxOutputTokens, useSearch, oute
         logLlmCall(env, "gemini", model, index, false, Date.now() - start, msg.slice(0, 200), context);
         errors.push(`gemini ${model} key=${index}: ${msg}`);
         console.warn(`gemini: model=${model} key=${index} type=${cls.type} — ${msg.slice(0, 200)}`);
-        if (cls.modelWide) { modelWideIssue = true; errors.push(`[${model} ${cls.type} model-wide]`); }
-        else if (cls.type === "ratelimit") { await markDeadKey(env, "gemini", index, nowSec() + (e.retryAfterMs ? Math.ceil(e.retryAfterMs / 1000) : 300), msg.slice(0, 200)); }
-        else if (cls.cooldown) { await markDeadKey(env, "gemini", index, nowSec() + cls.cooldown, msg.slice(0, 200)); }
+                if (cls.modelWide) { modelWideIssue = true; errors.push(`[${model} ${cls.type} model-wide]`); }
+        else if (cls.type === "ratelimit-daily") {
+          const tomorrow = new Date(); tomorrow.setUTCHours(0, 0, 0, 0); tomorrow.setUTCDate(tomorrow.getUTCDate() + 1);
+          await markDeadKey(env, "gemini", index, Math.floor(tomorrow.getTime() / 1000) + 3600, msg.slice(0, 200), model);
+        }
+        else if (cls.type === "ratelimit-minute" || cls.type === "ratelimit") {
+          const waitSec = e.retryAfterMs ? Math.ceil(e.retryAfterMs / 1000) : 60;
+          await markDeadKey(env, "gemini", index, nowSec() + waitSec, msg.slice(0, 200), model);
+        }
+        else if (cls.cooldown) { await markDeadKey(env, "gemini", index, nowSec() + cls.cooldown, msg.slice(0, 200), model); }
       }
     }
   }
@@ -664,7 +687,14 @@ async function callLLMWithFallback(env, prompt, maxOutputTokens, useSearch, oute
           logLlmCall(env, "groq", model, index, false, Date.now() - start, msg.slice(0, 200), context);
           errors.push(`groq ${model} key=${index}: ${msg}`);
           console.warn(`groq: model=${model} key=${index} type=${cls.type} — ${msg.slice(0, 200)}`);
-          if (cls.type === "ratelimit") await markDeadKey(env, "groq", index, nowSec() + (e.retryAfterMs ? Math.ceil(e.retryAfterMs / 1000) : 300), msg.slice(0, 200));
+                    if (cls.type === "ratelimit-daily") {
+            const tomorrow = new Date(); tomorrow.setUTCHours(0, 0, 0, 0); tomorrow.setUTCDate(tomorrow.getUTCDate() + 1);
+            await markDeadKey(env, "groq", index, Math.floor(tomorrow.getTime() / 1000) + 3600, msg.slice(0, 200));
+          }
+          else if (cls.type === "ratelimit-minute" || cls.type === "ratelimit") {
+            const waitSec = e.retryAfterMs ? Math.ceil(e.retryAfterMs / 1000) : 60;
+            await markDeadKey(env, "groq", index, nowSec() + waitSec, msg.slice(0, 200));
+          }
           else if (cls.cooldown) await markDeadKey(env, "groq", index, nowSec() + cls.cooldown, msg.slice(0, 200));
         }
       }
@@ -814,7 +844,7 @@ async function metatakeExtended(env, movie, outerSignal) {
   if (cached) return cached;
   const title = movie.original_title || movie.title || "";
   if (!title) return null;
-  const headers = { "Accept": "application/json", "User-Agent": "FilmKesifMotoru/1.0" };
+  const headers = { "Accept": "application/json", "User-Agent": USER_AGENT" };
   try {
     const searchUrl = `https://metatake.net/api/v1/films?q=${encodeURIComponent(title)}&limit=5`;
     const searchData = await fetchJSON(searchUrl, { headers }, "Metatake search", 15000, outerSignal);
@@ -1085,7 +1115,7 @@ async function enrichClassic(env, movie, staleFields, outerSignal) {
   const covered = new Set();
   if (movie.id) {
     try {
-      const detail = await tmdb(env, `/movie/${movie.id}`, { language: "tr-TR", append_to_response: "credits,images", include_image_language: "en,null" }, outerSignal);
+            const detail = await tmdb(env, `/movie/${movie.id}`, { language: "tr-TR", append_to_response: "credits,images" }, outerSignal);
       const genres = Array.isArray(detail.genres) ? detail.genres : [];
       if (need.has("genres")) { updates.genres = genres.map(g => g.name); covered.add("genres"); }
       if (need.has("genres_ids")) { updates.genres_ids = genres.map(g => g.id); covered.add("genres_ids"); }
@@ -1099,14 +1129,30 @@ async function enrichClassic(env, movie, staleFields, outerSignal) {
       const companies = Array.isArray(detail.production_companies) ? detail.production_companies : [];
       if (need.has("production_companies")) { updates.production_companies = companies.map(c => c.name); covered.add("production_companies"); }
       if (need.has("production_companies_ids")) { updates.production_companies_ids = companies.map(c => c.id); covered.add("production_companies_ids"); }
+            const originalLang = detail.original_language || "";
+      const isTurkishFilm = originalLang === "tr";
       const posters = detail.images?.posters || [];
       const trPosterPath = detail.poster_path || "";
-const originalPoster =
-  posters.find(p => p.iso_639_1 === "en" && p.file_path !== trPosterPath) ||
-  posters.find(p => !p.iso_639_1 && p.file_path !== trPosterPath) ||
-  posters.find(p => p.file_path !== trPosterPath) ||
-  null;
-      if (need.has("original_poster_path") && originalPoster) { updates.original_poster_path = originalPoster.file_path; covered.add("original_poster_path"); }
+      const detailPosterEntry = posters.find(p => p.file_path === trPosterPath);
+      const detailPosterIsTurkish = detailPosterEntry?.iso_639_1 === "tr";
+      let originalPoster = null;
+      if (isTurkishFilm) {
+        originalPoster = posters.find(p => p.iso_639_1 === "tr")
+          || (detailPosterIsTurkish ? { file_path: trPosterPath } : null);
+      } else {
+        originalPoster = posters.find(p => p.iso_639_1 === originalLang && p.iso_639_1 !== "tr")
+          || posters.find(p => p.iso_639_1 === "en")
+          || posters.find(p => !p.iso_639_1)
+          || posters.find(p => p.iso_639_1 && p.iso_639_1 !== "tr");
+      }
+      if (need.has("original_poster_path")) {
+        if (originalPoster) {
+          updates.original_poster_path = originalPoster.file_path;
+          covered.add("original_poster_path");
+        } else if (!isTurkishFilm && detailPosterIsTurkish) {
+          updates.poster_path = null;
+        }
+}
       const kw = detail.keywords?.keywords || [];
       if (need.has("keywords")) { updates.keywords = kw.map(k => k.name); covered.add("keywords"); }
       if (need.has("keywords_ids")) { updates.keywords_ids = kw.map(k => k.id); covered.add("keywords_ids"); }
@@ -1456,15 +1502,16 @@ async function handleResearchStream(env, body, controller, signal) {
       if (!profile.vote_average && movie.vote_average != null) profile.vote_average = movie.vote_average;
       if (!profile.vote_count && movie.vote_count != null) profile.vote_count = movie.vote_count;
       if (!profile.overview && movie.overview) profile.overview = movie.overview;
-      if (!profile.poster_path && movie.poster_path) profile.poster_path = movie.poster_path;
+      if (profile.poster_path === undefined && movie.poster_path) profile.poster_path = movie.poster_path;
       if (!profile.release_date && movie.release_date) profile.release_date = movie.release_date;
       prepared.push({ movie, movieId, profile, fieldRows, staleDeterministic: [], filmmap: null, metatakeLocations: null, metatakeExt: null, locationModeEstimated: false, locationModeSource: null });
     }
 
     const needFilmMap = !!(filters.filming_locations?.include?.length || filters.filming_locations?.exclude?.length || filters.locationMode);
     const needMetatakeForNarrative = !!(filters.story_locations?.include?.length || filters.story_locations?.exclude?.length || filters.related_films?.include?.length || filters.related_films?.exclude?.length);
-    const needMetatake = needFilmMap || needMetatakeForNarrative;
-
+    // Subrequest bütçesi: Metatake yalnızca anlatı filtreleri için çağrılır.
+    // Sadece filming_locations / locationMode isteniyorsa FilmMap yeterlidir (3 çağrı/film tasarrufu).
+    const needMetatake = needMetatakeForNarrative;
     if (needFilmMap) {
       for (const p of prepared) {
         if (signal?.aborted) return;
@@ -1662,7 +1709,7 @@ async function handleMovieDetails(env, body, signal) {
   if (!profile.vote_average && movie.vote_average != null) profile.vote_average = movie.vote_average;
   if (!profile.vote_count && movie.vote_count != null) profile.vote_count = movie.vote_count;
   if (!profile.overview && movie.overview) profile.overview = movie.overview;
-  if (!profile.poster_path && movie.poster_path) profile.poster_path = movie.poster_path;
+  if (profile.poster_path === undefined && movie.poster_path) profile.poster_path = movie.poster_path;
   if (!profile.release_date && movie.release_date) profile.release_date = movie.release_date;
   let metatakeLocations = null;
   let filmmapLocationsList = null;

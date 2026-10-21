@@ -19,6 +19,7 @@ export const FIELD_DEFS = {
   runtime:                { source: "tmdb", ttl: days(90) },
   production_companies:   { source: "tmdb", ttl: days(90) },
   production_companies_ids: { source: "tmdb", ttl: days(90) },
+  original_poster_path:   { source: "tmdb", ttl: days(90) },
   director:               { source: "tmdb", ttl: days(90) },
   director_ids:           { source: "tmdb", ttl: days(90) },
   writers:                { source: "tmdb", ttl: days(90) },

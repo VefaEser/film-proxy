@@ -539,7 +539,7 @@ function extractGeminiText(data) {
 async function callGeminiInteractions(env, key, model, prompt, outerSignal) {
   const data = await fetchJSON(GOOGLE_INTERACTIONS, {
     method: "POST", headers: { "Content-Type": "application/json", "x-goog-api-key": key },
-    body: JSON.stringify({ model, input: prompt })
+    body: JSON.stringify({ model, input: prompt, generationConfig: { thinkingConfig: { thinkingBudget: 0 } } })
   }, `Gemini Interactions ${model}`, 10000, outerSignal);
   const text = extractGeminiText(data);
   if (!text) throw new Error(`Gemini Interactions ${model} yanıtında metin yok.`);
@@ -549,7 +549,7 @@ async function callGeminiGenerate(env, key, model, prompt, outerSignal) {
   const url = `${GOOGLE_GENERATE}/${encodeURIComponent(model)}:generateContent`;
   const data = await fetchJSON(url, {
     method: "POST", headers: { "Content-Type": "application/json", "x-goog-api-key": key },
-    body: JSON.stringify({ contents: [{ parts: [{ text: prompt }] }] })
+    body: JSON.stringify({ contents: [{ parts: [{ text: prompt }] }], generationConfig: { thinkingConfig: { thinkingBudget: 0 } } })
   }, `Gemini generateContent ${model}`, 8000, outerSignal);
   const text = extractGeminiText(data);
   if (!text) throw new Error(`Gemini generateContent ${model} yanıtında metin yok.`);

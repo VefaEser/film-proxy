@@ -1099,6 +1099,9 @@ async function enrichClassic(env, movie, staleFields, outerSignal) {
       const companies = Array.isArray(detail.production_companies) ? detail.production_companies : [];
       if (need.has("production_companies")) { updates.production_companies = companies.map(c => c.name); covered.add("production_companies"); }
       if (need.has("production_companies_ids")) { updates.production_companies_ids = companies.map(c => c.id); covered.add("production_companies_ids"); }
+      const posters = detail.images?.posters || [];
+      const originalPoster = posters.find(p => !p.iso_639_1) || posters[0];
+      if (need.has("original_poster_path") && originalPoster) { updates.original_poster_path = originalPoster.file_path; covered.add("original_poster_path"); }
       const kw = detail.keywords?.keywords || [];
       if (need.has("keywords")) { updates.keywords = kw.map(k => k.name); covered.add("keywords"); }
       if (need.has("keywords_ids")) { updates.keywords_ids = kw.map(k => k.id); covered.add("keywords_ids"); }

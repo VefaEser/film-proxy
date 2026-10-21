@@ -1336,14 +1336,19 @@ function deriveLocationModeFromSources(profile, metatakeLocations, filmmapLocati
   if (profile.location_mode) return { mode: profile.location_mode, estimated: false, source: "llm" };
   const mt = metatakeLocations || [];
   if (mt.length) {
-    const settingCount = mt.filter(l => String(l.layer || "").toLowerCase() === "setting").length;
-    const filmedCount = mt.filter(l => String(l.layer || "").toLowerCase() !== "setting").length;
+    const layerOf = (x) => String(x.layer || x.relation || "").toLowerCase();
+const settingCount = mt.filter(l => layerOf(l) === "setting").length;
+const filmedCount = mt.filter(l => layerOf(l) !== "setting").length;
     const count = settingCount || filmedCount;
     const avgConf = mt.reduce((s, l) => s + (Number(l.confidence) || 0), 0) / mt.length;
     return { mode: classifyCount(count), estimated: avgConf < 0.7, source: "metatake" };
   }
   const fm = filmmapLocations || [];
-  if (fm.length) return { mode: classifyCount(fm.length), estimated: true, source: "filmmap" };
+if (fm.length) {
+  const fmSettings = fm.filter(l => layerOf(l) === "setting").length;
+  const count = fmSettings || fm.length;
+  return { mode: classifyCount(count), estimated: true, source: "filmmap" };
+            }
   const wd = wdLocations || profile.filming_locations || [];
   if (wd.length) return { mode: classifyCount(wd.length), estimated: true, source: "wikidata" };
   return { mode: null, estimated: true, source: null };

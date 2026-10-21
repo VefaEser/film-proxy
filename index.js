@@ -1085,7 +1085,7 @@ async function enrichClassic(env, movie, staleFields, outerSignal) {
   const covered = new Set();
   if (movie.id) {
     try {
-      const detail = await tmdb(env, `/movie/${movie.id}`, { language: "tr-TR", append_to_response: "credits,images,keywords" }, outerSignal);
+      const detail = await tmdb(env, `/movie/${movie.id}`, { language: "tr-TR", append_to_response: "credits,images", include_image_language: "en,null" }, outerSignal);
       const genres = Array.isArray(detail.genres) ? detail.genres : [];
       if (need.has("genres")) { updates.genres = genres.map(g => g.name); covered.add("genres"); }
       if (need.has("genres_ids")) { updates.genres_ids = genres.map(g => g.id); covered.add("genres_ids"); }
@@ -1100,7 +1100,12 @@ async function enrichClassic(env, movie, staleFields, outerSignal) {
       if (need.has("production_companies")) { updates.production_companies = companies.map(c => c.name); covered.add("production_companies"); }
       if (need.has("production_companies_ids")) { updates.production_companies_ids = companies.map(c => c.id); covered.add("production_companies_ids"); }
       const posters = detail.images?.posters || [];
-      const originalPoster = posters.find(p => !p.iso_639_1 || p.iso_639_1 === "en") || posters[0];
+      const trPosterPath = detail.poster_path || "";
+const originalPoster =
+  posters.find(p => p.iso_639_1 === "en" && p.file_path !== trPosterPath) ||
+  posters.find(p => !p.iso_639_1 && p.file_path !== trPosterPath) ||
+  posters.find(p => p.file_path !== trPosterPath) ||
+  null;
       if (need.has("original_poster_path") && originalPoster) { updates.original_poster_path = originalPoster.file_path; covered.add("original_poster_path"); }
       const kw = detail.keywords?.keywords || [];
       if (need.has("keywords")) { updates.keywords = kw.map(k => k.name); covered.add("keywords"); }

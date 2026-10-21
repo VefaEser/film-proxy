@@ -148,17 +148,28 @@ async function putFieldRows(env, movieId, fields, sourceLookup) {
 }
 
 function isBadDetailArray(val) {
+function isBadDetailArray(val) {
   if (!Array.isArray(val)) return false;
   if (val.length === 0) return false;
-  const looksLikeId = (s) => typeof s === "string" && (/^nm\d+$/i.test(s.trim()) || /^\d{4,}$/.test(s.trim()));
+  const looksLikeId = (s) => {
+    if (typeof s !== "string") return false;
+    const t = s.trim();
+    if (!t) return true;
+    return /^(nm|tt)\d+$/i.test(t)
+      || /^\d{4,}$/.test(t)
+      || /^Q\d+$/.test(t)
+      || /^person[\/_-]\d+$/i.test(t)
+      || /^\[object /i.test(t)
+      || /^\{.*\}$/.test(t);
+  };
   return val.some(v => {
     if (v == null) return true;
     if (typeof v === "string") return looksLikeId(v);
     if (typeof v === "number") return true;
-    if (typeof v === "object" && typeof v.name === "string") return looksLikeId(v.name);
+    if (typeof v === "object" && typeof v.name === "string") return looksLikeId(v.name) || !v.name.trim();
     return true;
   });
-}
+  }
 
 function findStaleFields(profile, fieldRows, forceRefresh) {
   const now = Math.floor(Date.now() / 1000);
@@ -1136,10 +1147,32 @@ async function enrichClassic(env, movie, staleFields, outerSignal) {
       const detailPosterEntry = posters.find(p => p.file_path === trPosterPath);
       const detailPosterIsTurkish = detailPosterEntry?.iso_639_1 === "tr";
       let originalPoster = null;
-      if (isTurkishFilm) {
+            if (isTurkishFilm) {
+        // TMDB'de Türk filmlerinin posterleri genelde iso_639_1=null (dilsiz) etiketlidir,
+        // "tr" etiketi çoğu zaman yoktur. Bu yüzden dilsiz fallback zorunlu.
+        // detail.poster_path ise tr-TR çevirisi yoksa ana (İngilizce) posteri döndürebilir;
+        // bu yüzden onu yalnızca detailPosterIsTurkish true ise kullan.
         originalPoster = posters.find(p => p.iso_639_1 === "tr")
-          || (detailPosterIsTurkish ? { file_path: trPosterPath } : null);
+          || posters.find(p => !p.iso_639_1)
+          || (detailPosterIsTurkish ? { file_path: trPosterPath } : null)
+          || (posters[0] ? { file_path: posters[0].file_path } : null);
       } else {
+        originalPoster = posters.find(p => p.iso_639_1 === originalLang && p.iso_639_1 !== "tr")
+          || posters.find(p => p.iso_639_1 === "en")
+          || posters.find(p => !p.iso_639_1)
+          || posters.find(p => p.iso_639_1 && p.iso_639_1 !== "tr");
+      }
+      if (need.has("original_poster_path")) {
+        if (originalPoster) {
+          updates.original_poster_path = originalPoster.file_path;
+          covered.add("original_poster_path");
+        } else if (isTurkishFilm) {
+          updates.original_poster_path = null;
+          covered.add("original_poster_path");
+        } else if (detailPosterIsTurkish) {
+          updates.poster_path = null;
+        }
+                                } else {
         originalPoster = posters.find(p => p.iso_639_1 === originalLang && p.iso_639_1 !== "tr")
           || posters.find(p => p.iso_639_1 === "en")
           || posters.find(p => !p.iso_639_1)
@@ -1159,13 +1192,21 @@ async function enrichClassic(env, movie, staleFields, outerSignal) {
       const credits = detail.credits;
       if (credits) {
         const crew = credits.crew || [];
-        if (need.has("director")) { updates.director = crew.filter(c => c.job === "Director").map(c => ({ name: c.name, profile_path: c.profile_path || null })); covered.add("director"); }
+        // İsim alanında ID/garbage olan kişileri filtrele — "jam kod" sızmasını engeller.
+        const sanitizePerson = (c) => {
+          const name = typeof c?.name === "string" ? c.name.trim() : "";
+          if (!name) return null;
+          if (/^(nm|tt)\d+$/i.test(name) || /^\d{4,}$/.test(name) || /^Q\d+$/.test(name) || /^\[object /i.test(name)) return null;
+          return { name, profile_path: c.profile_path || null };
+        };
+        if (need.has("director")) { updates.director = crew.filter(c => c.job === "Director").map(sanitizePerson).filter(Boolean); covered.add("director"); }
         if (need.has("director_ids")) { updates.director_ids = crew.filter(c => c.job === "Director").map(c => c.id); covered.add("director_ids"); }
-        if (need.has("writers")) { updates.writers = crew.filter(c => c.department === "Writing" || c.job === "Writer").map(c => ({ name: c.name, profile_path: c.profile_path || null })); covered.add("writers"); }
+        if (need.has("writers")) { updates.writers = crew.filter(c => c.department === "Writing" || c.job === "Writer").map(sanitizePerson).filter(Boolean); covered.add("writers"); }
         if (need.has("writers_ids")) { updates.writers_ids = crew.filter(c => c.department === "Writing" || c.job === "Writer").map(c => c.id); covered.add("writers_ids"); }
-        if (need.has("producers")) { updates.producers = crew.filter(c => c.job === "Producer").map(c => ({ name: c.name, profile_path: c.profile_path || null })); covered.add("producers"); }
-        if (need.has("cast")) { updates.cast = (credits.cast || []).slice(0, 8).map(c => ({ name: c.name, profile_path: c.profile_path || null, character: c.character || "" })); covered.add("cast"); }
+        if (need.has("producers")) { updates.producers = crew.filter(c => c.job === "Producer").map(sanitizePerson).filter(Boolean); covered.add("producers"); }
+        if (need.has("cast")) { updates.cast = (credits.cast || []).slice(0, 8).map(sanitizePerson).filter(Boolean); covered.add("cast"); }
         if (need.has("cast_ids")) { updates.cast_ids = (credits.cast || []).slice(0, 20).map(c => c.id); covered.add("cast_ids"); }
+                   }
       }
       if (!movie.imdb_id && detail.imdb_id) movie.imdb_id = detail.imdb_id;
     } catch (e) { console.warn("tmdb detail enrich:", e.message); }

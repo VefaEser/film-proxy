@@ -741,15 +741,53 @@ async function filmmapLocations(env, movie, outerSignal) {
   const title = movie.original_title || movie.title || "";
   if (!title) return { locations: [], fromCache: false };
   try {
-    const url = `https://moviescenemap.com/mcp?title=${encodeURIComponent(title)}&format=json`;
-    const data = await fetchJSON(url, { headers: { "User-Agent": "FilmKesifMotoru/1.0" } }, "FilmMap", 15000, outerSignal);
-    const list = Array.isArray(data) ? data : (data.locations || data.results || []);
-    const locations = list.slice(0, 20).map(loc => ({
-      name: String(loc.location || loc.name || "").trim(),
-      country: String(loc.country || "").trim(),
-      city: String(loc.city || "").trim(),
-      relation: String(loc.relation || loc.layer || "").trim(),
-      confidence: loc.confidence != null ? Number(loc.confidence) : null
+    const body = {
+      jsonrpc: "2.0",
+      id: 1,
+      method: "tools/call",
+      params: { name: "where_was_it_filmed", arguments: { title, limit: 100 } }
+    };
+    const signal = combineSignals(outerSignal, 15000);
+    const res = await fetch("https://moviescenemap.com/mcp", {
+      method: "POST",
+      headers: { "Content-Type": "application/json", "Accept": "application/json, text/event-stream" },
+      body: JSON.stringify(body),
+      signal
+    });
+    if (!res.ok) return { locations: [], fromCache: false, error: `HTTP ${res.status}` };
+    const raw = await res.text();
+    let data = safeJSON(raw, null);
+    if (!data) {
+      const lines = raw.split(/\r?\n/).filter(l => l.startsWith("data: "));
+      for (const l of lines) {
+        const parsed = safeJSON(l.slice(6), null);
+        if (parsed) { data = parsed; break; }
+      }
+    }
+    if (!data) return { locations: [], fromCache: false, error: "parse fail" };
+    if (data.error) return { locations: [], fromCache: false, error: data.error.message || "rpc error" };
+    let payload = null;
+    const content = data?.result?.content;
+    if (Array.isArray(content)) {
+      for (const c of content) {
+        if (c?.type === "text" && typeof c.text === "string") {
+          const arr = safeJSON(c.text, null);
+          if (arr) { payload = arr; break; }
+        }
+      }
+    }
+    if (!payload && data?.result) payload = data.result;
+    if (!payload) return { locations: [], fromCache: false, error: "no payload" };
+    const rawPlaces = payload.places || payload.locations || payload.films || payload.results || payload.data || [];
+    const places = Array.isArray(rawPlaces) ? rawPlaces : [];
+    const locations = places.map(p => ({
+      name: String(p.place || p.name || p.location || p.title || "").trim(),
+      country: String(p.country || "").trim(),
+      city: String(p.city || "").trim(),
+      relation: String(p.relation || p.layer || "filmed"),
+      confidence: p.confidence != null ? Number(p.confidence) : null,
+      lat: p.lat != null ? Number(p.lat) : (p.latitude != null ? Number(p.latitude) : null),
+      lng: p.lng != null ? Number(p.lng) : (p.longitude != null ? Number(p.longitude) : null)
     })).filter(l => l.name);
     const seen = new Set(); const unique = [];
     for (const loc of locations) {
@@ -758,43 +796,78 @@ async function filmmapLocations(env, movie, outerSignal) {
       seen.add(key); unique.push(loc);
     }
     await putFilmmapCache(env, movieId, unique);
-    return { locations: unique, fromCache: false };
+    return { locations: unique, fromCache: false, countriesOnly: payload.countries_only || [] };
   } catch (e) {
     console.warn("filmmap:", e.message);
     return { locations: [], fromCache: false, error: e.message };
   }
-}
+                                  }
 
 // ============ Metatake extended API ============
+async function metatakeExtended(env, movie, outerSignal) {
 async function metatakeExtended(env, movie, outerSignal) {
   const movieId = movieKey(movie);
   const cached = await getMetatakeExtendedCache(env, movieId);
   if (cached) return cached;
   const title = movie.original_title || movie.title || "";
   if (!title) return null;
+  const headers = { "Accept": "application/json", "User-Agent": "FilmKesifMotoru/1.0" };
   try {
-    const url = `${METATAKE_BASE}/movies?title=${encodeURIComponent(title)}&limit=3`;
-    const headers = { "Accept": "application/json", "User-Agent": "FilmKesifMotoru/1.0" };
-    if (env.METATAKE_API_KEY) headers["Authorization"] = `Bearer ${env.METATAKE_API_KEY}`;
-    const data = await fetchJSON(url, { headers }, "Metatake", 15000, outerSignal);
-    const list = Array.isArray(data) ? data : (data.data || data.movies || []);
-    if (!list.length) return null;
-    const film = list[0];
-    const locations = (film.filming_locations || film.locations || []).map(loc => ({
-      name: String(loc.name || loc.location || "").trim(),
-      country: String(loc.country || "").trim(),
-      city: String(loc.city || "").trim(),
-      layer: String(loc.layer || "filmed"),
-      kind: String(loc.kind || ""),
-      confidence: loc.confidence != null ? Number(loc.confidence) : null
-    })).filter(l => l.name);
-    const confidence = film.confidence != null ? Number(film.confidence) : (locations.length ? 0.5 : null);
+    const searchUrl = `https://metatake.net/api/v1/films?q=${encodeURIComponent(title)}&limit=5`;
+    const searchData = await fetchJSON(searchUrl, { headers }, "Metatake search", 15000, outerSignal);
+    const films = Array.isArray(searchData?.films) ? searchData.films : [];
+    if (!films.length) return null;
+    const year = yearOf(movie);
+    const match = (year && films.find(f => Number(f.year) === Number(year))) || films[0];
+    const slug = match.slug;
+    if (!slug) return null;
+
+    let film = null;
+    try {
+      const filmUrl = `https://metatake.net/api/v1/films/${encodeURIComponent(slug)}`;
+      film = await fetchJSON(filmUrl, { headers }, "Metatake film", 15000, outerSignal);
+    } catch (e) { console.warn("metatake film:", e.message); }
+
+    let locations = [];
+    try {
+      const locUrl = `https://metatake.net/api/v1/locations?film=${encodeURIComponent(slug)}&limit=100`;
+      const locData = await fetchJSON(locUrl, { headers }, "Metatake locations", 15000, outerSignal);
+      const locList = Array.isArray(locData?.locations) ? locData.locations : [];
+      locations = locList.map(loc => ({
+        name: String(loc.name || "").trim(),
+        country: String(loc.country || "").trim(),
+        city: "",
+        layer: String(loc.layer || "filmed"),
+        kind: String(loc.role || ""),
+        lat: loc.lat != null ? Number(loc.lat) : null,
+        lng: loc.lng != null ? Number(loc.lng) : null,
+        precision: loc.precision || null
+      })).filter(l => l.name);
+    } catch (e) { console.warn("metatake locations:", e.message); }
+
+    const settings = locations.filter(l => String(l.layer).toLowerCase() === "setting").map(l => l.name);
+    const filmingPlaces = locations.filter(l => String(l.layer).toLowerCase() !== "setting").map(l => l.name);
+
+    const kindred = Array.isArray(film?.kindred)
+      ? film.kindred.map(k => ({ title: String(k.title || "").trim(), year: k.year != null ? Number(k.year) : null, slug: k.slug || null })).filter(k => k.title)
+      : [];
+
+    const takescore = film?.takescore || null;
+    const lowConfidence = takescore?.low_confidence === true;
+    const confidence = takescore ? (lowConfidence ? 0.4 : 0.85) : (match.analyzed ? 0.6 : null);
+
     const result = {
-      narrative_setting: (film.narrative_setting || []).map(String).filter(Boolean),
-      kindred_films: (film.kindred_films || []).map(f => typeof f === "string" ? f : (f.title || "")).filter(Boolean),
-      awards: (film.awards || []).map(String).filter(Boolean),
+      narrative_setting: settings,
+      filming_places: filmingPlaces,
+      kindred_films: kindred.map(k => k.title),
+      kindred_full: kindred,
+      awards: [],
       confidence,
-      locations
+      low_confidence: lowConfidence,
+      locations,
+      takescore: takescore ? { score: takescore.score ?? null, value: takescore.value ?? null, cost: takescore.cost ?? null, risk: takescore.risk ?? null } : null,
+      url: film?.url || match.url || null,
+      cite_as: film?.cite_as || null
     };
     await putMetatakeExtendedCache(env, movieId, result);
     return result;
@@ -802,7 +875,7 @@ async function metatakeExtended(env, movie, outerSignal) {
     console.warn("metatake extended:", e.message);
     return null;
   }
-}
+      }
 
 // ============ JSON / signature ============
 function extractJSON(text) {

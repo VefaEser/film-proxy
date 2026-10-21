@@ -785,7 +785,6 @@ async function filmmapLocations(env, movie, outerSignal) {
     const rawPlaces = payload.places || payload.locations || payload.films || payload.results || payload.data || [];
     const places = Array.isArray(rawPlaces) ? rawPlaces : [];
     const locations = places.map(p => ({
-    const locations = places.map(p => ({
       name: String(p.place || p.name || p.location || p.title || "").trim(),
       country: String(p.country || "").trim(),
       city: String(p.city || "").trim(),

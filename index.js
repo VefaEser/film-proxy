@@ -201,7 +201,7 @@ function logLlmCall(env, provider, model, keyIndex, ok, latencyMs, errSnippet, c
     .bind(now, provider, model, keyIndex, ok ? 1 : 0, latencyMs, errSnippet || null).run()
     .catch(e => console.warn("llm_calls:", e.message));
   if (ctx.movie_id || ctx.cache_hit !== undefined) {
-    console.log(JSON.stringify({ event: "llm_call", provider, model, key_index: keyIndex, ok, latency_ms: latencyMs, movie_id: ctx.movie_id || null, cache_hit: ctx.cache_hit ?? null, method: ctx.method || null }));
+    console.warn(JSON.stringify({ event: "llm_call", provider, model, key_index: keyIndex, ok, latency_ms: latencyMs, movie_id: ctx.movie_id || null, cache_hit: ctx.cache_hit ?? null, method: ctx.method || null }));
   }
 }
 async function getPromptTemplate(env, key) {

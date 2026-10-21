@@ -267,174 +267,411 @@ async function putMetatakeCache(env, movieId, locations) {
        ON CONFLICT(movie_id) DO UPDATE SET locations_json = excluded.locations_json, fetched_at = excluded.fetched_at`
     ).bind(movieId, JSON.stringify(locations), Math.floor(Date.now() / 1000)).run();
   } catch (e) { console.warn("metatake cache:", e.message); }
+           }
+function combineSignals(...sources) {
+  const signals = [];
+  for (const s of sources) {
+    if (!s) continue;
+    if (typeof s === "number") signals.push(AbortSignal.timeout(s));
+    else if (typeof s.aborted === "boolean" && typeof s.addEventListener === "function") signals.push(s);
+  }
+  if (signals.length === 0) return undefined;
+  if (signals.length === 1) return signals[0];
+  if (typeof AbortSignal.any === "function") return AbortSignal.any(signals);
+  const ac = new AbortController();
+  for (const s of signals) { if (s.aborted) { ac.abort(); break; } s.addEventListener("abort", () => ac.abort(), { once: true }); }
+  return ac.signal;
+}
+async function fetchJSON(url, options = {}, label = "Uzak servis", timeoutMs = 18000, outerSignal) {
+  const signal = combineSignals(outerSignal, timeoutMs);
+  const res = await fetch(url, { ...options, signal });
+  const body = await res.text();
+  const data = safeJSON(body, null);
+  if (!res.ok) {
+    const err = new Error(`${label}: HTTP ${res.status} ${body.slice(0, 300)}`);
+    err.status = res.status;
+    if (res.status === 429) {
+      const retryAfter = Number(res.headers.get("retry-after") || 0);
+      err.retryAfterMs = retryAfter > 0 ? retryAfter * 1000 : 60000;
     }
-async function getProfileRow(env, movieId) {
-  if (!env.DB) return null;
-  try {
-    const row = await env.DB.prepare("SELECT data_json, updated_at, last_refreshed_at FROM movie_profiles WHERE movie_id = ?").bind(movieId).first();
-    if (!row) return null;
-    return { data: safeJSON(row.data_json, {}) || {}, updatedAt: row.updated_at, lastRefreshedAt: row.last_refreshed_at };
-  } catch (e) { console.error("profile read:", e.message); return null; }
-}
-async function putProfileRow(env, movieId, title, year, data, refreshed = false) {
-  if (!env.DB) return;
-  const now = Math.floor(Date.now() / 1000);
-  const refreshedAt = refreshed ? now : null;
-  try {
-    await env.DB.prepare(
-      `INSERT INTO movie_profiles (movie_id, title, year, data_json, created_at, updated_at, last_refreshed_at)
-       VALUES (?, ?, ?, ?, ?, ?, ?)
-       ON CONFLICT(movie_id) DO UPDATE SET title = excluded.title, year = excluded.year, data_json = excluded.data_json,
-         updated_at = excluded.updated_at, last_refreshed_at = COALESCE(excluded.last_refreshed_at, movie_profiles.last_refreshed_at)`
-    ).bind(movieId, title, year, JSON.stringify(data), now, now, refreshedAt).run();
-  } catch (e) { console.error("profile write:", e.message); }
-}
-async function getFieldRows(env, movieId) {
-  if (!env.DB) return [];
-  try {
-    const { results } = await env.DB.prepare("SELECT field, source, fetched_at FROM movie_profile_fields WHERE movie_id = ?").bind(movieId).all();
-    return results || [];
-  } catch { return []; }
-}
-async function putFieldRows(env, movieId, fields, sourceLookup) {
-  if (!env.DB || !fields.length) return;
-  const now = Math.floor(Date.now() / 1000);
-  try {
-    const stmts = fields.map(f => env.DB.prepare(
-      `INSERT INTO movie_profile_fields (movie_id, field, source, fetched_at) VALUES (?, ?, ?, ?)
-       ON CONFLICT(movie_id, field) DO UPDATE SET source = excluded.source, fetched_at = excluded.fetched_at`
-    ).bind(movieId, f, sourceLookup[f] || "unknown", now));
-    await env.DB.batch(stmts);
-  } catch (e) { console.error("field write:", e.message); }
-}
-
-function isBadDetailArray(val) {
-  if (!Array.isArray(val)) return false;
-  if (val.length === 0) return false;
-  const looksLikeId = (s) => typeof s === "string" && (/^nm\d+$/i.test(s.trim()) || /^\d{4,}$/.test(s.trim()));
-  return val.some(v => {
-    if (v == null) return true;
-    if (typeof v === "string") return looksLikeId(v);
-    if (typeof v === "number") return true;
-    if (typeof v === "object" && typeof v.name === "string") return looksLikeId(v.name);
-    return true;
-  });
-}
-
-function findStaleFields(profile, fieldRows, forceRefresh) {
-  const now = Math.floor(Date.now() / 1000);
-  const fetched = new Map(fieldRows.map(r => [r.field, Number(r.fetched_at)]));
-  const stale = [];
-  const detailFields = new Set(["writers", "writers_ids", "cast", "cast_ids", "director", "director_ids", "producers", "actors", "omdb_directors"]);
-  for (const [field, def] of Object.entries(FIELD_DEFS)) {
-    const hasValue = profile[field] !== undefined && profile[field] !== null;
-    const badData = hasValue && detailFields.has(field) && isBadDetailArray(profile[field]);
-    if (!hasValue || badData) { stale.push(field); continue; }
-    if (forceRefresh) { stale.push(field); continue; }
-    if (def.ttl == null) continue;
-    const at = fetched.get(field) || 0;
-    if (now - at > def.ttl) stale.push(field);
+    throw err;
   }
-  return stale;
+  if (!data) throw new Error(`${label}: JSON yanıtı alınamadı`);
+  return data;
 }
 
-async function loadDeadKeys(env) {
-  const now = Date.now();
-  if (now - deadKeysCache.ts < 30000) return deadKeysCache;
-  if (!env.DB) return deadKeysCache;
-  try {
-    const { results } = await env.DB.prepare("SELECT provider, key_index FROM dead_keys WHERE until_ts > ?").bind(Math.floor(now / 1000)).all();
-    const gemini = new Set(), groq = new Set();
-    for (const r of results || []) { if (r.provider === "gemini") gemini.add(r.key_index); else if (r.provider === "groq") groq.add(r.key_index); }
-    deadKeysCache = { ts: now, gemini, groq };
-    return deadKeysCache;
-  } catch (e) { console.warn("dead_keys read:", e.message); return deadKeysCache; }
+async function tmdb(env, path, params = {}, outerSignal) {
+  if (!env.TMDB_API_KEY) throw new Error("TMDB_API_KEY tanımlı değil.");
+  const url = new URL(TMDB_BASE + path);
+  url.searchParams.set("api_key", env.TMDB_API_KEY);
+  for (const [k, v] of Object.entries(params)) if (v !== undefined && v !== null && v !== "") url.searchParams.set(k, String(v));
+  return fetchJSON(url.toString(), {}, "TMDB", 18000, outerSignal);
 }
-async function markDeadKey(env, provider, keyIndex, untilTs, reason) {
-  deadKeysCache.ts = 0;
-  if (!env.DB) return;
-  try {
-    await env.DB.prepare(
-      `INSERT INTO dead_keys (provider, key_index, until_ts, reason) VALUES (?, ?, ?, ?)
-       ON CONFLICT(provider, key_index) DO UPDATE SET until_ts = excluded.until_ts, reason = excluded.reason`
-    ).bind(provider, keyIndex, untilTs, reason || "").run();
-  } catch (e) { console.warn("dead_keys write:", e.message); }
+async function omdb(env, params, outerSignal) {
+  if (!env.OMDB_API_KEY) throw new Error("OMDB_API_KEY tanımlı değil.");
+  const url = new URL("https://www.omdbapi.com/");
+  url.searchParams.set("apikey", env.OMDB_API_KEY);
+  for (const [k, v] of Object.entries(params)) if (v) url.searchParams.set(k, v);
+  const data = await fetchJSON(url.toString(), {}, "OMDb", 18000, outerSignal);
+  if (data.Response === "False") throw new Error(data.Error || "OMDb sonucu bulunamadı.");
+  return data;
 }
-function logLlmCall(env, provider, model, keyIndex, ok, latencyMs, errSnippet, context) {
-  if (!env.DB) return;
-  const now = Math.floor(Date.now() / 1000);
-  const ctx = context || {};
-  env.DB.prepare("INSERT INTO llm_calls (ts, provider, model, key_index, ok, latency_ms, error_snippet) VALUES (?, ?, ?, ?, ?, ?, ?)")
-    .bind(now, provider, model, keyIndex, ok ? 1 : 0, latencyMs, errSnippet || null).run()
-    .catch(e => console.warn("llm_calls:", e.message));
-  if (ctx.movie_id || ctx.cache_hit !== undefined) {
-    console.log(JSON.stringify({ event: "llm_call", provider, model, key_index: keyIndex, ok, latency_ms: latencyMs, movie_id: ctx.movie_id || null, cache_hit: ctx.cache_hit ?? null, method: ctx.method || null }));
+async function omdbBest(env, movie, outerSignal) {
+  const title = movie.original_title || movie.title || "";
+  const year = String(yearOf(movie) || "");
+  let lastErr = null;
+  if (title) { try { return await omdb(env, { t: title, y: year }, outerSignal); } catch (e) { lastErr = e; } }
+  if (movie.imdb_id) { try { return await omdb(env, { i: movie.imdb_id }, outerSignal); } catch (e) { lastErr = e; } }
+  throw lastErr || new Error("OMDb: arama yapılamadı");
+}
+
+function buildWikidataBatchQuery(movies) {
+  const rows = movies.map(m => {
+    const title = (m.original_title || m.title || "").replace(/\\/g, "\\\\").replace(/"/g, '\\"');
+    return `("${title}"@en ${m.id})`;
+  }).join(" ");
+  return `
+SELECT ?movieId ?item ?originalWorkLabel ?filmingLocationLabel ?filmingCountryLabel ?award ?awardLabel ?nominatedLabel WHERE {
+  VALUES (?title ?movieId) { ${rows} }
+  ?item rdfs:label ?title .
+  ?item wdt:P31 wd:Q11424 .
+  OPTIONAL { ?item wdt:P144 ?originalWork. }
+  OPTIONAL { ?item wdt:P915 ?filmingLocation. }
+  OPTIONAL { ?filmingLocation wdt:P17 ?filmingCountry. }
+  OPTIONAL { ?item wdt:P166 ?award. }
+  OPTIONAL { ?item wdt:P1411 ?nominated. }
+  SERVICE wikibase:label { bd:serviceParam wikibase:language "en,tr". }
+}
+LIMIT 300`;
+}
+async function wikidataBatchOnce(env, movies, timeoutMs, outerSignal) {
+  const results = new Map();
+  if (!movies.length) return results;
+  const query = buildWikidataBatchQuery(movies);
+  const url = "https://query.wikidata.org/sparql?query=" + encodeURIComponent(query);
+  const data = await fetchJSON(url, {
+    headers: { "Accept": "application/sparql-results+json", "User-Agent": "FilmKesifMotoru/1.0" }
+  }, "Wikidata", timeoutMs, outerSignal);
+  const bindings = data.results?.bindings || [];
+  const byId = new Map();
+  for (const b of bindings) {
+    const id = b.movieId?.value || "";
+    if (!byId.has(id)) byId.set(id, { originalWork: null, locations: new Set(), countries: new Set(), awards: new Set(), nominations: new Set() });
+    const rec = byId.get(id);
+    if (b.originalWorkLabel?.value) rec.originalWork = b.originalWorkLabel.value;
+    if (b.filmingLocationLabel?.value) rec.locations.add(b.filmingLocationLabel.value);
+    if (b.filmingCountryLabel?.value) rec.countries.add(b.filmingCountryLabel.value);
+    const awardUri = b.award?.value || "";
+    if (awardUri) { const qid = awardUri.split("/").pop(); if (/^Q\d+$/.test(qid)) rec.awards.add(qid); }
+    const nomUri = b.nominated?.value || "";
+    if (nomUri) { const qid = nomUri.split("/").pop(); if (/^Q\d+$/.test(qid)) rec.nominations.add(qid); }
+  }
+  for (const [id, rec] of byId) {
+    results.set(id, {
+      originalWork: rec.originalWork,
+      filmingLocations: [...rec.locations],
+      filmingCountries: [...rec.countries],
+      awards: [...rec.awards],
+      nominations: [...rec.nominations]
+    });
+  }
+  return results;
+}
+async function wikidataBatch(env, movies, outerSignal) {
+  try { return await wikidataBatchOnce(env, movies, 30000, outerSignal); }
+  catch (e) { console.warn("wikidata batch:", e.message); return new Map(); }
+}
+
+async function metatakeLocations(env, movie, outerSignal) {
+  const movieId = movieKey(movie);
+  const cached = await getMetatakeCache(env, movieId);
+  if (cached) return { locations: cached, fromCache: true };
+  const title = movie.original_title || movie.title || "";
+  if (!title) return { locations: [], fromCache: false };
+  const headers = { "Accept": "application/json", "User-Agent": "FilmKesifMotoru/1.0" };
+  if (env.METATAKE_API_KEY) headers["Authorization"] = `Bearer ${env.METATAKE_API_KEY}`;
+  try {
+    const url = `${METATAKE_BASE}/movies?title=${encodeURIComponent(title)}&limit=5`;
+    const data = await fetchJSON(url, { headers }, "Metatake", 15000, outerSignal);
+    const list = Array.isArray(data) ? data : (data.data || data.movies || []);
+    const locations = [];
+    for (const m of list.slice(0, 3)) {
+      const filmLocations = m.filming_locations || m.locations || [];
+      for (const loc of filmLocations) {
+        const name = loc.name || loc.location || loc.country || "";
+        if (!name) continue;
+        locations.push({
+          name: String(name),
+          country: String(loc.country || "").trim(),
+          city: String(loc.city || "").trim(),
+          lat: loc.latitude != null ? Number(loc.latitude) : null,
+          lng: loc.longitude != null ? Number(loc.longitude) : null
+        });
+      }
+    }
+    const seen = new Set(); const unique = [];
+    for (const loc of locations) {
+      const key = `${norm(loc.name)}|${norm(loc.country)}`;
+      if (seen.has(key)) continue;
+      seen.add(key); unique.push(loc);
+    }
+    await putMetatakeCache(env, movieId, unique.slice(0, 20));
+    return { locations: unique.slice(0, 20), fromCache: false };
+  } catch (e) {
+    console.warn("metatake:", e.message);
+    return { locations: [], fromCache: false, error: e.message };
   }
 }
-async function getPromptTemplate(env, key) {
-  const cache = promptCache[key === "prompt_template.stage2" ? "stage2" : "stage1"];
-  const now = Date.now();
-  if (now - cache.ts < 60000 && cache.template) return cache.template;
-  const fallback = key === "prompt_template.stage2" ? DEFAULT_STAGE2 : DEFAULT_STAGE1;
-  if (!env.DB) return fallback;
-  try {
-    const row = await env.DB.prepare("SELECT value FROM app_config WHERE key = ?").bind(key).first();
-    if (row?.value) { cache.ts = now; cache.template = row.value; return row.value; }
-  } catch (e) { console.warn("prompt read:", e.message); }
-  return fallback;
+
+function isLikelySceneImage(img) {
+  const text = `${img.title || ""} ${img.description || ""} ${img.categories || ""}`.toLowerCase();
+  if (/(poster|portrait|headshot|actor|actress|cast|logo|cover|selfie|signature)/.test(text)) return false;
+  return /(still|scene|screenshot|frame|film)/.test(text);
 }
-async function setConfig(env, key, value) {
-  if (!env.DB) throw new Error("DB yok");
-  if (key === "prompt_template.stage1") promptCache.stage1.ts = 0;
-  if (key === "prompt_template.stage2") promptCache.stage2.ts = 0;
-  await env.DB.prepare(
-    `INSERT INTO app_config (key, value, updated_at) VALUES (?, ?, ?)
-     ON CONFLICT(key) DO UPDATE SET value = excluded.value, updated_at = excluded.updated_at`
-  ).bind(key, value, Math.floor(Date.now() / 1000)).run();
+async function commonsScenes(env, movie, outerSignal) {
+  const title = movie.original_title || movie.title || "";
+  if (!title) return [];
+  const url = new URL("https://commons.wikimedia.org/w/api.php");
+  url.searchParams.set("action", "query"); url.searchParams.set("format", "json");
+  url.searchParams.set("generator", "search");
+  url.searchParams.set("gsrsearch", `filetype:bitmap "${title}" film still OR scene`);
+  url.searchParams.set("gsrnamespace", "6"); url.searchParams.set("gsrlimit", "20");
+  url.searchParams.set("prop", "imageinfo"); url.searchParams.set("iiprop", "url|extmetadata"); url.searchParams.set("iiurlwidth", "640");
+  const data = await fetchJSON(url.toString(), { headers: { "User-Agent": "FilmKesifMotoru/1.0" } }, "Wikimedia Commons", 18000, outerSignal);
+  const pages = Object.values(data.query?.pages || {});
+  return pages.map(p => {
+    const i = p.imageinfo?.[0] || {}, meta = i.extmetadata || {};
+    return { source: "commons", title: p.title || "", url: i.thumburl || i.url || "", pageUrl: i.descriptionurl || "", description: meta.ImageDescription?.value || "", categories: meta.Categories?.value || "", license: meta.LicenseShortName?.value || "", vote_average: 0 };
+  }).filter(x => x.url && isLikelySceneImage(x));
 }
-async function getVerdict(env, movieId, signature) {
-  if (!env.DB) return null;
-  try {
-    const row = await env.DB.prepare("SELECT verdict, reason, created_at FROM filter_verdicts WHERE movie_id = ? AND filter_signature = ?").bind(movieId, signature).first();
-    if (!row) return null;
-    if (Math.floor(Date.now() / 1000) - row.created_at > VERDICT_TTL) return null;
-    return { verdict: row.verdict, reason: row.reason || "" };
-  } catch { return null; }
+async function tmdbBackdrops(env, movie, outerSignal) {
+  if (!movie.id) return [];
+  const data = await tmdb(env, `/movie/${movie.id}/images`, { include_image_language: "en,tr,null" }, outerSignal);
+  const backdrops = Array.isArray(data.backdrops) ? data.backdrops : [];
+  return backdrops.map(b => ({
+    source: "tmdb", title: movie.original_title || movie.title || "",
+    url: `https://image.tmdb.org/t/p/w780${b.file_path}`,
+    pageUrl: `https://www.themoviedb.org/movie/${movie.id}`,
+    license: "TMDB", description: "", vote_average: b.vote_average || 0
+  })).filter(x => x.url);
 }
-async function putVerdict(env, movieId, signature, verdict, reason) {
-  if (!env.DB) return;
-  try {
-    await env.DB.prepare(
-      `INSERT INTO filter_verdicts (movie_id, filter_signature, verdict, reason, created_at) VALUES (?, ?, ?, ?, ?)
-       ON CONFLICT(movie_id, filter_signature) DO UPDATE SET verdict = excluded.verdict, reason = excluded.reason, created_at = excluded.created_at`
-    ).bind(movieId, signature, verdict, reason || "", Math.floor(Date.now() / 1000)).run();
-  } catch (e) { console.warn("verdict write:", e.message); }
+async function tavily(env, query, outerSignal) {
+  if (!env.TAVILY_API_KEY) return { results: [], warning: "TAVILY_API_KEY ayarlanmamış." };
+  const data = await fetchJSON("https://api.tavily.com/search", {
+    method: "POST", headers: { "Content-Type": "application/json" },
+    body: JSON.stringify({ api_key: env.TAVILY_API_KEY, query, search_depth: "basic", max_results: 5, include_answer: false, include_raw_content: false })
+  }, "Tavily", 20000, outerSignal);
+  return { results: (data.results || []).map(x => ({ title: x.title || "", url: x.url || "", content: (x.content || "").slice(0, 1800), score: x.score || 0 })) };
 }
-async function getStaticOptions(env, field) {
-  if (!env.DB) return [];
-  try {
-    const { results } = await env.DB.prepare("SELECT id, label, extra_json FROM static_options WHERE field = ? ORDER BY sort_order, label").bind(field).all();
-    return results || [];
-  } catch { return []; }
+
+function estimateTokens(text) { return Math.ceil(String(text || "").length / 4); }
+function normalizeModelName(m) { return String(m || "").trim().toLowerCase().replace(/^models\//, ""); }
+function buildGroqChain(env) {
+  const seen = new Set(), chain = [];
+  const push = (m) => { const n = normalizeModelName(m); if (!n || seen.has(n)) return; seen.add(n); chain.push(n); };
+  push(env.GROQ_MODEL); for (const m of GROQ_MODEL_CHAIN) push(m); return chain;
 }
-async function getMetatakeCache(env, movieId) {
-  if (!env.DB) return null;
-  try {
-    const row = await env.DB.prepare("SELECT locations_json, fetched_at FROM metatake_cache WHERE movie_id = ?").bind(movieId).first();
-    if (!row) return null;
-    if (Math.floor(Date.now() / 1000) - row.fetched_at > 90 * 86400) return null;
-    return safeJSON(row.locations_json, []);
-  } catch { return null; }
+function buildGeminiChain(env) {
+  const seen = new Set(), chain = [];
+  const push = (m) => { const n = normalizeModelName(m); if (!n || seen.has(n)) return; seen.add(n); chain.push(n); };
+  push(env.GEMINI_MODEL); for (const m of GEMINI_MODEL_CHAIN) push(m); return chain;
 }
-async function putMetatakeCache(env, movieId, locations) {
-  if (!env.DB) return;
+function rotateKeys(keys, counter) {
+  if (keys.length <= 1) return keys;
+  const i = counter % keys.length;
+  return [...keys.slice(i), ...keys.slice(0, i)];
+}
+function orderGeminiModels(chain, promptLen, hasSemanticFilters) {
+  const short = promptLen < 3000 && !hasSemanticFilters;
+  const lite = ["gemini-3.1-flash-lite", "gemini-3.5-flash-lite"];
+  const flash = ["gemini-3.8-flash", "gemini-3.7-flash", "gemini-3.6-flash"];
+  const first = short ? lite : flash, second = short ? flash : lite;
+  const seen = new Set(), result = [];
+  for (const m of [...first, ...second]) if (chain.includes(m) && !seen.has(m)) { seen.add(m); result.push(m); }
+  for (const m of chain) if (!seen.has(m)) { seen.add(m); result.push(m); }
+  return result;
+}
+function orderGroqModels(chain, promptLen) {
+  const short = promptLen < 2500;
+  const first = short ? ["openai/gpt-oss-20b"] : ["openai/gpt-oss-120b"];
+  const second = short ? ["openai/gpt-oss-120b"] : ["openai/gpt-oss-20b"];
+  const seen = new Set(), result = [];
+  for (const m of [...first, ...second]) if (chain.includes(m) && !seen.has(m)) { seen.add(m); result.push(m); }
+  for (const m of chain) if (!seen.has(m)) { seen.add(m); result.push(m); }
+  return result;
+}
+
+function classifyError(msg) {
+  if (/HTTP 40[13]|invalid.?key|forbidden|unauthor/i.test(msg)) return { type: "invalid", cooldown: 3600, modelWide: false };
+  if (/HTTP 429|rate.?limit|quota|exceeded/i.test(msg)) return { type: "ratelimit", cooldown: null, modelWide: false };
+  if (/HTTP 503|service_unavailable|high demand/i.test(msg)) return { type: "model_down", cooldown: 300, modelWide: true };
+  if (/aborted due to timeout|timed? ?out|network|fetch failed|socket/i.test(msg)) return { type: "network", cooldown: 60, modelWide: false };
+  return { type: "unknown", cooldown: 120, modelWide: false };
+}
+
+function extractGeminiText(data) {
+  if (typeof data?.output_text === "string") return data.output_text;
+  if (typeof data?.text === "string") return data.text;
+  const cand = data?.candidates?.[0];
+  if (cand) {
+    const parts = cand?.content?.parts || [];
+    const texts = parts.map(p => typeof p?.text === "string" ? p.text : "").filter(Boolean);
+    if (texts.length) return texts.join("\n");
+  }
+  const outputs = data?.outputs || data?.output || [];
+  const list = Array.isArray(outputs) ? outputs : [outputs];
+  const texts = []; const push = (v) => { if (typeof v === "string" && v) texts.push(v); };
+  const walk = (obj, depth = 0) => {
+    if (!obj || depth > 6) return;
+    if (typeof obj === "string") { push(obj); return; }
+    if (Array.isArray(obj)) { for (const x of obj) walk(x, depth + 1); return; }
+    if (typeof obj === "object") for (const k of ["text", "content", "output", "parts", "result", "response", "value", "message"]) if (obj[k] !== undefined) walk(obj[k], depth + 1);
+  };
+  for (const o of list) walk(o);
+  const steps = data?.steps;
+  if (Array.isArray(steps)) for (const s of steps) walk(s);
+  return texts.length ? texts.join("\n") : "";
+}
+async function callGeminiInteractions(env, key, model, prompt, outerSignal) {
+  const data = await fetchJSON(GOOGLE_INTERACTIONS, {
+    method: "POST", headers: { "Content-Type": "application/json", "x-goog-api-key": key },
+    body: JSON.stringify({ model, input: prompt })
+  }, `Gemini Interactions ${model}`, 10000, outerSignal);
+  const text = extractGeminiText(data);
+  if (!text) throw new Error(`Gemini Interactions ${model} yanıtında metin yok.`);
+  return text;
+}
+async function callGeminiGenerate(env, key, model, prompt, outerSignal) {
+  const url = `${GOOGLE_GENERATE}/${encodeURIComponent(model)}:generateContent`;
+  const data = await fetchJSON(url, {
+    method: "POST", headers: { "Content-Type": "application/json", "x-goog-api-key": key },
+    body: JSON.stringify({ contents: [{ parts: [{ text: prompt }] }] })
+  }, `Gemini generateContent ${model}`, 8000, outerSignal);
+  const text = extractGeminiText(data);
+  if (!text) throw new Error(`Gemini generateContent ${model} yanıtında metin yok.`);
+  return text;
+}
+async function callGeminiModel(env, key, model, prompt, outerSignal) {
+  const errors = [];
   try {
-    await env.DB.prepare(
-      `INSERT INTO metatake_cache (movie_id, locations_json, fetched_at) VALUES (?, ?, ?)
-       ON CONFLICT(movie_id) DO UPDATE SET locations_json = excluded.locations_json, fetched_at = excluded.fetched_at`
-    ).bind(movieId, JSON.stringify(locations), Math.floor(Date.now() / 1000)).run();
-  } catch (e) { console.warn("metatake cache:", e.message); }
-                              }
+    return await callGeminiInteractions(env, key, model, prompt, outerSignal);
+  } catch (e) {
+    const msg = String(e.message || e);
+    const cls = classifyError(msg);
+    errors.push(`interactions: ${msg}`);
+    if (cls.type === "invalid" || cls.type === "model_down") throw e;
+    if (cls.type === "ratelimit") throw e;
+  }
+  try {
+    return await callGeminiGenerate(env, key, model, prompt, outerSignal);
+  } catch (e) {
+    const msg = String(e.message || e);
+    errors.push(`generateContent: ${msg}`);
+    throw new Error(errors.join(" | "));
+  }
+}
+
+async function callGroq(env, key, model, prompt, maxOutputTokens, useSearch, outerSignal) {
+  const promptTokens = estimateTokens(prompt);
+  const safeOutput = Math.max(256, Math.min(maxOutputTokens, GROQ_TPM_BUDGET - promptTokens));
+  const body = { model, messages: [{ role: "user", content: prompt }], temperature: 0.2, max_completion_tokens: safeOutput };
+  if (useSearch) { body.tools = [{ type: "browser_search" }]; body.tool_choice = "required"; }
+  else { body.response_format = { type: "json_object" }; }
+  const data = await fetchJSON(`${GROQ_BASE}/chat/completions`, {
+    method: "POST", headers: { "Content-Type": "application/json", "Authorization": `Bearer ${key}` },
+    body: JSON.stringify(body)
+  }, `Groq ${model}`, 30000, outerSignal);
+  const text = data?.choices?.[0]?.message?.content || "";
+  if (!text) throw new Error(`Groq ${model} yanıtında metin yok.`);
+  return text;
+}
+async function callGroqModel(env, key, model, prompt, maxOutputTokens, useSearch, outerSignal) {
+  if (!useSearch) return callGroq(env, key, model, prompt, maxOutputTokens, false, outerSignal);
+  try {
+    return await callGroq(env, key, model, prompt, maxOutputTokens, true, outerSignal);
+  } catch (e) {
+    const msg = String(e.message || e);
+    console.warn(`groq: search başarısız, no-search denenecek — ${msg}`);
+    return await callGroq(env, key, model, prompt, maxOutputTokens, false, outerSignal);
+  }
+}
+
+async function callLLMWithFallback(env, prompt, maxOutputTokens, useSearch, outerSignal, context = {}) {
+  const deadline = Date.now() + LLM_DEADLINE_MS;
+  const errors = [];
+  const promptLen = estimateTokens(prompt);
+  const dead = await loadDeadKeys(env);
+  const nowSec = () => Math.floor(Date.now() / 1000);
+  const hasSemantic = context.hasSemantic === true;
+
+  const geminiKeys = [env.GEMINI_API_KEY_1, env.GEMINI_API_KEY_2, env.GEMINI_API_KEY_3].map((k, i) => ({ key: k, index: i + 1 })).filter(x => x.key);
+  const rotatedG = rotateKeys(geminiKeys, geminiRR++);
+  const geminiModels = orderGeminiModels(buildGeminiChain(env), promptLen, hasSemantic);
+  let geminiTried = false;
+
+  for (const model of geminiModels) {
+    if (Date.now() > deadline) break;
+    let modelWideIssue = false;
+    for (const { key, index } of rotatedG) {
+      if (modelWideIssue || dead.gemini.has(index)) continue;
+      if (Date.now() > deadline) break;
+      if (outerSignal?.aborted) throw new Error("İstemci isteği iptal etti.");
+      geminiTried = true;
+      const start = Date.now();
+      try {
+        const result = await callGeminiModel(env, key, model, prompt, outerSignal);
+        logLlmCall(env, "gemini", model, index, true, Date.now() - start, null, { ...context, method: context.method || "unknown" });
+        return result;
+      } catch (e) {
+        const msg = String(e.message || e);
+        const cls = classifyError(msg);
+        logLlmCall(env, "gemini", model, index, false, Date.now() - start, msg.slice(0, 200), context);
+        errors.push(`gemini ${model} key=${index}: ${msg}`);
+        console.warn(`gemini: model=${model} key=${index} type=${cls.type} — ${msg.slice(0, 200)}`);
+        if (cls.modelWide) { modelWideIssue = true; errors.push(`[${model} ${cls.type} model-wide]`); }
+        else if (cls.type === "ratelimit") { await markDeadKey(env, "gemini", index, nowSec() + (e.retryAfterMs ? Math.ceil(e.retryAfterMs / 1000) : 300), msg.slice(0, 200)); }
+        else if (cls.cooldown) { await markDeadKey(env, "gemini", index, nowSec() + cls.cooldown, msg.slice(0, 200)); }
+      }
+    }
+  }
+
+  const groqKeys = [env.GROQ_API_KEY_1, env.GROQ_API_KEY_2, env.GROQ_API_KEY_3].map((k, i) => ({ key: k, index: i + 1 })).filter(x => x.key);
+  const rotatedQ = rotateKeys(groqKeys, groqRR++);
+  const groqModels = orderGroqModels(buildGroqChain(env), promptLen);
+  let groqTried = false;
+
+  if (groqKeys.length) {
+    console.warn("Gemini başarısız, Groq yedek sağlayıcısına geçiliyor...");
+    for (const model of groqModels) {
+      if (Date.now() > deadline) break;
+      for (const { key, index } of rotatedQ) {
+        if (dead.groq.has(index)) continue;
+        if (Date.now() > deadline) break;
+        if (outerSignal?.aborted) throw new Error("İstemci isteği iptal etti.");
+        groqTried = true;
+        const start = Date.now();
+        try {
+          const result = await callGroqModel(env, key, model, prompt, maxOutputTokens, useSearch, outerSignal);
+          logLlmCall(env, "groq", model, index, true, Date.now() - start, null, context);
+          return result;
+        } catch (e) {
+          const msg = String(e.message || e);
+          const cls = classifyError(msg);
+          logLlmCall(env, "groq", model, index, false, Date.now() - start, msg.slice(0, 200), context);
+          errors.push(`groq ${model} key=${index}: ${msg}`);
+          console.warn(`groq: model=${model} key=${index} type=${cls.type} — ${msg.slice(0, 200)}`);
+          if (cls.type === "ratelimit") await markDeadKey(env, "groq", index, nowSec() + (e.retryAfterMs ? Math.ceil(e.retryAfterMs / 1000) : 300), msg.slice(0, 200));
+          else if (cls.cooldown) await markDeadKey(env, "groq", index, nowSec() + cls.cooldown, msg.slice(0, 200));
+        }
+      }
+    }
+  }
+
+  const providers = [];
+  if (geminiTried) providers.push("Gemini");
+  if (groqTried) providers.push("Groq");
+  throw new Error(`${providers.join(" + ") || "LLM"} tüm modellerde başarısız: ${errors.join(" | ")}`);
+                           }
 // ============ FilmMap cache (birincil çekim yeri) ============
 async function getFilmmapCache(env, movieId) {
   if (!env.DB) return null;

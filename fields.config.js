@@ -33,7 +33,8 @@ export const FIELD_DEFS = {
   // Metatake öncelikli — 90 gün
   story_locations:    { source: "llm", ttl: days(90), prefer: "metatake" },
   related_films:      { source: "llm", ttl: days(90), prefer: "metatake" },
-  location_mode:      { source: "llm", ttl: days(90), prefer: "metatake" },
+  location_mode:      { source: "llm", ttl: days(90), prefer: "metatake" }, // eski, geriye dönük uyumluluk için korundu
+  location_count:     { source: "llm", ttl: days(90), prefer: "metatake" }, // hikâyede geçen tam mekân sayısı
 
   // LLM (Gemini/Groq) — 90 gün
   story_period:       { source: "llm", ttl: days(90) },

@@ -1,12 +1,12 @@
 /**
  * ttl: saniye cinsinden cache ömrü.
  * source: birincil kaynak.
- * prefer: varsa önce bu kaynağı dene (metatake gibi hızlı + YZ'siz kaynaklar için).
+ * prefer: varsa önce bu kaynağı dene.
  * required: upstream API düşse bile bu alan çekilemezse film "kısmi veri" sayılır.
  */
 const days = (n) => n * 86400;
 
-export const SCHEMA_VERSION = 5;
+export const SCHEMA_VERSION = 6;
 
 export const FIELD_DEFS = {
   // TMDB (deterministik) — 90 gün
@@ -30,7 +30,7 @@ export const FIELD_DEFS = {
   keywords:               { source: "tmdb", ttl: days(90) },
   keywords_ids:           { source: "tmdb", ttl: days(90) },
 
-  // Metatake öncelikli — 90 gün (YZ'ye sormadan doldurulur)
+  // Metatake öncelikli — 90 gün
   story_locations:    { source: "llm", ttl: days(90), prefer: "metatake" },
   related_films:      { source: "llm", ttl: days(90), prefer: "metatake" },
   location_mode:      { source: "llm", ttl: days(90), prefer: "metatake" },
@@ -63,6 +63,7 @@ export const FIELD_DEFS = {
   awards:             { source: "omdb", ttl: days(7) },
   metascore:          { source: "omdb", ttl: days(7) },
   boxOffice:          { source: "omdb", ttl: days(7) },
+  omdb_poster:        { source: "omdb", ttl: days(7) },
 
   // Wikidata — 90 gün
   original_work:      { source: "wikidata", ttl: days(90) },

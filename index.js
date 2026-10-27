@@ -1082,8 +1082,12 @@ function ratioFieldsNeeded(filters) {
   if (f.outdoorRatioMin != null) fields.push("indoor_ratio");
   if (f.dialogueDensityMin != null) fields.push("dialogue_density");
   if (f.colorRatioMin != null) fields.push("color_ratio");
-  if (f.locationMode) fields.push("location_mode");
   return fields;
+}
+function locationFieldsNeeded(filters) {
+  const f = filters || {};
+  if (f.locationMin != null || f.locationMax != null) return ["location_count"];
+  return [];
 }
 
 // ============ Stage 1 (verdict) ============
@@ -1123,8 +1127,9 @@ function buildStage2Rules(fields) {
     else if (f === "color_ratio") rules.push(`color_ratio: 0-100 tam sayı — renkli çekim yüzdesi`);
     else if (f === "family_content") rules.push(`family_content: {"main_characters": <int>, "supporting_characters": <int>, "extras": <int>, "<trait>": {"intensity": "none|few|side|main", "approach": "bad|neutral|legit"}}`);
     else if (f === "story_period") rules.push(`story_period: string[] (dönem etiketleri)`);
-    else if (f === "story_locations") rules.push(`story_locations: string[] (yer adları)`);
+        else if (f === "story_locations") rules.push(`story_locations: string[] (yer adları)`);
     else if (f === "aspect_ratio") rules.push(`aspect_ratio: string (ör. "2.39:1")`);
+    else if (f === "location_count") rules.push(`location_count: 1-100 arası tam sayı — hikâyede geçen farklı mekân sayısı. Tek mekânda geçiyorsa 1, çoğunlukla tek mekânsa 2, 2-4 mekân varsa ilgili sayı, 5+ mekân varsa 6-30 arası tahmini sayı. Flashback/rüya gibi teknik sahnelerdeki mekânlar sayılmaz; yalnızca ana hikâyenin geçtiği mekânlar sayılır.`);
     else rules.push(`${f}: uygun değer`);
   }
   return rules.join("\n");
@@ -1403,11 +1408,12 @@ function evalRange(profile, field, min, max, label, state, strict) {
     state.reasons.push(`${label}: ${v} aralık dışı`);
   }
 }
-function ratioThreshold(min) {
-  if (min === 0) return { min: null, max: 0 };
-  if (min === 100) return { min: 100, max: null };
-  if (min > 0 && min < 20) return { min: 0, max: null };
-  return { min: Math.max(0, min - 20), max: null };
+function ratioThreshold(x) {
+  // %0 ve %100 mutlak: sadece o uç değer kabul edilir.
+  // Diğer değerler: X ± 20 puan bandı (0-100 aralığına kırpılır).
+  if (x === 0) return { min: 0, max: 0 };
+  if (x === 100) return { min: 100, max: 100 };
+  return { min: Math.max(0, x - 20), max: Math.min(100, x + 20) };
 }
 function evalRatioFilters(profile, filters, state) {
   if (filters.dayRatioMin != null) {
@@ -1444,20 +1450,43 @@ function evalRatioFilters(profile, filters, state) {
 }
 
 // ============ Lokasyon modu (kategorik) ============
-function evalLocationMode(profile, filters, state) {
-  if (!filters.locationMode) return;
-  const wanted = String(filters.locationMode).trim();
-  const have = profile.location_mode ? String(profile.location_mode).trim() : "";
-  if (!have) {
+// ============ Mekân sayısı ============
+function getLocationCount(profile, metatakeLocations, filmmapLocations) {
+  // 1. AI'nın tam sayım verdiği alan (en güvenilir)
+  const exact = toNum(profile.location_count);
+  if (exact !== null && exact > 0) {
+    return { count: exact, estimated: false, source: "ai" };
+  }
+  // 2. AI'nın kategorik tahmini (eski alan, geriye dönük uyumluluk)
+  if (profile.location_mode) {
+    const mode = String(profile.location_mode).trim().toLowerCase();
+    const map = { single: 1, mostly_single: 2, few: 3, many: 6 };
+    if (map[mode] !== undefined) return { count: map[mode], estimated: true, source: "ai-mode" };
+  }
+  // 3. Çekim yerlerinden tahmini sayım
+  const wdCount = (profile.filming_locations || []).length;
+  const fmCount = (filmmapLocations || []).length;
+  const best = Math.max(wdCount, fmCount);
+  if (best > 0) return { count: best, estimated: true, source: "filming" };
+  return { count: null, estimated: true, source: null };
+}
+function evalLocationCount(profile, filters, state, metatakeLocations, filmmapLocations) {
+  if (filters.locationMin == null && filters.locationMax == null) return;
+  const info = getLocationCount(profile, metatakeLocations, filmmapLocations);
+  if (info.count === null) {
     state.unknown = true;
-    state.reasons.push("Mekân modu: bilinmiyor");
+    state.reasons.push("Mekân sayısı: bilinmiyor");
     return;
   }
-  if (norm(have) !== norm(wanted)) {
+  if (filters.locationMin != null && info.count < filters.locationMin) {
     state.match = false;
-    state.reasons.push(`Mekân modu ${have}, istenen ${wanted}`);
+    state.reasons.push(`Mekân sayısı ${info.count} < ${filters.locationMin}`);
   }
-}
+  if (filters.locationMax != null && info.count > filters.locationMax) {
+    state.match = false;
+    state.reasons.push(`Mekân sayısı ${info.count} > ${filters.locationMax}`);
+  }
+                   }
 function classifyCount(n) {
   if (n <= 1) return "single";
   if (n <= 2) return "mostly_single";
@@ -1534,8 +1563,8 @@ function evaluateFilters(profile, filters, semanticVerdict, metatakeLocations, f
     if (res.unknown) state.unknown = true;
     if (res.reason) state.reasons.push(res.reason);
   }
-  evalRatioFilters(profile, filters, state);
-  evalLocationMode(profile, filters, state);
+    evalRatioFilters(profile, filters, state);
+  evalLocationCount(profile, filters, state, metatakeLocations, filmmapLocations);
   if (filters.characterDensity) {
     const c = filters.characterDensity;
     const fc = profile.family_content || {};
@@ -1583,7 +1612,10 @@ async function handleResearchStream(env, body, controller, signal) {
       prepared.push({ movie, movieId, profile, fieldRows, staleDeterministic: [], filmmap: null, metatakeLocations: null, metatakeExt: null, locationModeEstimated: false, locationModeSource: null, dirty: false });
     }
 
-    const needFilmMap = !!(filters.filming_locations?.include?.length || filters.filming_locations?.exclude?.length || filters.locationMode);
+        const needFilmMap = !!(
+      filters.filming_locations?.include?.length || filters.filming_locations?.exclude?.length
+      || filters.locationMin != null || filters.locationMax != null
+    );
     const needMetatakeForNarrative = !!(filters.story_locations?.include?.length || filters.story_locations?.exclude?.length || filters.related_films?.include?.length || filters.related_films?.exclude?.length);
     const needMetatake = needMetatakeForNarrative;
     if (needFilmMap) {

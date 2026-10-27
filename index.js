@@ -1,16 +1,16 @@
 import { FIELD_DEFS, LLM_FIELDS, FIELD_RULES, SEMANTIC_FIELDS } from "./fields.config.js";
 
-const GROQ_MODEL_CHAIN = ["openai/gpt-oss-120b", "openai/gpt-oss-20b"];
-const GROQ_MODEL_DEFAULT = "openai/gpt-oss-120b";
+// Kullanıcının kota tablosundaki gerçek Gemini model kimlikleri.
 const GEMINI_MODEL_CHAIN = ["gemini-3.8-flash", "gemini-3.7-flash", "gemini-3.6-flash", "gemini-3.5-flash-lite", "gemini-3.1-flash-lite"];
 const GEMINI_MODEL_DEFAULT = "gemini-3.8-flash";
+const GROQ_MODEL_CHAIN = ["openai/gpt-oss-120b", "openai/gpt-oss-20b"];
+const GROQ_MODEL_DEFAULT = "openai/gpt-oss-120b";
 const GROQ_BASE = "https://api.groq.com/openai/v1";
 const GOOGLE_INTERACTIONS = "https://generativelanguage.googleapis.com/v1beta/interactions";
 const GOOGLE_GENERATE = "https://generativelanguage.googleapis.com/v1beta/models";
 const TMDB_BASE = "https://api.themoviedb.org/3";
 const METATAKE_BASE = "https://metatake.net/api/v1";
 const USER_AGENT = "FilmKesifMotoru/1.0 (https://github.com/VefaEser/film-proxy; contact: vefaeser@ornitonerenk.com)";
-const CORS = {
 const CORS = {
   "Access-Control-Allow-Origin": "*",
   "Access-Control-Allow-Methods": "GET,POST,PUT,DELETE,OPTIONS",
@@ -87,6 +87,19 @@ let groqRR = 0;
 let deadKeysCache = { ts: 0, gemini: new Map(), groq: new Set() };
 const promptCache = { stage1: { ts: 0, template: null }, stage2: { ts: 0, template: null } };
 
+// ---- Gemini RPM pacer (model+key bazlı) ----
+// Kota tablosu: Flash modelleri 5 RPM => 12 saniye; Lite modelleri 15 RPM => 4 saniye.
+const geminiCallLog = new Map();
+function geminiMinGapMs(model) { return /lite/i.test(model) ? 4000 : 12000; }
+function geminiTryAcquire(model, keyIndex) {
+  const k = `${model}|${keyIndex}`;
+  const now = Date.now();
+  const last = geminiCallLog.get(k) || 0;
+  if (now - last < geminiMinGapMs(model)) return false;
+  geminiCallLog.set(k, now);
+  return true;
+}
+
 function response(data, status = 200) {
   return new Response(JSON.stringify(data), { status, headers: { ...CORS, "Content-Type": "application/json; charset=utf-8" } });
 }
@@ -147,7 +160,7 @@ async function putFieldRows(env, movieId, fields, sourceLookup) {
   } catch (e) { console.error("field write:", e.message); }
 }
 
-function isBadDetailArray(val) {
+// ---- Kişi alanı bozukluk denetimi (ID/kod sızması) ----
 function isBadDetailArray(val) {
   if (!Array.isArray(val)) return false;
   if (val.length === 0) return false;
@@ -156,7 +169,7 @@ function isBadDetailArray(val) {
     const t = s.trim();
     if (!t) return true;
     return /^(nm|tt)\d+$/i.test(t)
-      || /^\d{4,}$/.test(t)
+      || /^\d+$/.test(t)
       || /^Q\d+$/.test(t)
       || /^person[\/_-]\d+$/i.test(t)
       || /^\[object /i.test(t)
@@ -166,10 +179,15 @@ function isBadDetailArray(val) {
     if (v == null) return true;
     if (typeof v === "string") return looksLikeId(v);
     if (typeof v === "number") return true;
-    if (typeof v === "object" && typeof v.name === "string") return looksLikeId(v.name) || !v.name.trim();
+    if (typeof v === "object") {
+      const n = v.name ?? v.original_name;
+      if (typeof n !== "string" || !n.trim()) return true;
+      if (looksLikeId(n)) return true;
+      return false;
+    }
     return true;
   });
-  }
+}
 
 function findStaleFields(profile, fieldRows, forceRefresh) {
   const now = Math.floor(Date.now() / 1000);
@@ -189,7 +207,6 @@ function findStaleFields(profile, fieldRows, forceRefresh) {
 }
 
 async function loadDeadKeys(env) {
-async function loadDeadKeys(env) {
   const now = Date.now();
   if (now - deadKeysCache.ts < 30000) return deadKeysCache;
   if (!env.DB) return deadKeysCache;
@@ -208,8 +225,12 @@ async function loadDeadKeys(env) {
     deadKeysCache = { ts: now, gemini, groq };
     return deadKeysCache;
   } catch (e) { console.warn("dead_keys read:", e.message); return deadKeysCache; }
-    }
-async function markDeadKey(env, provider, keyIndex, untilTs, reason) {
+}
+function isKeyDeadForModel(dead, model, index) {
+  const forModel = dead.gemini.get(model) || new Set();
+  const forAll = dead.gemini.get("") || new Set(); // eski migration'dan gelen "tüm modeller" kaydı
+  return forModel.has(index) || forAll.has(index);
+}
 async function markDeadKey(env, provider, keyIndex, untilTs, reason, model) {
   deadKeysCache.ts = 0;
   if (!env.DB) return;
@@ -294,7 +315,7 @@ async function putMetatakeCache(env, movieId, locations) {
        ON CONFLICT(movie_id) DO UPDATE SET locations_json = excluded.locations_json, fetched_at = excluded.fetched_at`
     ).bind(movieId, JSON.stringify(locations), Math.floor(Date.now() / 1000)).run();
   } catch (e) { console.warn("metatake cache:", e.message); }
-           }
+}
 function combineSignals(...sources) {
   const signals = [];
   for (const s of sources) {
@@ -377,7 +398,7 @@ async function wikidataBatchOnce(env, movies, timeoutMs, outerSignal) {
   const query = buildWikidataBatchQuery(movies);
   const url = "https://query.wikidata.org/sparql?query=" + encodeURIComponent(query);
   const data = await fetchJSON(url, {
-    headers: { "Accept": "application/sparql-results+json", "User-Agent": USER_AGENT" }
+    headers: { "Accept": "application/sparql-results+json", "User-Agent": USER_AGENT }
   }, "Wikidata", timeoutMs, outerSignal);
   const bindings = data.results?.bindings || [];
   const byId = new Map();
@@ -415,7 +436,7 @@ async function metatakeLocations(env, movie, outerSignal) {
   if (cached) return { locations: cached, fromCache: true };
   const title = movie.original_title || movie.title || "";
   if (!title) return { locations: [], fromCache: false };
-  const headers = { "Accept": "application/json", "User-Agent": USER_AGENT" };
+  const headers = { "Accept": "application/json", "User-Agent": USER_AGENT };
   if (env.METATAKE_API_KEY) headers["Authorization"] = `Bearer ${env.METATAKE_API_KEY}`;
   try {
     const url = `${METATAKE_BASE}/movies?title=${encodeURIComponent(title)}&limit=5`;
@@ -464,7 +485,7 @@ async function commonsScenes(env, movie, outerSignal) {
   url.searchParams.set("gsrsearch", `filetype:bitmap "${title}" film still OR scene`);
   url.searchParams.set("gsrnamespace", "6"); url.searchParams.set("gsrlimit", "20");
   url.searchParams.set("prop", "imageinfo"); url.searchParams.set("iiprop", "url|extmetadata"); url.searchParams.set("iiurlwidth", "640");
-  const data = await fetchJSON(url.toString(), { headers: { "User-Agent": USER_AGENT" } }, "Wikimedia Commons", 18000, outerSignal);
+  const data = await fetchJSON(url.toString(), { headers: { "User-Agent": USER_AGENT } }, "Wikimedia Commons", 18000, outerSignal);
   const pages = Object.values(data.query?.pages || {});
   return pages.map(p => {
     const i = p.imageinfo?.[0] || {}, meta = i.extmetadata || {};
@@ -538,7 +559,7 @@ function classifyError(msg) {
   if (/HTTP 503|service_unavailable|high demand/i.test(msg)) return { type: "model_down", cooldown: 300, modelWide: true };
   if (/aborted due to timeout|timed? ?out|network|fetch failed|socket/i.test(msg)) return { type: "network", cooldown: 60, modelWide: false };
   return { type: "unknown", cooldown: 120, modelWide: false };
-    }
+}
 
 function extractGeminiText(data) {
   if (typeof data?.output_text === "string") return data.output_text;
@@ -551,12 +572,16 @@ function extractGeminiText(data) {
   }
   const outputs = data?.outputs || data?.output || [];
   const list = Array.isArray(outputs) ? outputs : [outputs];
-  const texts = []; const push = (v) => { if (typeof v === "string" && v) texts.push(v); };
+  const texts = [];
   const walk = (obj, depth = 0) => {
     if (!obj || depth > 6) return;
-    if (typeof obj === "string") { push(obj); return; }
+    if (typeof obj === "string") { if (obj) texts.push(obj); return; }
     if (Array.isArray(obj)) { for (const x of obj) walk(x, depth + 1); return; }
-    if (typeof obj === "object") for (const k of ["text", "content", "output", "parts", "result", "response", "value", "message"]) if (obj[k] !== undefined) walk(obj[k], depth + 1);
+    if (typeof obj === "object") {
+      for (const k of ["text", "content", "output", "parts", "result", "response", "value", "message"]) {
+        if (obj[k] !== undefined) walk(obj[k], depth + 1);
+      }
+    }
   };
   for (const o of list) walk(o);
   const steps = data?.steps;
@@ -643,10 +668,11 @@ async function callLLMWithFallback(env, prompt, maxOutputTokens, useSearch, oute
   for (const model of geminiModels) {
     if (Date.now() > deadline) break;
     let modelWideIssue = false;
-        for (const { key, index } of rotatedG) {
-      if (modelWideIssue || (dead.gemini.get(model) || new Set()).has(index)) continue;
+    for (const { key, index } of rotatedG) {
+      if (modelWideIssue || isKeyDeadForModel(dead, model, index)) continue;
       if (Date.now() > deadline) break;
       if (outerSignal?.aborted) throw new Error("İstemci isteği iptal etti.");
+      if (!geminiTryAcquire(model, index)) continue; // RPM koruması
       geminiTried = true;
       const start = Date.now();
       try {
@@ -659,7 +685,7 @@ async function callLLMWithFallback(env, prompt, maxOutputTokens, useSearch, oute
         logLlmCall(env, "gemini", model, index, false, Date.now() - start, msg.slice(0, 200), context);
         errors.push(`gemini ${model} key=${index}: ${msg}`);
         console.warn(`gemini: model=${model} key=${index} type=${cls.type} — ${msg.slice(0, 200)}`);
-                if (cls.modelWide) { modelWideIssue = true; errors.push(`[${model} ${cls.type} model-wide]`); }
+        if (cls.modelWide) { modelWideIssue = true; errors.push(`[${model} ${cls.type} model-wide]`); }
         else if (cls.type === "ratelimit-daily") {
           const tomorrow = new Date(); tomorrow.setUTCHours(0, 0, 0, 0); tomorrow.setUTCDate(tomorrow.getUTCDate() + 1);
           await markDeadKey(env, "gemini", index, Math.floor(tomorrow.getTime() / 1000) + 3600, msg.slice(0, 200), model);
@@ -698,7 +724,7 @@ async function callLLMWithFallback(env, prompt, maxOutputTokens, useSearch, oute
           logLlmCall(env, "groq", model, index, false, Date.now() - start, msg.slice(0, 200), context);
           errors.push(`groq ${model} key=${index}: ${msg}`);
           console.warn(`groq: model=${model} key=${index} type=${cls.type} — ${msg.slice(0, 200)}`);
-                    if (cls.type === "ratelimit-daily") {
+          if (cls.type === "ratelimit-daily") {
             const tomorrow = new Date(); tomorrow.setUTCHours(0, 0, 0, 0); tomorrow.setUTCDate(tomorrow.getUTCDate() + 1);
             await markDeadKey(env, "groq", index, Math.floor(tomorrow.getTime() / 1000) + 3600, msg.slice(0, 200));
           }
@@ -716,7 +742,7 @@ async function callLLMWithFallback(env, prompt, maxOutputTokens, useSearch, oute
   if (geminiTried) providers.push("Gemini");
   if (groqTried) providers.push("Groq");
   throw new Error(`${providers.join(" + ") || "LLM"} tüm modellerde başarısız: ${errors.join(" | ")}`);
-                           }
+  }
 // ============ FilmMap cache (birincil çekim yeri) ============
 async function getFilmmapCache(env, movieId) {
   if (!env.DB) return null;
@@ -737,7 +763,7 @@ async function putFilmmapCache(env, movieId, locations) {
   } catch (e) { console.warn("filmmap cache:", e.message); }
 }
 
-// ============ Metatake extended cache (narrative_setting, kindred, awards, confidence) ============
+// ============ Metatake extended cache ============
 async function getMetatakeExtendedCache(env, movieId) {
   if (!env.DB) return null;
   try {
@@ -846,7 +872,7 @@ async function filmmapLocations(env, movie, outerSignal) {
     console.warn("filmmap:", e.message);
     return { locations: [], fromCache: false, error: e.message };
   }
-                                  }
+}
 
 // ============ Metatake extended API ============
 async function metatakeExtended(env, movie, outerSignal) {
@@ -855,7 +881,7 @@ async function metatakeExtended(env, movie, outerSignal) {
   if (cached) return cached;
   const title = movie.original_title || movie.title || "";
   if (!title) return null;
-  const headers = { "Accept": "application/json", "User-Agent": USER_AGENT" };
+  const headers = { "Accept": "application/json", "User-Agent": USER_AGENT };
   try {
     const searchUrl = `https://metatake.net/api/v1/films?q=${encodeURIComponent(title)}&limit=5`;
     const searchData = await fetchJSON(searchUrl, { headers }, "Metatake search", 15000, outerSignal);
@@ -919,7 +945,7 @@ async function metatakeExtended(env, movie, outerSignal) {
     console.warn("metatake extended:", e.message);
     return null;
   }
-      }
+}
 
 // ============ JSON / signature ============
 function extractJSON(text) {
@@ -1117,8 +1143,7 @@ async function fillDetails(env, movie, staleLLMFields, signal, context = {}) {
   const updates = {};
   for (const f of staleLLMFields) if (item[f] !== undefined && item[f] !== null) updates[f] = item[f];
   return updates;
-}
-
+      }
 // ============ Deterministik zenginleştirme (TMDB + OMDb) ============
 async function enrichClassic(env, movie, staleFields, outerSignal) {
   const need = new Set(staleFields);
@@ -1126,7 +1151,7 @@ async function enrichClassic(env, movie, staleFields, outerSignal) {
   const covered = new Set();
   if (movie.id) {
     try {
-            const detail = await tmdb(env, `/movie/${movie.id}`, { language: "tr-TR", append_to_response: "credits,images" }, outerSignal);
+      const detail = await tmdb(env, `/movie/${movie.id}`, { language: "tr-TR", append_to_response: "credits,images" }, outerSignal);
       const genres = Array.isArray(detail.genres) ? detail.genres : [];
       if (need.has("genres")) { updates.genres = genres.map(g => g.name); covered.add("genres"); }
       if (need.has("genres_ids")) { updates.genres_ids = genres.map(g => g.id); covered.add("genres_ids"); }
@@ -1140,29 +1165,29 @@ async function enrichClassic(env, movie, staleFields, outerSignal) {
       const companies = Array.isArray(detail.production_companies) ? detail.production_companies : [];
       if (need.has("production_companies")) { updates.production_companies = companies.map(c => c.name); covered.add("production_companies"); }
       if (need.has("production_companies_ids")) { updates.production_companies_ids = companies.map(c => c.id); covered.add("production_companies_ids"); }
-            const originalLang = detail.original_language || "";
+
+      const originalLang = detail.original_language || "";
       const isTurkishFilm = originalLang === "tr";
       const posters = detail.images?.posters || [];
       const trPosterPath = detail.poster_path || "";
       const detailPosterEntry = posters.find(p => p.file_path === trPosterPath);
       const detailPosterIsTurkish = detailPosterEntry?.iso_639_1 === "tr";
-      let originalPoster = null;
-            if (isTurkishFilm) {
-        // TMDB'de Türk filmlerinin posterleri genelde iso_639_1=null (dilsiz) etiketlidir,
-        // "tr" etiketi çoğu zaman yoktur. Bu yüzden dilsiz fallback zorunlu.
-        // detail.poster_path ise tr-TR çevirisi yoksa ana (İngilizce) posteri döndürebilir;
-        // bu yüzden onu yalnızca detailPosterIsTurkish true ise kullan.
-        originalPoster = posters.find(p => p.iso_639_1 === "tr")
-          || posters.find(p => !p.iso_639_1)
-          || (detailPosterIsTurkish ? { file_path: trPosterPath } : null)
-          || (posters[0] ? { file_path: posters[0].file_path } : null);
-      } else {
-        originalPoster = posters.find(p => p.iso_639_1 === originalLang && p.iso_639_1 !== "tr")
+
+      const pickOriginalPoster = () => {
+        if (isTurkishFilm) {
+          return posters.find(p => p.iso_639_1 === "tr")
+            || posters.find(p => !p.iso_639_1)
+            || (detailPosterIsTurkish ? { file_path: trPosterPath } : null)
+            || (posters[0] ? { file_path: posters[0].file_path } : null);
+        }
+        return posters.find(p => p.iso_639_1 === originalLang && p.iso_639_1 !== "tr")
           || posters.find(p => p.iso_639_1 === "en")
           || posters.find(p => !p.iso_639_1)
           || posters.find(p => p.iso_639_1 && p.iso_639_1 !== "tr");
-      }
+      };
+
       if (need.has("original_poster_path")) {
+        const originalPoster = pickOriginalPoster();
         if (originalPoster) {
           updates.original_poster_path = originalPoster.file_path;
           covered.add("original_poster_path");
@@ -1172,31 +1197,20 @@ async function enrichClassic(env, movie, staleFields, outerSignal) {
         } else if (detailPosterIsTurkish) {
           updates.poster_path = null;
         }
-                                } else {
-        originalPoster = posters.find(p => p.iso_639_1 === originalLang && p.iso_639_1 !== "tr")
-          || posters.find(p => p.iso_639_1 === "en")
-          || posters.find(p => !p.iso_639_1)
-          || posters.find(p => p.iso_639_1 && p.iso_639_1 !== "tr");
       }
-      if (need.has("original_poster_path")) {
-        if (originalPoster) {
-          updates.original_poster_path = originalPoster.file_path;
-          covered.add("original_poster_path");
-        } else if (!isTurkishFilm && detailPosterIsTurkish) {
-          updates.poster_path = null;
-        }
-}
+
       const kw = detail.keywords?.keywords || [];
       if (need.has("keywords")) { updates.keywords = kw.map(k => k.name); covered.add("keywords"); }
       if (need.has("keywords_ids")) { updates.keywords_ids = kw.map(k => k.id); covered.add("keywords_ids"); }
+
       const credits = detail.credits;
       if (credits) {
         const crew = credits.crew || [];
-        // İsim alanında ID/garbage olan kişileri filtrele — "jam kod" sızmasını engeller.
+        // İsim alanında ID/garbage olan kişileri filtrele.
         const sanitizePerson = (c) => {
           const name = typeof c?.name === "string" ? c.name.trim() : "";
           if (!name) return null;
-          if (/^(nm|tt)\d+$/i.test(name) || /^\d{4,}$/.test(name) || /^Q\d+$/.test(name) || /^\[object /i.test(name)) return null;
+          if (/^(nm|tt)\d+$/i.test(name) || /^\d+$/.test(name) || /^Q\d+$/.test(name) || /^\[object /i.test(name)) return null;
           return { name, profile_path: c.profile_path || null };
         };
         if (need.has("director")) { updates.director = crew.filter(c => c.job === "Director").map(sanitizePerson).filter(Boolean); covered.add("director"); }
@@ -1206,12 +1220,11 @@ async function enrichClassic(env, movie, staleFields, outerSignal) {
         if (need.has("producers")) { updates.producers = crew.filter(c => c.job === "Producer").map(sanitizePerson).filter(Boolean); covered.add("producers"); }
         if (need.has("cast")) { updates.cast = (credits.cast || []).slice(0, 8).map(sanitizePerson).filter(Boolean); covered.add("cast"); }
         if (need.has("cast_ids")) { updates.cast_ids = (credits.cast || []).slice(0, 20).map(c => c.id); covered.add("cast_ids"); }
-                   }
       }
       if (!movie.imdb_id && detail.imdb_id) movie.imdb_id = detail.imdb_id;
     } catch (e) { console.warn("tmdb detail enrich:", e.message); }
   }
-  if (["imdbRating","imdbVotes","imdbID","omdb_directors","actors","rated","awards","metascore","boxOffice"].some(f => need.has(f))) {
+  if (["imdbRating","imdbVotes","imdbID","omdb_directors","actors","rated","awards","metascore","boxOffice","omdb_poster"].some(f => need.has(f))) {
     try {
       const data = await omdbBest(env, movie, outerSignal);
       const clean = (v) => (v === "N/A" || v === undefined ? null : v);
@@ -1224,9 +1237,30 @@ async function enrichClassic(env, movie, staleFields, outerSignal) {
       if (need.has("awards")) { updates.awards = clean(data.Awards); covered.add("awards"); }
       if (need.has("metascore")) { updates.metascore = clean(data.Metascore); covered.add("metascore"); }
       if (need.has("boxOffice")) { updates.boxOffice = clean(data.BoxOffice); covered.add("boxOffice"); }
+      if (need.has("omdb_poster")) { updates.omdb_poster = clean(data.Poster); covered.add("omdb_poster"); }
     } catch (e) { console.warn("omdb enrich:", e.message); }
   }
   return { updates, covered };
+}
+
+// ---- Kişi alanı normalize edici (ID/kod sızmasını engeller) ----
+function sanitizePeopleField(val) {
+  if (!Array.isArray(val)) return val;
+  const out = [];
+  for (const it of val) {
+    if (it == null) continue;
+    if (typeof it === "string") {
+      const t = it.trim();
+      if (!t || /^(nm|tt)\d+$/i.test(t) || /^\d+$/.test(t) || /^Q\d+$/.test(t) || /^person[\/_-]\d+$/i.test(t) || /^\[object /i.test(t)) continue;
+      out.push({ name: t, profile_path: null });
+    } else if (typeof it === "object") {
+      const n = it.name ?? it.original_name;
+      if (typeof n !== "string" || !n.trim()) continue;
+      if (/^(nm|tt)\d+$/i.test(n) || /^\d+$/.test(n) || /^Q\d+$/.test(n)) continue;
+      out.push({ name: n.trim(), profile_path: it.profile_path || null });
+    }
+  }
+  return out;
 }
 
 // ============ Filtre karşılaştırma yardımcıları ============
@@ -1433,20 +1467,20 @@ function classifyCount(n) {
 function deriveLocationModeFromSources(profile, metatakeLocations, filmmapLocations, wdLocations) {
   if (profile.location_mode) return { mode: profile.location_mode, estimated: false, source: "llm" };
   const mt = metatakeLocations || [];
-  const layerOf = (x) => String(x.layer || x.relation || "").toLowerCase(); 
+  const layerOf = (x) => String(x.layer || x.relation || "").toLowerCase();
   if (mt.length) {
-const settingCount = mt.filter(l => layerOf(l) === "setting").length;
-const filmedCount = mt.filter(l => layerOf(l) !== "setting").length;
+    const settingCount = mt.filter(l => layerOf(l) === "setting").length;
+    const filmedCount = mt.filter(l => layerOf(l) !== "setting").length;
     const count = settingCount || filmedCount;
     const avgConf = mt.reduce((s, l) => s + (Number(l.confidence) || 0), 0) / mt.length;
     return { mode: classifyCount(count), estimated: avgConf < 0.7, source: "metatake" };
   }
   const fm = filmmapLocations || [];
-if (fm.length) {
-  const fmSettings = fm.filter(l => layerOf(l) === "setting").length;
-  const count = fmSettings || fm.length;
-  return { mode: classifyCount(count), estimated: true, source: "filmmap" };
-            }
+  if (fm.length) {
+    const fmSettings = fm.filter(l => layerOf(l) === "setting").length;
+    const count = fmSettings || fm.length;
+    return { mode: classifyCount(count), estimated: true, source: "filmmap" };
+  }
   const wd = wdLocations || profile.filming_locations || [];
   if (wd.length) return { mode: classifyCount(wd.length), estimated: true, source: "wikidata" };
   return { mode: null, estimated: true, source: null };
@@ -1517,7 +1551,8 @@ function evaluateFilters(profile, filters, semanticVerdict, metatakeLocations, f
     if (semanticVerdict.reason) state.reasons.push(semanticVerdict.reason);
   }
   return state;
-      }
+}
+
 async function handleResearchStream(env, body, controller, signal) {
   const enc = new TextEncoder();
   const send = (obj) => controller.enqueue(enc.encode(`data: ${JSON.stringify(obj)}\n\n`));
@@ -1545,13 +1580,11 @@ async function handleResearchStream(env, body, controller, signal) {
       if (!profile.overview && movie.overview) profile.overview = movie.overview;
       if (profile.poster_path === undefined && movie.poster_path) profile.poster_path = movie.poster_path;
       if (!profile.release_date && movie.release_date) profile.release_date = movie.release_date;
-      prepared.push({ movie, movieId, profile, fieldRows, staleDeterministic: [], filmmap: null, metatakeLocations: null, metatakeExt: null, locationModeEstimated: false, locationModeSource: null });
+      prepared.push({ movie, movieId, profile, fieldRows, staleDeterministic: [], filmmap: null, metatakeLocations: null, metatakeExt: null, locationModeEstimated: false, locationModeSource: null, dirty: false });
     }
 
     const needFilmMap = !!(filters.filming_locations?.include?.length || filters.filming_locations?.exclude?.length || filters.locationMode);
     const needMetatakeForNarrative = !!(filters.story_locations?.include?.length || filters.story_locations?.exclude?.length || filters.related_films?.include?.length || filters.related_films?.exclude?.length);
-    // Subrequest bütçesi: Metatake yalnızca anlatı filtreleri için çağrılır.
-    // Sadece filming_locations / locationMode isteniyorsa FilmMap yeterlidir (3 çağrı/film tasarrufu).
     const needMetatake = needMetatakeForNarrative;
     if (needFilmMap) {
       for (const p of prepared) {
@@ -1608,6 +1641,7 @@ async function handleResearchStream(env, body, controller, signal) {
       const classic = await enrichClassic(env, p.movie, p.staleDeterministic, signal);
       Object.assign(p.profile, classic.updates);
       const covered = [...classic.covered].filter(f => p.profile[f] !== undefined && p.profile[f] !== null);
+      if (covered.length) p.dirty = true;
       await putFieldRows(env, p.movieId, covered, Object.fromEntries(covered.map(f => [f, FIELD_DEFS[f]?.source || "unknown"])));
     }
 
@@ -1627,6 +1661,7 @@ async function handleResearchStream(env, body, controller, signal) {
           if (rec.filmingCountries?.length) { p.profile.filming_countries = rec.filmingCountries; covered.push("filming_countries"); }
           if (rec.awards?.length) { p.profile.awards_ids = rec.awards; covered.push("awards_ids"); }
           if (rec.nominations?.length) { p.profile.nominated_ids = rec.nominations; covered.push("nominated_ids"); }
+          if (covered.length) p.dirty = true;
           await putFieldRows(env, p.movieId, covered, Object.fromEntries(covered.map(f => [f, "wikidata"])));
         }
         for (const p of prepared) {
@@ -1642,7 +1677,7 @@ async function handleResearchStream(env, body, controller, signal) {
 
     const stage2bFields = (() => {
       const fields = new Set(ratioFieldsNeeded(filters));
-      if (filters.story_locations && (!filters.story_locations.include?.length && !filters.story_locations.exclude?.length ? false : true)) {
+      if (filters.story_locations && (filters.story_locations.include?.length || filters.story_locations.exclude?.length)) {
         if (afterLocal.some(p => !p.profile.story_locations || !p.profile.story_locations.length)) fields.add("story_locations");
       }
       if (filters.related_films && (filters.related_films.include?.length || filters.related_films.exclude?.length)) {
@@ -1661,12 +1696,13 @@ async function handleResearchStream(env, body, controller, signal) {
       for (const p of afterLocal) {
         if (signal?.aborted) break;
         const stale = findStaleFields(p.profile, p.fieldRows || [], forceRefresh);
-        const need = stage2bFields.filter(f => !p.profile[f] || (Array.isArray(p.profile[f]) && p.profile[f].length === 0) || FIELD_DEFS[f]?.source === "llm" && stale.includes(f));
+        const need = stage2bFields.filter(f => !p.profile[f] || (Array.isArray(p.profile[f]) && p.profile[f].length === 0) || (FIELD_DEFS[f]?.source === "llm" && stale.includes(f)));
         if (!need.length) continue;
         try {
           const updates = await fillDetails(env, p.movie, need, signal, { movie_id: p.movieId, cache_hit: 0 });
           Object.assign(p.profile, updates);
           const covered = Object.keys(updates).filter(f => p.profile[f] !== undefined && p.profile[f] !== null);
+          if (covered.length) p.dirty = true;
           await putFieldRows(env, p.movieId, covered, Object.fromEntries(covered.map(f => [f, "llm"])));
         } catch (e) { console.warn("stage2b fail:", p.movieId, e.message); }
       }
@@ -1712,7 +1748,7 @@ async function handleResearchStream(env, body, controller, signal) {
     for (const p of afterLocal) {
       const verdict = semanticVerdicts.get(p.movieId) || null;
       const evalResult = evaluateFilters(p.profile, filters, verdict, p.metatakeLocations, p.filmmap);
-      if (p.staleDeterministic.length) await putProfileRow(env, p.movieId, p.movie.title, yearOf(p.movie), p.profile, forceRefresh);
+      if (p.dirty || p.staleDeterministic.length) await putProfileRow(env, p.movieId, p.movie.title, yearOf(p.movie), p.profile, forceRefresh);
       const movieLists = listsMap.get(p.movieId) || [];
       const result = {
         id: p.movie.id, ...p.movie, ...p.profile,
@@ -1729,6 +1765,10 @@ async function handleResearchStream(env, body, controller, signal) {
         movie_lists: movieLists,
         _fromCache: p.staleDeterministic.length === 0
       };
+      // Kişi alanlarındaki ID/kod sızmasını son savunma olarak temizle
+      for (const f of ["director","writers","cast","producers","actors"]) {
+        if (result[f] !== undefined) result[f] = sanitizePeopleField(result[f]);
+      }
       results.push(result);
       send({ type: "movie", index: results.length - 1, total, movie: result });
     }
@@ -1778,10 +1818,12 @@ async function handleMovieDetails(env, body, signal) {
   const stale = findStaleFields(profile, fieldRows, forceAll);
   const staleDet = stale.filter(f => FIELD_DEFS[f]?.source !== "llm");
   const staleLLM = stale.filter(f => FIELD_DEFS[f]?.source === "llm");
+  let dirty = false;
   if (staleDet.length) {
     const classic = await enrichClassic(env, movie, staleDet, signal);
     Object.assign(profile, classic.updates);
     const covered = [...classic.covered].filter(f => profile[f] !== undefined && profile[f] !== null);
+    if (covered.length) dirty = true;
     await putFieldRows(env, movieId, covered, Object.fromEntries(covered.map(f => [f, FIELD_DEFS[f]?.source || "unknown"])));
   }
   if (staleLLM.length) {
@@ -1789,11 +1831,16 @@ async function handleMovieDetails(env, body, signal) {
       const updates = await fillDetails(env, movie, staleLLM, signal, { movie_id: movieId });
       Object.assign(profile, updates);
       const covered = Object.keys(updates).filter(f => profile[f] !== undefined && profile[f] !== null);
+      if (covered.length) dirty = true;
       await putFieldRows(env, movieId, covered, Object.fromEntries(covered.map(f => [f, "llm"])));
     } catch (e) { console.warn("stage2 details fail:", e.message); }
   }
-  await putProfileRow(env, movieId, movie.title, yearOf(movie), profile, forceAll);
-  return { movie: { ...movie, ...profile } };
+  if (dirty || forceAll) await putProfileRow(env, movieId, movie.title, yearOf(movie), profile, forceAll);
+  const merged = { ...movie, ...profile };
+  for (const f of ["director","writers","cast","producers","actors"]) {
+    if (merged[f] !== undefined) merged[f] = sanitizePeopleField(merged[f]);
+  }
+  return { movie: merged };
 }
 
 async function handleImages(env, url, signal) {
@@ -1840,7 +1887,7 @@ async function getActiveDeadKeys(env) {
   if (!env.DB) return [];
   try {
     const now = Math.floor(Date.now() / 1000);
-    const { results } = await env.DB.prepare("SELECT provider, key_index, until_ts, reason FROM dead_keys WHERE until_ts > ? ORDER BY provider, key_index").bind(now).all();
+    const { results } = await env.DB.prepare("SELECT provider, key_index, model, until_ts, reason FROM dead_keys WHERE until_ts > ? ORDER BY provider, key_index").bind(now).all();
     return results || [];
   } catch { return []; }
 }
@@ -1943,6 +1990,10 @@ async function handleRequest(request, env, ctx) {
       for (const [k, v] of lists) obj[k] = v;
       return response({ lists: obj });
     }
+    if (url.pathname === "/admin/ping" && request.method === "GET") {
+      if (!isAdmin(request, env)) return jsonError("Yetkisiz.", 401);
+      return response({ ok: true });
+    }
     if (url.pathname === "/admin/config" && request.method === "GET") return response({ config: await getAllConfig(env) });
     if (url.pathname === "/admin/config" && request.method === "PUT") {
       if (!isAdmin(request, env)) return jsonError("Yetkisiz.", 401);
@@ -1952,7 +2003,10 @@ async function handleRequest(request, env, ctx) {
       return response({ ok: true, key: body.key });
     }
     if (url.pathname === "/admin/filter_info" && request.method === "GET") return response({ config: await getFilterInfoAll(env) });
-    if (url.pathname === "/admin/stats" && request.method === "GET") return response({ stats: await getLlmStats(env), deadKeys: await getActiveDeadKeys(env) });
+    if (url.pathname === "/admin/stats" && request.method === "GET") {
+      if (!isAdmin(request, env)) return jsonError("Yetkisiz.", 401);
+      return response({ stats: await getLlmStats(env), deadKeys: await getActiveDeadKeys(env) });
+    }
     if (url.pathname === "/admin/dead_keys" && request.method === "DELETE") {
       if (!isAdmin(request, env)) return jsonError("Yetkisiz.", 401);
       if (env.DB) await env.DB.prepare("DELETE FROM dead_keys").run();

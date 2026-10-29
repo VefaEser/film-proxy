@@ -93,7 +93,6 @@ export const LLM_FIELDS = Object.entries(FIELD_DEFS)
 
 export const VALID_SOURCES = [...new Set(Object.values(FIELD_DEFS).map(d => d.source))];
 
-// {{RULES}} placeholder'ı için — yalnızca istenen alanlara ait kurallar prompt'a girer.
 export const FIELD_RULES = {
   season: 'season: "winter"|"summer"|"spring"|"autumn"',
   reality: 'reality: "true"|"mostly_true"|"inspired"|"realistic"|"fictional"|"utopic"',
@@ -102,11 +101,9 @@ export const FIELD_RULES = {
   sound: 'sound: "ambient"|"music"|"effects"|"voiceover_ext"|"voiceover_int"|"silent"|"dubbed"',
   story_geography: 'story_geography: "city"|"town"|"village"|"mountain"|"desert"|"steppe"|"forest"|"seaside"|"riverside"|"opensea"|"air"',
   character_traits: 'character_traits: "male_main"|"female_main"|"child_main"|"lgbt_main"|"male_support"|"female_support"|"child_support"|"lgbt_support"|"young_main"|"middle_main"|"old_main"|"disabled_main"|"animal" vb.',
-  story_dimensions: 'story_dimensions: "has_sequel"|"is_sequel"|"series_tight"|"series_loose"|"concept"|"has_version"|"same_event"',
-  location_mode: 'location_mode: "single" (tamamı tek mekânda) | "mostly_single" (çoğunlukla tek mekân, birkaç sahne dışarıda) | "few" (birkaç farklı mekân, 2-4) | "many" (birçok farklı mekân, 5+)'
+  story_dimensions: 'story_dimensions: "has_sequel"|"is_sequel"|"series_tight"|"series_loose"|"concept"|"has_version"|"same_event"'
 };
 
-// Stage 1 (verdict) için semantik alanlar
 export const SEMANTIC_FIELDS = [
   "story_period", "story_geography", "character_traits",
   "narrative_style", "production_process", "sound", "reality",
@@ -114,23 +111,21 @@ export const SEMANTIC_FIELDS = [
   "original_work"
 ];
 
-// Ratio + location_mode — Stage 2b (alan doldurma) için
 export const RATIO_FIELDS = [
-  "day_ratio", "indoor_ratio", "dialogue_density", "color_ratio", "location_mode"
+  "day_ratio", "indoor_ratio", "dialogue_density", "color_ratio"
 ];
 
-// Sabit kaynaklı, YZ'siz filtreler (Stage 0'da uygulanır)
+export const LOCATION_FIELDS = ["location_count"];
+
 export const DETERMINISTIC_FILTERS = [
   "yearMin", "yearMax", "runtimeMin", "runtimeMax",
   "imdbMin", "imdbMax", "imdbVotesMin",
   "tmdbMin", "tmdbMax", "tmdbVotesMin",
   "genres", "original_language", "production_countries",
-  "rated", "company", "keywords", "award", "imdbTop250",
+  "rated", "company", "keywords", "award",
   "director", "writers", "cast"
 ];
 
-// Metatake'in doldurabileceği alanlar
-export const METATAKE_FIELDS = ["story_locations", "related_films", "location_mode"];
+export const METATAKE_FIELDS = ["story_locations", "related_films", "location_mode", "location_count"];
 
-// FilmMap'in doldurabileceği alanlar
 export const FILMMAP_FIELDS = ["filmmap_locations", "filming_locations"];

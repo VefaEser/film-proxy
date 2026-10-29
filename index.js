@@ -183,22 +183,27 @@ function isBadDetailArray(val) {
     if (!t) return true;
     return /^(nm|tt)\d+$/i.test(t)
       || /^\d+$/.test(t)
-      || /^Q\d+$/.test(t)
+      || /^[QP]\d+$/i.test(t)
       || /^person[\/_-]\d+$/i.test(t)
+      || /^id[\/_-]?\d+$/i.test(t)
+      || /^@\d+$/.test(t)
       || /^\[object /i.test(t)
       || /^\{.*\}$/.test(t)
       || /^\[.*\]$/.test(t)
-      || /":\s*"/.test(t);
+      || /":\s*"/.test(t)
+      || /^[0-9a-f]{8}-[0-9a-f]{4}-/i.test(t);
   };
   return val.some(v => {
     if (v == null) return true;
     if (typeof v === "string") return looksLikeId(v);
     if (typeof v === "number" || typeof v === "boolean") return true;
     if (typeof v === "object") {
-      const n = v.name ?? v.original_name;
-      if (typeof n !== "string" || !n.trim()) return true;
-      if (looksLikeId(n)) return true;
-      return false;
+      const candidates = [v.name, v.original_name];
+      let valid = false;
+      for (const c of candidates) {
+        if (typeof c === "string" && c.trim() && !looksLikeId(c)) { valid = true; break; }
+      }
+      return !valid;
     }
     return true;
   });
@@ -210,8 +215,10 @@ function findStaleFields(profile, fieldRows, forceRefresh) {
   const stale = [];
   const detailFields = new Set(["writers", "writers_ids", "cast", "cast_ids", "director", "director_ids", "producers", "actors", "omdb_directors"]);
   for (const [field, def] of Object.entries(FIELD_DEFS)) {
-    const hasValue = profile[field] !== undefined && profile[field] !== null;
-    const badData = hasValue && detailFields.has(field) && isBadDetailArray(profile[field]);
+    const raw = profile[field];
+    const isEmptyArray = Array.isArray(raw) && raw.length === 0;
+    const hasValue = raw !== undefined && raw !== null && !isEmptyArray;
+    const badData = hasValue && detailFields.has(field) && isBadDetailArray(raw);
     if (!hasValue || badData) { stale.push(field); continue; }
     if (forceRefresh) { stale.push(field); continue; }
     if (def.ttl == null) continue;
@@ -469,7 +476,7 @@ function extractGeminiText(data) {
   return texts.length ? texts.join("\n") : "";
 }
 
-// Gemini Interactions API — thinking_config parametresi yok; sadece model + input gönder.
+// Gemini: thinking_config parametresi kullanılmıyor. Sadece model + input.
 async function callGeminiInteractions(env, key, model, prompt, outerSignal) {
   const data = await fetchJSON(GOOGLE_INTERACTIONS, {
     method: "POST", headers: { "Content-Type": "application/json", "x-goog-api-key": key },
@@ -536,7 +543,8 @@ async function callGroqModel(env, key, model, prompt, maxOutputTokens, useSearch
 }
 
 async function callLLMWithFallback(env, prompt, maxOutputTokens, useSearch, outerSignal, context = {}) {
-  const deadline = Date.now() + Math.min(LLM_DEADLINE_MS, 60000);
+  const deadlineMs = context.timeoutMs ? Math.min(context.timeoutMs, LLM_DEADLINE_MS) : LLM_DEADLINE_MS;
+  const deadline = Date.now() + deadlineMs;
   const errors = [];
   const promptLen = estimateTokens(prompt);
   const dead = await loadDeadKeys(env);
@@ -660,7 +668,6 @@ async function putFilmmapCache(env, movieId, locations) {
   } catch (e) { console.warn("filmmap cache:", e.message); }
 }
 
-// ============ Metatake extended cache ============
 async function getMetatakeExtendedCache(env, movieId) {
   if (!env.DB) return null;
   try {
@@ -701,7 +708,6 @@ async function putMetatakeExtendedCache(env, movieId, data) {
   } catch (e) { console.warn("metatake extended cache:", e.message); }
 }
 
-// ============ FilmMap API ============
 async function filmmapLocations(env, movie, outerSignal) {
   const movieId = movieKey(movie);
   const cached = await getFilmmapCache(env, movieId);
@@ -715,7 +721,7 @@ async function filmmapLocations(env, movie, outerSignal) {
       method: "tools/call",
       params: { name: "where_was_it_filmed", arguments: { title, limit: 100 } }
     };
-    const signal = combineSignals(outerSignal, 15000);
+    const signal = combineSignals(outerSignal, 10000);
     const res = await fetch("https://moviescenemap.com/mcp", {
       method: "POST",
       headers: { "Content-Type": "application/json", "Accept": "application/json, text/event-stream" },
@@ -771,7 +777,6 @@ async function filmmapLocations(env, movie, outerSignal) {
   }
 }
 
-// ============ Metatake extended API ============
 async function metatakeExtended(env, movie, outerSignal) {
   const movieId = movieKey(movie);
   const cached = await getMetatakeExtendedCache(env, movieId);
@@ -781,7 +786,7 @@ async function metatakeExtended(env, movie, outerSignal) {
   const headers = { "Accept": "application/json", "User-Agent": USER_AGENT };
   try {
     const searchUrl = `https://metatake.net/api/v1/films?q=${encodeURIComponent(title)}&limit=5`;
-    const searchData = await fetchJSON(searchUrl, { headers }, "Metatake search", 15000, outerSignal);
+    const searchData = await fetchJSON(searchUrl, { headers }, "Metatake search", 10000, outerSignal);
     const films = Array.isArray(searchData?.films) ? searchData.films : [];
     if (!films.length) return null;
     const year = yearOf(movie);
@@ -792,13 +797,13 @@ async function metatakeExtended(env, movie, outerSignal) {
     let film = null;
     try {
       const filmUrl = `https://metatake.net/api/v1/films/${encodeURIComponent(slug)}`;
-      film = await fetchJSON(filmUrl, { headers }, "Metatake film", 15000, outerSignal);
+      film = await fetchJSON(filmUrl, { headers }, "Metatake film", 10000, outerSignal);
     } catch (e) { console.warn("metatake film:", e.message); }
 
     let locations = [];
     try {
       const locUrl = `https://metatake.net/api/v1/locations?film=${encodeURIComponent(slug)}&limit=100`;
-      const locData = await fetchJSON(locUrl, { headers }, "Metatake locations", 15000, outerSignal);
+      const locData = await fetchJSON(locUrl, { headers }, "Metatake locations", 10000, outerSignal);
       const locList = Array.isArray(locData?.locations) ? locData.locations : [];
       locations = locList.map(loc => ({
         name: String(loc.name || "").trim(),
@@ -844,7 +849,6 @@ async function metatakeExtended(env, movie, outerSignal) {
   }
 }
 
-// ============ JSON / signature ============
 function extractJSON(text) {
   const clean = String(text).replace(/^```(?:json)?\s*/i, "").replace(/\s*```\s*$/, "").trim();
   const start = clean.indexOf("{"), end = clean.lastIndexOf("}");
@@ -974,7 +978,6 @@ function locationFieldsNeeded(filters) {
   return [];
 }
 
-// ============ Stage 1 (verdict) ============
 async function classifyBatch(env, movies, filterSentence, filterContext, useSearch, signal, context = {}) {
   const payload = movies.map(m => ({
     id: m.id,
@@ -999,7 +1002,6 @@ async function classifyBatch(env, movies, filterSentence, filterContext, useSear
   return byId;
 }
 
-// ============ Stage 2b (alan doldurma) ============
 function buildStage2Rules(fields) {
   const rules = [];
   for (const f of fields) {
@@ -1013,7 +1015,7 @@ function buildStage2Rules(fields) {
     else if (f === "story_period") rules.push(`story_period: string[] (dönem etiketleri)`);
     else if (f === "story_locations") rules.push(`story_locations: string[] (yer adları)`);
     else if (f === "aspect_ratio") rules.push(`aspect_ratio: string (ör. "2.39:1")`);
-    else if (f === "location_count") rules.push(`location_count: 1-100 arası tam sayı — hikâyede geçen farklı mekân sayısı. Tek mekânda geçiyorsa 1, çoğunlukla tek mekânsa 2, 2-4 mekân varsa ilgili sayı, 5+ mekân varsa 6-30 arası tahmini sayı. Flashback/rüya gibi teknik sahnelerdeki mekânlar sayılmaz.`);
+    else if (f === "location_count") rules.push(`location_count: 1-100 arası tam sayı — hikâyede geçen farklı mekân sayısı.`);
     else rules.push(`${f}: uygun değer`);
   }
   return rules.join("\n");
@@ -1033,7 +1035,7 @@ async function fillDetailsBatch(env, movies, staleFields, signal, context = {}) 
     .replace(/\{\{RULES\}\}/g, rules);
   let raw;
   try {
-    raw = await callLLMWithFallback(env, prompt, 2000, false, signal, { ...context, method: "stage2", hasSemantic: true, maxAttempts: 3 });
+    raw = await callLLMWithFallback(env, prompt, 2000, false, signal, { ...context, method: "stage2", hasSemantic: true, maxAttempts: 3, timeoutMs: context.timeoutMs });
   } catch (e) {
     console.warn("fillDetailsBatch:", String(e.message || e).slice(0, 200));
     return out;
@@ -1049,10 +1051,9 @@ async function fillDetailsBatch(env, movies, staleFields, signal, context = {}) 
 }
 
 async function fillDetails(env, movie, staleLLMFields, signal, context = {}) {
-  const map = await fillDetailsBatch(env, [movie], staleLLMFields, signal, { ...context, maxAttempts: 3 });
+  const map = await fillDetailsBatch(env, [movie], staleLLMFields, signal, { ...context, maxAttempts: 2, timeoutMs: 20000 });
   return map.get(String(movie.id)) || {};
-      }
-// ============ Wikidata ============
+                                       }
 function buildWikidataBatchQuery(movies) {
   const rows = movies.map(m => {
     const title = (m.original_title || m.title || "").replace(/\\/g, "\\\\").replace(/"/g, '\\"');
@@ -1110,7 +1111,6 @@ async function wikidataBatch(env, movies, outerSignal) {
   catch (e) { console.warn("wikidata batch:", e.message); return new Map(); }
 }
 
-// ============ Wikimedia Commons ============
 function isLikelySceneImage(img) {
   const text = `${img.title || ""} ${img.description || ""} ${img.categories || ""}`.toLowerCase();
   if (/(poster|portrait|headshot|actor|actress|cast|logo|cover|selfie|signature)/.test(text)) return false;
@@ -1144,7 +1144,6 @@ async function tmdbBackdrops(env, movie, outerSignal) {
   })).filter(x => x.url);
 }
 
-// ============ Deterministik zenginleştirme (TMDB + OMDb) ============
 async function enrichClassic(env, movie, staleFields, outerSignal) {
   const need = new Set(staleFields);
   const updates = {};
@@ -1209,7 +1208,7 @@ async function enrichClassic(env, movie, staleFields, outerSignal) {
         const sanitizePerson = (c) => {
           const name = typeof c?.name === "string" ? c.name.trim() : "";
           if (!name) return null;
-          if (/^(nm|tt)\d+$/i.test(name) || /^\d+$/.test(name) || /^Q\d+$/.test(name) || /^\[object /i.test(name)) return null;
+          if (/^(nm|tt)\d+$/i.test(name) || /^\d+$/.test(name) || /^[QP]\d+$/.test(name) || /^\[object /i.test(name)) return null;
           return { name, profile_path: c.profile_path || null };
         };
         if (need.has("director")) { updates.director = crew.filter(c => c.job === "Director").map(sanitizePerson).filter(Boolean); covered.add("director"); }
@@ -1243,26 +1242,40 @@ async function enrichClassic(env, movie, staleFields, outerSignal) {
 }
 
 // ---- Kişi alanı normalize edici ----
+function personNameFromObj(it) {
+  if (!it || typeof it !== "object") return "";
+  const candidates = [it.name, it.original_name, it.full_name, it.title, it.label];
+  for (const c of candidates) {
+    if (typeof c === "string") {
+      const t = c.trim();
+      if (!t) continue;
+      if (/^(nm|tt)\d+$/i.test(t) || /^\d+$/.test(t) || /^[QP]\d+$/i.test(t) || /^id[\/_-]?\d+$/i.test(t) || /^\[object /i.test(t)) continue;
+      return t;
+    }
+  }
+  return "";
+}
 function sanitizePeopleField(val) {
   if (!Array.isArray(val)) return val;
   const out = [];
   for (const it of val) {
     if (it == null) continue;
+    if (typeof it === "number" || typeof it === "boolean") continue;
     if (typeof it === "string") {
-      const t = it.trim();
-      if (!t || /^(nm|tt)\d+$/i.test(t) || /^\d+$/.test(t) || /^Q\d+$/.test(t) || /^person[\/_-]\d+$/i.test(t) || /^\[object /i.test(t) || /^\{/.test(t) || /^\[/.test(t) || /":\s*"/.test(t)) continue;
+      let t = it.trim();
+      if (!t) continue;
+      t = t.replace(/\s*\((?:person|nm|tt|id)[\s\/_-]*\d+\)\s*$/i, "").trim();
+      if (!t || /^(nm|tt)\d+$/i.test(t) || /^\d+$/.test(t) || /^[QP]\d+$/i.test(t) || /^person[\/_-]\d+$/i.test(t) || /^id[\/_-]?\d+$/i.test(t) || /^@\d+$/.test(t) || /^\[object /i.test(t) || /^\{/.test(t) || /^\[/.test(t) || /":\s*"/.test(t) || /^[0-9a-f]{8}-[0-9a-f]{4}-/i.test(t)) continue;
       out.push({ name: t, profile_path: null });
     } else if (typeof it === "object") {
-      const n = it.name ?? it.original_name;
-      if (typeof n !== "string" || !n.trim()) continue;
-      if (/^(nm|tt)\d+$/i.test(n) || /^\d+$/.test(n) || /^Q\d+$/.test(n)) continue;
-      out.push({ name: n.trim(), profile_path: it.profile_path || null });
+      const n = personNameFromObj(it);
+      if (!n) continue;
+      out.push({ name: n, profile_path: it.profile_path || null });
     }
   }
   return out;
 }
 
-// ============ Filtre karşılaştırma ============
 function toNum(v) {
   if (v === null || v === undefined || v === "") return null;
   if (typeof v === "string" && /^n\/?a$/i.test(v.trim())) return null;
@@ -1339,11 +1352,14 @@ function passesLocalFilters(profile, filters) {
   const imdb = Number(String(profile.imdbRating || "").replace(/[^\d.]/g, "")) || null;
   if (filters.imdbMin > 0 && imdb != null && imdb < filters.imdbMin) return false;
   if (filters.imdbMax < 10 && imdb != null && imdb > filters.imdbMax) return false;
-  // Varsayılan 100 IMDb oy: kullanıcı 0 bıraktıysa 100 minimum uygulanır.
-  const minVotes = filters.imdbVotesMin > 0 ? filters.imdbVotesMin : DEFAULT_MIN_IMDB_VOTES;
+  // IMDb oy filtresi:
+  // - imdbVotesMin null ise varsayılan 100 uygulanır
+  // - explicit değer (100 altı dahil) olduğu gibi uygulanır
+  // - Oy verisi bilinmiyorsa filter uygulanmaz (kanıt yok)
+  const minVotes = filters.imdbVotesMin == null ? DEFAULT_MIN_IMDB_VOTES : Number(filters.imdbVotesMin);
   if (minVotes > 0 && imdb != null) {
-    const iv = Number(String(profile.imdbVotes || "").replace(/[^\d]/g, "")) || 0;
-    if (iv < minVotes) return false;
+    const ivRaw = String(profile.imdbVotes || "").replace(/[^\d]/g, "");
+    if (ivRaw && Number(ivRaw) < minVotes) return false;
   }
   const year = yearOf(profile) || null;
   if (filters.yearMin != null && year != null && year < filters.yearMin) return false;
@@ -1439,7 +1455,6 @@ function evalRatioFilters(profile, filters, state) {
   }
 }
 
-// ============ Mekân sayısı ============
 function getLocationCount(profile, metatakeLocations, filmmapLocations) {
   const exact = toNum(profile.location_count);
   if (exact !== null && exact > 0) return { count: exact, estimated: false, source: "ai" };
@@ -1625,7 +1640,6 @@ async function handleResearchStream(env, body, controller, signal) {
       await putFieldRows(env, p.movieId, covered, Object.fromEntries(covered.map(f => [f, FIELD_DEFS[f]?.source || "unknown"])));
     }
 
-    // Wikidata sadece gerçekten gerekli filtreler için çalışır (location filtreleri artık FilmMap'e bırakıldı).
     const needWiki = !!(
       filters.original_work?.include?.length || filters.original_work?.exclude?.length
       || filters.filming_locations?.include?.length || filters.filming_locations?.exclude?.length
@@ -1779,25 +1793,33 @@ async function handleMovieDetails(env, body, signal) {
   if (!profile.overview && movie.overview) profile.overview = movie.overview;
   if (profile.poster_path === undefined && movie.poster_path) profile.poster_path = movie.poster_path;
   if (!profile.release_date && movie.release_date) profile.release_date = movie.release_date;
+
+  // FilmMap ve Metatake paralel; cache kontrolü ile hızlı dön.
+  const fmCache = await getFilmmapCache(env, movieId);
+  const mtCache = await getMetatakeExtendedCache(env, movieId);
   let metatakeLocations = null;
-  let filmmapLocationsList = null;
-  try {
-    const fm = await filmmapLocations(env, movie, signal);
-    filmmapLocationsList = fm.locations || [];
-  } catch (e) { console.warn("filmmap details:", e.message); }
-  try {
-    const mt = await metatakeExtended(env, movie, signal);
-    if (mt) {
-      if (mt.narrative_setting?.length && (!profile.story_locations || !profile.story_locations.length)) profile.story_locations = mt.narrative_setting;
-      if (mt.kindred_films?.length && (!profile.related_films || !profile.related_films.length)) profile.related_films = mt.kindred_films;
-      if (mt.awards?.length) {
-        const existingAwards = new Set(profile.awards_ids || []);
-        for (const a of mt.awards) existingAwards.add(String(a));
-        profile.awards_ids = [...existingAwards];
-      }
-      if (mt.locations?.length) metatakeLocations = mt.locations;
+  let filmmapLocationsList = fmCache || [];
+  let mt = mtCache;
+  if (!fmCache || !mtCache) {
+    const tasks = [];
+    if (!fmCache) tasks.push(filmmapLocations(env, movie, signal).catch(e => { console.warn("filmmap details:", e.message); return { locations: [] }; }));
+    else tasks.push(Promise.resolve({ locations: fmCache }));
+    if (!mtCache) tasks.push(metatakeExtended(env, movie, signal).catch(e => { console.warn("metatake details:", e.message); return null; }));
+    else tasks.push(Promise.resolve(mtCache));
+    const [fmRes, mtRes] = await Promise.all(tasks);
+    filmmapLocationsList = fmRes?.locations || filmmapLocationsList;
+    mt = mtRes || mt;
+  }
+  if (mt) {
+    if (mt.narrative_setting?.length && (!profile.story_locations || !profile.story_locations.length)) profile.story_locations = mt.narrative_setting;
+    if (mt.kindred_films?.length && (!profile.related_films || !profile.related_films.length)) profile.related_films = mt.kindred_films;
+    if (mt.awards?.length) {
+      const existingAwards = new Set(profile.awards_ids || []);
+      for (const a of mt.awards) existingAwards.add(String(a));
+      profile.awards_ids = [...existingAwards];
     }
-  } catch (e) { console.warn("metatake details:", e.message); }
+    if (mt.locations?.length) metatakeLocations = mt.locations;
+  }
   const stale = findStaleFields(profile, fieldRows, forceAll);
   const staleDet = stale.filter(f => FIELD_DEFS[f]?.source !== "llm");
   const staleLLM = stale.filter(f => FIELD_DEFS[f]?.source === "llm");

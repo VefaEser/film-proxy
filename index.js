@@ -1707,16 +1707,7 @@ async function handleResearchStream(env, body, controller, signal) {
 
     const afterLocal = prepared.filter(p => passesLocalFilters(p.profile, filters));
 
-    const stage2bFields = (() => {
-      const fields = new Set(ratioFieldsNeeded(filters));
-      if (filters.story_locations && (filters.story_locations.include?.length || filters.story_locations.exclude?.length)) {
-        if (afterLocal.some(p => !p.profile.story_locations || !p.profile.story_locations.length)) fields.add("story_locations");
-      }
-      if (filters.related_films && (filters.related_films.include?.length || filters.related_films.exclude?.length)) {
-        if (afterLocal.some(p => !p.profile.related_films || !p.profile.related_films.length)) fields.add("related_films");
-      }
-      return Array.from(fields);
-    })();
+const stage2bFields =
     const useStage2b = settings.useAI && stage2bFields.length > 0;
     const useStage1 = settings.useAI && hasSemanticFilters(filters) && !useStage2b;
     const stage1UseSearch = settings.useWebResearch;
@@ -1782,21 +1773,8 @@ async function handleResearchStream(env, body, controller, signal) {
       const evalResult = evaluateFilters(p.profile, filters, verdict, p.metatakeLocations, p.filmmap);
       if (p.dirty || p.staleDeterministic.length) await putProfileRow(env, p.movieId, p.movie.title, yearOf(p.movie), p.profile, forceRefresh);
       const movieLists = listsMap.get(p.movieId) || [];
-      const result = {
+const result = {
         id: p.movie.id, ...p.movie, ...p.profile,
-        filter_match: evalResult.match, filter_reasons: evalResult.reasons,
-        unknown: evalResult.unknown, conflicts: evalResult.conflicts,
-        semantic_used: useStage1,
-        semantic_ok: useStage1 && !!verdict && verdict.verdict !== "unknown",
-        stage1_error: stage1Error,
-        stage2b_used: useStage2b,
-        web_used: (useStage1 || useStage2b) && stage1UseSearch,
-        web_ok: false,
-        location_mode_estimated: p.locationModeEstimated,
-        location_mode_source: p.locationModeSource,
-        movie_lists: movieLists,
-        _fromCache: p.staleDeterministic.length === 0
-      };
       // Kişi alanlarındaki ID/kod sızmasını son savunma olarak temizle
       for (const f of ["director","writers","cast","producers","actors"]) {
         if (result[f] !== undefined) result[f] = sanitizePeopleField(result[f]);
@@ -1843,10 +1821,6 @@ async function handleMovieDetails(env, body, signal) {
       if (mt.locations?.length) metatakeLocations = mt.locations;
     }
   } catch (e) { console.warn("metatake details:", e.message); }
-  if (!profile.location_mode) {
-    const derived = deriveLocationModeFromSources(profile, metatakeLocations || [], filmmapLocationsList || [], profile.filming_locations || []);
-    if (derived.mode) profile.location_mode = derived.mode;
-  }
   const stale = findStaleFields(profile, fieldRows, forceAll);
   const staleDet = stale.filter(f => FIELD_DEFS[f]?.source !== "llm");
   const staleLLM = stale.filter(f => FIELD_DEFS[f]?.source === "llm");
@@ -1872,6 +1846,10 @@ async function handleMovieDetails(env, body, signal) {
   for (const f of ["director","writers","cast","producers","actors"]) {
     if (merged[f] !== undefined) merged[f] = sanitizePeopleField(merged[f]);
   }
+  const locInfo = getLocationCount(profile, metatakeLocations, filmmapLocationsList);
+  merged.location_count = locInfo.count;
+  merged.location_count_estimated = locInfo.estimated;
+  merged.location_count_source = locInfo.source;
   return { movie: merged };
 }
 

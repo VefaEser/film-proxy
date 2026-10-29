@@ -1533,7 +1533,7 @@ async function handleResearchStream(env, body, controller, signal) {
   const enc = new TextEncoder();
   const send = (obj) => controller.enqueue(enc.encode(`data: ${JSON.stringify(obj)}\n\n`));
   try {
-    const movies = Array.isArray(body.movies) ? body.movies.slice(0, 5) : [];
+    const movies = Array.isArray(body.movies) ? body.movies.slice(0, 10) : [];
     const total = movies.length;
     if (!total) { send({ type: "done", movies: [] }); return; }
     const filters = body.filters || {};
@@ -1602,16 +1602,24 @@ async function handleResearchStream(env, body, controller, signal) {
       p.staleDeterministic = stale.filter(f => FIELD_DEFS[f]?.source !== "llm");
     }
 
-    for (let i = 0; i < prepared.length; i++) {
+    // Zenginleştirme: en fazla 4 eşzamanlı — 10 filmi 5 film kadar hızlı işler.
+    const ENRICH_CONCURRENCY = 4;
+    for (let i = 0; i < prepared.length; i += ENRICH_CONCURRENCY) {
       if (signal?.aborted) return;
-      const p = prepared[i];
-      send({ type: "step", index: i, total, title: p.movie.original_title || p.movie.title, stage: p.staleDeterministic.length ? "zenginleştiriliyor" : "önbellekten", fields: p.staleDeterministic.slice(0, 6) });
-      const classic = await enrichClassic(env, p.movie, p.staleDeterministic, signal);
-      Object.assign(p.profile, classic.updates);
-      const covered = [...classic.covered].filter(f => p.profile[f] !== undefined && p.profile[f] !== null);
-      if (covered.length) p.dirty = true;
-      await putFieldRows(env, p.movieId, covered, Object.fromEntries(covered.map(f => [f, FIELD_DEFS[f]?.source || "unknown"])));
-    }
+      const group = prepared.slice(i, i + ENRICH_CONCURRENCY);
+      await Promise.all(group.map(async (p, j) => {
+        if (signal?.aborted) return;
+        const idx = i + j;
+        send({ type: "step", index: idx, total, title: p.movie.original_title || p.movie.title, stage: p.staleDeterministic.length ? "zenginleştiriliyor" : "önbellekten", fields: p.staleDeterministic.slice(0, 6) });
+        try {
+          const classic = await enrichClassic(env, p.movie, p.staleDeterministic, signal);
+          Object.assign(p.profile, classic.updates);
+          const covered = [...classic.covered].filter(f => p.profile[f] !== undefined && p.profile[f] !== null);
+          if (covered.length) p.dirty = true;
+          await putFieldRows(env, p.movieId, covered, Object.fromEntries(covered.map(f => [f, FIELD_DEFS[f]?.source || "unknown"])));
+        } catch (e) { console.warn("enrich fail:", p.movieId, e.message); }
+      }));
+         }
 
     // enrichClassic sonrası tekrar merge: her durumda genre_ids TMDB'den gelir ve korunur.
     for (const p of prepared) {

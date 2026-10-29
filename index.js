@@ -1,6 +1,5 @@
 import { FIELD_DEFS, LLM_FIELDS, FIELD_RULES, SEMANTIC_FIELDS } from "./fields.config.js";
 
-// Kullanıcının kota tablosundaki gerçek Gemini model kimlikleri.
 const GEMINI_MODEL_CHAIN = ["gemini-3.8-flash", "gemini-3.7-flash", "gemini-3.6-flash", "gemini-3.5-flash-lite", "gemini-3.1-flash-lite"];
 const GEMINI_MODEL_DEFAULT = "gemini-3.8-flash";
 const GROQ_MODEL_CHAIN = ["openai/gpt-oss-120b", "openai/gpt-oss-20b"];
@@ -12,18 +11,16 @@ const TMDB_BASE = "https://api.themoviedb.org/3";
 const METATAKE_BASE = "https://metatake.net/api/v1";
 const USER_AGENT = "FilmKesifMotoru/1.0 (https://github.com/VefaEser/film-proxy; contact: vefaeser@ornitonerenk.com)";
 
-// CORS: yalnızca üretim origin'ine izin verilir.
 const CORS = {
-  "Access-Control-Allow-Origin": "https://vefaeser-kestik.static.hf.space",
+  "Access-Control-Allow-Origin": "*",
   "Access-Control-Allow-Methods": "GET,POST,PUT,DELETE,OPTIONS",
-  "Access-Control-Allow-Headers": "Content-Type,Authorization",
-  "Vary": "Origin"
+  "Access-Control-Allow-Headers": "Content-Type,Authorization"
 };
 const GROQ_TPM_BUDGET = 7000;
 const GROQ_MAX_OUTPUT_TOKENS = 1000;
 const GROQ_MAX_MOVIES_PER_CALL = 5;
 const GROQ_MAX_PROMPT_CHARS = 7000;
-const LLM_DEADLINE_MS = 90000;
+const LLM_DEADLINE_MS = 60000;
 const VERDICT_TTL = 86400;
 
 const DEFAULT_STAGE1 = [
@@ -44,7 +41,7 @@ const DEFAULT_STAGE1 = [
   "Filmler:",
   "{{MOVIES}}",
   "",
-  "Yanıt YALNIZCA: [{'id': <film_id>, 'match': 'yes'|'no'|'unknown', 'reason': '<max 12 kelime>'}]"
+  "Yanıt YALNIZCA geçerli JSON: [{'id': <film_id>, 'match': 'yes'|'no'|'unknown', 'reason': '<max 12 kelime>'}]"
 ].join("\n");
 
 const DEFAULT_STAGE2 = [
@@ -57,7 +54,7 @@ const DEFAULT_STAGE2 = [
   "Doldurulacak alanlar:",
   "{{RULES}}",
   "",
-  "Yanıt YALNIZCA: [{'id': <film_id>, '<alan>': <değer>}]"
+  "Yanıt YALNIZCA geçerli JSON: [{'id': <film_id>, '<alan>': <değer>}]"
 ].join("\n");
 
 const DEFAULT_FILTER_INFO = {
@@ -91,7 +88,6 @@ let groqRR = 0;
 let deadKeysCache = { ts: 0, gemini: new Map(), groq: new Set() };
 const promptCache = { stage1: { ts: 0, template: null }, stage2: { ts: 0, template: null } };
 
-// ---- Gemini RPM pacer (model+key bazlı) ----
 const geminiCallLog = new Map();
 function geminiMinGapMs(model) { return /lite/i.test(model) ? 4000 : 12000; }
 function geminiTryAcquire(model, keyIndex) {
@@ -123,7 +119,6 @@ function simpleHash(str) {
   return (h >>> 0).toString(36);
 }
 
-// ---- Timing-safe admin doğrulama ----
 function timingSafeEqualStr(a, b) {
   if (typeof a !== "string" || typeof b !== "string") return false;
   const len = Math.max(a.length, b.length);
@@ -470,20 +465,24 @@ function extractGeminiText(data) {
   return texts.length ? texts.join("\n") : "";
 }
 async function callGeminiInteractions(env, key, model, prompt, outerSignal) {
+  const body = { model, input: prompt };
+  if (!/lite/i.test(model)) body.generation_config = { thinking_config: { thinking_budget: 0 } };
   const data = await fetchJSON(GOOGLE_INTERACTIONS, {
     method: "POST", headers: { "Content-Type": "application/json", "x-goog-api-key": key },
-    body: JSON.stringify({ model, input: prompt, generationConfig: { thinkingConfig: { thinkingBudget: 0 } } })
-  }, `Gemini Interactions ${model}`, 10000, outerSignal);
+    body: JSON.stringify(body)
+  }, `Gemini Interactions ${model}`, 20000, outerSignal);
   const text = extractGeminiText(data);
   if (!text) throw new Error(`Gemini Interactions ${model} yanıtında metin yok.`);
   return text;
 }
 async function callGeminiGenerate(env, key, model, prompt, outerSignal) {
   const url = `${GOOGLE_GENERATE}/${encodeURIComponent(model)}:generateContent`;
+  const body = { contents: [{ parts: [{ text: prompt }] }] };
+  if (!/lite/i.test(model)) body.generationConfig = { thinkingConfig: { thinkingBudget: 0 } };
   const data = await fetchJSON(url, {
     method: "POST", headers: { "Content-Type": "application/json", "x-goog-api-key": key },
-    body: JSON.stringify({ contents: [{ parts: [{ text: prompt }] }], generationConfig: { thinkingConfig: { thinkingBudget: 0 } } })
-  }, `Gemini generateContent ${model}`, 8000, outerSignal);
+    body: JSON.stringify(body)
+  }, `Gemini generateContent ${model}`, 20000, outerSignal);
   const text = extractGeminiText(data);
   if (!text) throw new Error(`Gemini generateContent ${model} yanıtında metin yok.`);
   return text;
@@ -495,7 +494,7 @@ async function callGeminiModel(env, key, model, prompt, outerSignal) {
   } catch (e) {
     const msg = String(e.message || e);
     const cls = classifyError(msg);
-    errors.push(`interactions: ${msg}`);
+    errors.push(`interactions: ${msg.slice(0, 150)}`);
     if (cls.type === "invalid" || cls.type === "model_down") throw e;
     if (cls.type === "ratelimit") throw e;
   }
@@ -503,7 +502,7 @@ async function callGeminiModel(env, key, model, prompt, outerSignal) {
     return await callGeminiGenerate(env, key, model, prompt, outerSignal);
   } catch (e) {
     const msg = String(e.message || e);
-    errors.push(`generateContent: ${msg}`);
+    errors.push(`generateContent: ${msg.slice(0, 150)}`);
     throw new Error(errors.join(" | "));
   }
 }
@@ -511,7 +510,8 @@ async function callGeminiModel(env, key, model, prompt, outerSignal) {
 async function callGroq(env, key, model, prompt, maxOutputTokens, useSearch, outerSignal) {
   const promptTokens = estimateTokens(prompt);
   const safeOutput = Math.max(256, Math.min(maxOutputTokens, GROQ_TPM_BUDGET - promptTokens));
-  const body = { model, messages: [{ role: "user", content: prompt }], temperature: 0.2, max_completion_tokens: safeOutput };
+  const content = /json/i.test(prompt) ? prompt : `${prompt}\n\nYanıtı yalnızca geçerli JSON formatında ver.`;
+  const body = { model, messages: [{ role: "user", content }], temperature: 0.2, max_completion_tokens: safeOutput };
   if (useSearch) { body.tools = [{ type: "browser_search" }]; body.tool_choice = "required"; }
   else { body.response_format = { type: "json_object" }; }
   const data = await fetchJSON(`${GROQ_BASE}/chat/completions`, {
@@ -528,44 +528,44 @@ async function callGroqModel(env, key, model, prompt, maxOutputTokens, useSearch
     return await callGroq(env, key, model, prompt, maxOutputTokens, true, outerSignal);
   } catch (e) {
     const msg = String(e.message || e);
-    console.warn(`groq: search başarısız, no-search denenecek — ${msg}`);
+    console.warn(`groq: search başarısız, no-search denenecek — ${msg.slice(0, 120)}`);
     return await callGroq(env, key, model, prompt, maxOutputTokens, false, outerSignal);
   }
 }
 
 async function callLLMWithFallback(env, prompt, maxOutputTokens, useSearch, outerSignal, context = {}) {
-  const deadline = Date.now() + LLM_DEADLINE_MS;
+  const deadline = Date.now() + Math.min(LLM_DEADLINE_MS, 60000);
   const errors = [];
   const promptLen = estimateTokens(prompt);
   const dead = await loadDeadKeys(env);
   const nowSec = () => Math.floor(Date.now() / 1000);
   const hasSemantic = context.hasSemantic === true;
+  const maxAttempts = Math.max(1, Math.min(context.maxAttempts ?? 4, 6));
+  let attempts = 0;
 
   const geminiKeys = [env.GEMINI_API_KEY_1, env.GEMINI_API_KEY_2, env.GEMINI_API_KEY_3].map((k, i) => ({ key: k, index: i + 1 })).filter(x => x.key);
   const rotatedG = rotateKeys(geminiKeys, geminiRR++);
   const geminiModels = orderGeminiModels(buildGeminiChain(env), promptLen, hasSemantic);
   let geminiTried = false;
 
-  for (const model of geminiModels) {
-    if (Date.now() > deadline) break;
-    // Günlük RPD erken durdurma (D1 llm_calls tablosundan)
+  outer: for (const model of geminiModels) {
+    if (Date.now() > deadline || attempts >= maxAttempts) break;
     let rpdSkip = false;
     try {
       const daily = await getDailyModelCalls(env, "gemini", model);
       const rpdLimit = /lite/i.test(model) ? 500 : 20;
-      if (daily >= rpdLimit - 2) {
-        console.warn(`gemini: ${model} RPD yaklaşıldı (${daily}/${rpdLimit}), atlanıyor`);
-        rpdSkip = true;
-      }
+      if (daily >= rpdLimit - 2) { rpdSkip = true; }
     } catch {}
     if (rpdSkip) continue;
     let modelWideIssue = false;
     for (const { key, index } of rotatedG) {
+      if (attempts >= maxAttempts) break outer;
       if (modelWideIssue || isKeyDeadForModel(dead, model, index)) continue;
-      if (Date.now() > deadline) break;
+      if (Date.now() > deadline) break outer;
       if (outerSignal?.aborted) throw new Error("İstemci isteği iptal etti.");
       if (!geminiTryAcquire(model, index)) continue;
       geminiTried = true;
+      attempts++;
       const start = Date.now();
       try {
         const result = await callGeminiModel(env, key, model, prompt, outerSignal);
@@ -575,7 +575,7 @@ async function callLLMWithFallback(env, prompt, maxOutputTokens, useSearch, oute
         const msg = String(e.message || e);
         const cls = classifyError(msg);
         logLlmCall(env, "gemini", model, index, false, Date.now() - start, msg.slice(0, 200), context);
-        errors.push(`gemini ${model} key=${index}: ${msg}`);
+        errors.push(`gemini ${model} key=${index}: ${msg.slice(0, 120)}`);
         console.warn(`gemini: model=${model} key=${index} type=${cls.type} — ${msg.slice(0, 200)}`);
         if (cls.modelWide) { modelWideIssue = true; errors.push(`[${model} ${cls.type} model-wide]`); }
         else if (cls.type === "ratelimit-daily") {
@@ -597,14 +597,17 @@ async function callLLMWithFallback(env, prompt, maxOutputTokens, useSearch, oute
   let groqTried = false;
 
   if (groqKeys.length) {
-    console.warn("Gemini başarısız, Groq yedek sağlayıcısına geçiliyor...");
-    for (const model of groqModels) {
+    if (geminiTried) console.warn("Gemini başarısız, Groq yedek sağlayıcısına geçiliyor...");
+    outerQ: for (const model of groqModels) {
+      if (attempts >= maxAttempts) break;
       if (Date.now() > deadline) break;
       for (const { key, index } of rotatedQ) {
+        if (attempts >= maxAttempts) break outerQ;
         if (dead.groq.has(index)) continue;
-        if (Date.now() > deadline) break;
+        if (Date.now() > deadline) break outerQ;
         if (outerSignal?.aborted) throw new Error("İstemci isteği iptal etti.");
         groqTried = true;
+        attempts++;
         const start = Date.now();
         try {
           const result = await callGroqModel(env, key, model, prompt, maxOutputTokens, useSearch, outerSignal);
@@ -614,7 +617,7 @@ async function callLLMWithFallback(env, prompt, maxOutputTokens, useSearch, oute
           const msg = String(e.message || e);
           const cls = classifyError(msg);
           logLlmCall(env, "groq", model, index, false, Date.now() - start, msg.slice(0, 200), context);
-          errors.push(`groq ${model} key=${index}: ${msg}`);
+          errors.push(`groq ${model} key=${index}: ${msg.slice(0, 120)}`);
           console.warn(`groq: model=${model} key=${index} type=${cls.type} — ${msg.slice(0, 200)}`);
           if (cls.type === "ratelimit-daily") {
             const tomorrow = new Date(); tomorrow.setUTCHours(0, 0, 0, 0); tomorrow.setUTCDate(tomorrow.getUTCDate() + 1);
@@ -634,7 +637,7 @@ async function callLLMWithFallback(env, prompt, maxOutputTokens, useSearch, oute
   if (geminiTried) providers.push("Gemini");
   if (groqTried) providers.push("Groq");
   throw new Error(`${providers.join(" + ") || "LLM"} tüm modellerde başarısız: ${errors.join(" | ")}`);
-}
+    }
 // ============ FilmMap cache ============
 async function getFilmmapCache(env, movieId) {
   if (!env.DB) return null;
@@ -696,7 +699,7 @@ async function putMetatakeExtendedCache(env, movieId, data) {
   } catch (e) { console.warn("metatake extended cache:", e.message); }
 }
 
-// ============ FilmMap API (moviescenemap.com — CC0, anahtarsız) ============
+// ============ FilmMap API ============
 async function filmmapLocations(env, movie, outerSignal) {
   const movieId = movieKey(movie);
   const cached = await getFilmmapCache(env, movieId);
@@ -982,7 +985,7 @@ async function classifyBatch(env, movies, filterSentence, filterContext, useSear
     .replace(/\{\{FILTER_SENTENCE\}\}/g, filterSentence)
     .replace(/\{\{FILTER_CONTEXT\}\}/g, filterContext || "(bağlam yok)")
     .replace(/\{\{MOVIES\}\}/g, JSON.stringify(payload));
-  const raw = await callLLMWithFallback(env, prompt, 800, useSearch, signal, { ...context, method: "stage1", hasSemantic: true });
+  const raw = await callLLMWithFallback(env, prompt, 800, useSearch, signal, { ...context, method: "stage1", hasSemantic: true, maxAttempts: 3 });
   const arr = extractJSONArray(raw) || [];
   const byId = new Map();
   for (const item of arr) {
@@ -1013,21 +1016,42 @@ function buildStage2Rules(fields) {
   }
   return rules.join("\n");
 }
-async function fillDetails(env, movie, staleLLMFields, signal, context = {}) {
-  if (!staleLLMFields.length) return {};
+
+// Birden fazla filmi tek LLM çağrısında doldur (subrequest limitini aşmamak için).
+async function fillDetailsBatch(env, movies, staleFields, signal, context = {}) {
+  const out = new Map();
+  if (!staleFields.length || !movies.length) return out;
   const template = await getPromptTemplate(env, "prompt_template.stage2");
-  const moviePayload = [{ id: movie.id, title: movie.title, original_title: movie.original_title, year: yearOf(movie), overview: (movie.overview || "").slice(0, 500) }];
-  const rules = buildStage2Rules(staleLLMFields);
+  const moviePayload = movies.map(m => ({
+    id: m.id, title: m.title, original_title: m.original_title,
+    year: yearOf(m), overview: (m.overview || "").slice(0, 400)
+  }));
+  const rules = buildStage2Rules(staleFields);
   const prompt = template
     .replace(/\{\{MOVIES\}\}/g, JSON.stringify(moviePayload))
     .replace(/\{\{RULES\}\}/g, rules);
-  const raw = await callLLMWithFallback(env, prompt, 1500, false, signal, { ...context, method: "stage2", hasSemantic: true });
+  let raw;
+  try {
+    raw = await callLLMWithFallback(env, prompt, 2000, false, signal, { ...context, method: "stage2", hasSemantic: true, maxAttempts: 3 });
+  } catch (e) {
+    console.warn("fillDetailsBatch:", String(e.message || e).slice(0, 200));
+    return out;
+  }
   const arr = extractJSONArray(raw) || (() => { try { const o = extractJSON(raw); return o.movies || []; } catch { return []; } })();
-  const item = arr[0] || {};
-  const updates = {};
-  for (const f of staleLLMFields) if (item[f] !== undefined && item[f] !== null) updates[f] = item[f];
-  return updates;
-    }
+  for (const item of arr) {
+    if (!item || item.id == null) continue;
+    const updates = {};
+    for (const f of staleFields) if (item[f] !== undefined && item[f] !== null) updates[f] = item[f];
+    if (Object.keys(updates).length) out.set(String(item.id), updates);
+  }
+  return out;
+}
+
+// Tek film için sarmalayıcı.
+async function fillDetails(env, movie, staleLLMFields, signal, context = {}) {
+  const map = await fillDetailsBatch(env, [movie], staleLLMFields, signal, { ...context, maxAttempts: 3 });
+  return map.get(String(movie.id)) || {};
+      }
 // ============ Wikidata ============
 function buildWikidataBatchQuery(movies) {
   const rows = movies.map(m => {
@@ -1082,7 +1106,7 @@ async function wikidataBatchOnce(env, movies, timeoutMs, outerSignal) {
   return results;
 }
 async function wikidataBatch(env, movies, outerSignal) {
-  try { return await wikidataBatchOnce(env, movies, 30000, outerSignal); }
+  try { return await wikidataBatchOnce(env, movies, 45000, outerSignal); }
   catch (e) { console.warn("wikidata batch:", e.message); return new Map(); }
 }
 
@@ -1375,7 +1399,6 @@ function evalRange(profile, field, min, max, label, state, strict) {
   }
 }
 
-// Yüzde eşikleri: %0 ve %100 mutlak; diğer değerler ±20 bant.
 function ratioThreshold(x) {
   if (x === 0) return { min: 0, max: 0 };
   if (x === 100) return { min: 100, max: 100 };
@@ -1414,9 +1437,7 @@ function evalRatioFilters(profile, filters, state) {
 // ============ Mekân sayısı ============
 function getLocationCount(profile, metatakeLocations, filmmapLocations) {
   const exact = toNum(profile.location_count);
-  if (exact !== null && exact > 0) {
-    return { count: exact, estimated: false, source: "ai" };
-  }
+  if (exact !== null && exact > 0) return { count: exact, estimated: false, source: "ai" };
   if (profile.location_mode) {
     const mode = String(profile.location_mode).trim().toLowerCase();
     const map = { single: 1, mostly_single: 2, few: 3, many: 6 };
@@ -1431,18 +1452,12 @@ function getLocationCount(profile, metatakeLocations, filmmapLocations) {
 function evalLocationCount(profile, filters, state, metatakeLocations, filmmapLocations) {
   if (filters.locationMin == null && filters.locationMax == null) return;
   const info = getLocationCount(profile, metatakeLocations, filmmapLocations);
-  if (info.count === null) {
-    state.unknown = true;
-    state.reasons.push("Mekân sayısı: bilinmiyor");
-    return;
-  }
+  if (info.count === null) { state.unknown = true; state.reasons.push("Mekân sayısı: bilinmiyor"); return; }
   if (filters.locationMin != null && info.count < filters.locationMin) {
-    state.match = false;
-    state.reasons.push(`Mekân sayısı ${info.count} < ${filters.locationMin}`);
+    state.match = false; state.reasons.push(`Mekân sayısı ${info.count} < ${filters.locationMin}`);
   }
   if (filters.locationMax != null && info.count > filters.locationMax) {
-    state.match = false;
-    state.reasons.push(`Mekân sayısı ${info.count} > ${filters.locationMax}`);
+    state.match = false; state.reasons.push(`Mekân sayısı ${info.count} > ${filters.locationMax}`);
   }
 }
 
@@ -1641,18 +1656,25 @@ async function handleResearchStream(env, body, controller, signal) {
 
     if (useStage2b) {
       send({ type: "step", index: 0, total: afterLocal.length, title: "Oransal/semantik alanlar dolduruluyor", stage: "sınıflandırılıyor", fields: stage2bFields.slice(0, 6) });
+      const needMap = new Map();
       for (const p of afterLocal) {
-        if (signal?.aborted) break;
         const stale = findStaleFields(p.profile, p.fieldRows || [], forceRefresh);
         const need = stage2bFields.filter(f => !p.profile[f] || (Array.isArray(p.profile[f]) && p.profile[f].length === 0) || (FIELD_DEFS[f]?.source === "llm" && stale.includes(f)));
-        if (!need.length) continue;
-        try {
-          const updates = await fillDetails(env, p.movie, need, signal, { movie_id: p.movieId, cache_hit: 0 });
+        if (need.length) needMap.set(p.movieId, need);
+      }
+      if (needMap.size > 0 && !signal?.aborted) {
+        const batchMovies = afterLocal.filter(p => needMap.has(p.movieId)).map(p => p.movie);
+        const allFields = [...new Set([].concat(...[...needMap.values()]))];
+        const results = await fillDetailsBatch(env, batchMovies, allFields, signal, { method: "stage2" });
+        for (const p of afterLocal) {
+          if (signal?.aborted) break;
+          const updates = results.get(String(p.movie.id)) || {};
+          if (!Object.keys(updates).length) continue;
           Object.assign(p.profile, updates);
           const covered = Object.keys(updates).filter(f => p.profile[f] !== undefined && p.profile[f] !== null);
           if (covered.length) p.dirty = true;
           await putFieldRows(env, p.movieId, covered, Object.fromEntries(covered.map(f => [f, "llm"])));
-        } catch (e) { console.warn("stage2b fail:", p.movieId, e.message); }
+        }
       }
     } else if (useStage1 && afterLocal.length) {
       send({ type: "step", index: 0, total: afterLocal.length, title: "Semantik filtre uygulanıyor", stage: "sınıflandırılıyor", fields: [] });
@@ -1979,13 +2001,25 @@ async function handleRequest(request, env, ctx) {
       const { readable, writable } = new TransformStream();
       const writer = writable.getWriter();
       const controller = { enqueue: (chunk) => writer.write(chunk), close: () => writer.close() };
-      const task = handleResearchStream(env, body, controller, request.signal).catch(err => {
-        try { controller.enqueue(new TextEncoder().encode(`data: ${JSON.stringify({ type: "error", message: String(err.message || err) })}\n\n`)); } catch {}
-        try { controller.close(); } catch {}
-      });
+      const enc = new TextEncoder();
+      const heartbeatTimer = setInterval(() => {
+        try { writer.write(enc.encode(": ping\n\n")); }
+        catch { clearInterval(heartbeatTimer); }
+      }, 15000);
+      const task = handleResearchStream(env, body, controller, request.signal)
+        .catch(err => {
+          try { controller.enqueue(enc.encode(`data: ${JSON.stringify({ type: "error", message: String(err.message || err) })}\n\n`)); } catch {}
+          try { controller.close(); } catch {}
+        })
+        .finally(() => clearInterval(heartbeatTimer));
       if (ctx?.waitUntil) ctx.waitUntil(task);
       return new Response(readable, {
-        headers: { ...CORS, "Content-Type": "text/event-stream; charset=utf-8", "Cache-Control": "no-cache", "Connection": "keep-alive" }
+        headers: {
+          ...CORS,
+          "Content-Type": "text/event-stream; charset=utf-8",
+          "Cache-Control": "no-cache, no-transform",
+          "X-Accel-Buffering": "no"
+        }
       });
     }
     return jsonError("Uç nokta bulunamadı.", 404);

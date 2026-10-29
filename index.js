@@ -1612,7 +1612,7 @@ async function handleResearchStream(env, body, controller, signal) {
       prepared.push({ movie, movieId, profile, fieldRows, staleDeterministic: [], filmmap: null, metatakeLocations: null, metatakeExt: null, locationModeEstimated: false, locationModeSource: null, dirty: false });
     }
 
-        const needFilmMap = !!(
+    const needFilmMap = !!(
       filters.filming_locations?.include?.length || filters.filming_locations?.exclude?.length
       || filters.locationMin != null || filters.locationMax != null
     );
@@ -1648,16 +1648,6 @@ async function handleResearchStream(env, body, controller, signal) {
             if (mt.locations?.length) p.metatakeLocations = mt.locations;
           }
         } catch (e) { console.warn("metatake fail:", e.message); }
-      }
-    }
-    for (const p of prepared) {
-      if (!p.profile.location_mode) {
-        const derived = deriveLocationModeFromSources(p.profile, p.metatakeLocations || [], p.filmmap || [], p.profile.filming_locations || []);
-        if (derived.mode) {
-          p.profile.location_mode = derived.mode;
-          p.locationModeEstimated = derived.estimated;
-          p.locationModeSource = derived.source;
-        }
       }
     }
     for (const p of prepared) {

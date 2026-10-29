@@ -660,7 +660,7 @@ async function callLLMWithFallback(env, prompt, maxOutputTokens, useSearch, oute
   if (geminiTried) providers.push("Gemini");
   if (groqTried) providers.push("Groq");
   throw new Error(`${providers.join(" + ") || "LLM"} tüm modellerde başarısız: ${errors.join(" | ")}`);
-}
+  }
 async function getFilmmapCache(env, movieId) {
   if (!env.DB) return null;
   try {
@@ -1029,7 +1029,7 @@ async function fillDetailsBatch(env, movies, staleFields, signal, context = {}) 
 async function fillDetails(env, movie, staleLLMFields, signal, context = {}) {
   const map = await fillDetailsBatch(env, [movie], staleLLMFields, signal, { ...context, maxAttempts: 2, timeoutMs: 20000 });
   return map.get(String(movie.id)) || {};
-               }
+                               }
 function buildWikidataBatchQuery(movies) {
   const rows = movies.map(m => {
     const title = (m.original_title || m.title || "").replace(/\\/g, "\\\\").replace(/"/g, '\\"');
@@ -1128,8 +1128,8 @@ async function enrichClassic(env, movie, staleFields, outerSignal) {
     try {
       const detail = await tmdb(env, `/movie/${movie.id}`, { language: "tr-TR", append_to_response: "credits,images,keywords" }, outerSignal);
       const genres = Array.isArray(detail.genres) ? detail.genres : [];
-      if (need.has("genres")) { updates.genres = genres.map(g => g.name); covered.add("genres"); }
-      if (need.has("genres_ids")) { updates.genres_ids = genres.map(g => g.id); covered.add("genres_ids"); }
+      if (need.has("genres") && genres.length) { updates.genres = genres.map(g => g.name); covered.add("genres"); }
+      if (need.has("genres_ids") && genres.length) { updates.genres_ids = genres.map(g => g.id); covered.add("genres_ids"); }
       const langs = Array.isArray(detail.spoken_languages) ? detail.spoken_languages : [];
       if (need.has("spoken_languages")) { updates.spoken_languages = langs.map(l => l.name || l.english_name || l.iso_639_1); covered.add("spoken_languages"); }
       if (need.has("spoken_languages_ids")) { updates.spoken_languages_ids = langs.map(l => l.iso_639_1); covered.add("spoken_languages_ids"); }
@@ -1211,7 +1211,6 @@ async function enrichClassic(env, movie, staleFields, outerSignal) {
   return { updates, covered };
 }
 
-// ---- Kişi alanı normalize edici ----
 function personNameFromObj(it) {
   if (!it || typeof it !== "object") return "";
   const candidates = [it.name, it.original_name, it.full_name, it.title, it.label];
@@ -1234,11 +1233,7 @@ function sanitizePeopleField(val) {
     if (typeof it === "string") {
       let t = it.trim();
       if (!t) continue;
-      // HTML tag içeriyorsa temizle
-      if (/<a\b/i.test(t)) {
-        const m = t.match(/>([^<>]+)</);
-        if (m && m[1]) t = m[1].trim();
-      }
+      if (/<a\b/i.test(t)) { const m = t.match(/>([^<>]+)</); if (m && m[1]) t = m[1].trim(); }
       t = t.replace(/\s*\((?:person|nm|tt|id)[\s\/_-]*\d+\)\s*$/i, "").trim();
       if (!t || /^(nm|tt)\d+$/i.test(t) || /^\d+$/.test(t) || /^[QP]\d+$/i.test(t) || /^person[\/_-]\d+$/i.test(t) || /^id[\/_-]?\d+$/i.test(t) || /^@\d+$/.test(t) || /^\[object /i.test(t) || /^\{/.test(t) || /^\[/.test(t) || /":\s*"/.test(t) || /^[0-9a-f]{8}-[0-9a-f]{4}-/i.test(t)) continue;
       out.push({ name: t, profile_path: null });
@@ -1257,6 +1252,10 @@ function toNum(v) {
   const n = Number(String(v).replace(/[^\d.-]/g, ""));
   return Number.isFinite(n) ? n : null;
 }
+
+// matchSet: include için OR semantiği (TMDB pipe=OR ile uyumlu).
+// Tek seçimde AND=OR eşdeğer olduğundan geriye dönük uyumludur.
+// Çoklu seçimde kullanıcının "A veya B" beklentisi doğru karşılanır.
 function matchSet(profileField, filterObj, altProfileField) {
   if (!filterObj) return { match: true, unknown: false, conflict: false, reasons: [] };
   const raw = Array.isArray(profileField) ? profileField.map(norm) : (profileField ? [norm(profileField)] : []);
@@ -1272,10 +1271,10 @@ function matchSet(profileField, filterObj, altProfileField) {
     return allRaw.some(h => h.includes(v) || v.includes(h));
   };
   if (filterObj.include?.length) {
-    const missing = filterObj.include.filter(x => !matches(x));
-    if (missing.length) {
-      if (empty) { unknown = true; reasons.push(`bilinmiyor: ${missing.map(x => x.label || x).join(", ")}`); }
-      else { match = false; reasons.push(`eksik: ${missing.map(x => x.label || x).join(", ")}`); }
+    const matched = filterObj.include.filter(x => matches(x));
+    if (matched.length === 0) {
+      if (empty) { unknown = true; reasons.push(`bilinmiyor: ${filterObj.include.map(x => x.label || x).join(", ")}`); }
+      else { match = false; reasons.push(`eksik: ${filterObj.include.map(x => x.label || x).join(", ")}`); }
     }
   }
   if (filterObj.exclude?.length) {
@@ -1288,11 +1287,15 @@ function matchIdSet(profileIds, filterObj) {
   if (!filterObj) return { match: true, unknown: false, reasons: [] };
   const have = (profileIds || []).map(x => String(x).trim()).filter(Boolean);
   if (filterObj.include?.length) {
-    const missing = filterObj.include.filter(x => x.id == null || !have.includes(String(x.id).trim()));
-    if (missing.length) {
+    const matched = filterObj.include.filter(x => x.id != null && have.includes(String(x.id).trim()));
+    if (matched.length === 0) {
       if (have.length === 0) return { match: true, unknown: true, reasons: ["bilinmiyor"] };
-      return { match: false, unknown: false, reasons: [`eksik: ${missing.map(x => x.label || x.id).join(", ")}`] };
+      return { match: false, unknown: false, reasons: [`eksik: ${filterObj.include.map(x => x.label || x.id).join(", ")}`] };
     }
+  }
+  if (filterObj.exclude?.length) {
+    const hit = filterObj.exclude.filter(x => x.id != null && have.includes(String(x.id).trim()));
+    if (hit.length) return { match: false, unknown: false, reasons: [`hariç: ${hit.map(x => x.label || x).join(", ")}`] };
   }
   return { match: true, unknown: false, reasons: [] };
 }
@@ -1317,8 +1320,8 @@ function matchAwards(profileAwards, profileNominations, filterObj) {
   const all = new Set([...awards, ...noms]);
   if (!all.size) return { match: true, unknown: true, reasons: ["Ödül bilgisi bilinmiyor"] };
   if (filterObj.include?.length) {
-    const missing = filterObj.include.filter(x => x.id == null || !all.has(String(x.id)));
-    if (missing.length) return { match: false, unknown: false, reasons: [`Ödül eksik: ${missing.map(x => x.label || x.id).join(", ")}`] };
+    const matched = filterObj.include.filter(x => x.id != null && all.has(String(x.id)));
+    if (matched.length === 0) return { match: false, unknown: false, reasons: [`Ödül eksik: ${filterObj.include.map(x => x.label || x.id).join(", ")}`] };
   }
   return { match: true, unknown: false, reasons: [] };
 }
@@ -1364,10 +1367,10 @@ function evalFilmingLocations(profile, f, metatakeLocations, filmmapLocations) {
     return allLocs.some(loc => loc.includes(v) || v.includes(loc));
   };
   if (f.include?.length) {
-    const missing = f.include.filter(x => !matches(x));
-    if (missing.length) {
+    const matched = f.include.filter(x => matches(x));
+    if (matched.length === 0) {
       if (empty) return { match: true, unknown: true, reason: "Çekim yeri: bilinmiyor" };
-      return { match: false, unknown: false, reason: `Çekim yeri eksik: ${missing.map(x => x.label || x).join(", ")}` };
+      return { match: false, unknown: false, reason: `Çekim yeri eksik: ${f.include.map(x => x.label || x).join(", ")}` };
     }
   }
   if (f.exclude?.length) {
@@ -1553,6 +1556,13 @@ async function handleResearchStream(env, body, controller, signal) {
       if (!profile.overview && movie.overview) profile.overview = movie.overview;
       if (profile.poster_path === undefined && movie.poster_path) profile.poster_path = movie.poster_path;
       if (!profile.release_date && movie.release_date) profile.release_date = movie.release_date;
+      // TMDB discover/search zaten genre_ids döndürür — profile'a hemen merge et.
+      const mgInit = Array.isArray(movie.genre_ids) ? movie.genre_ids : [];
+      if (mgInit.length) {
+        const pgInit = Array.isArray(profile.genres_ids) ? profile.genres_ids : [];
+        const combined = new Set([...pgInit.map(String), ...mgInit.map(String)]);
+        profile.genres_ids = [...combined].map(x => { const n = Number(x); return Number.isFinite(n) ? n : x; });
+      }
       prepared.push({ movie, movieId, profile, fieldRows, staleDeterministic: [], filmmap: null, metatakeLocations: null, metatakeExt: null, dirty: false });
     }
 
@@ -1578,17 +1588,9 @@ async function handleResearchStream(env, body, controller, signal) {
           const mt = await metatakeExtended(env, p.movie, signal);
           p.metatakeExt = mt;
           if (mt) {
-            if (mt.narrative_setting?.length && (!p.profile.story_locations || !p.profile.story_locations.length)) {
-              p.profile.story_locations = mt.narrative_setting;
-            }
-            if (mt.kindred_films?.length && (!p.profile.related_films || !p.profile.related_films.length)) {
-              p.profile.related_films = mt.kindred_films;
-            }
-            if (mt.awards?.length) {
-              const existing = new Set(p.profile.awards_ids || []);
-              for (const a of mt.awards) existing.add(String(a));
-              p.profile.awards_ids = [...existing];
-            }
+            if (mt.narrative_setting?.length && (!p.profile.story_locations || !p.profile.story_locations.length)) p.profile.story_locations = mt.narrative_setting;
+            if (mt.kindred_films?.length && (!p.profile.related_films || !p.profile.related_films.length)) p.profile.related_films = mt.kindred_films;
+            if (mt.awards?.length) { const existing = new Set(p.profile.awards_ids || []); for (const a of mt.awards) existing.add(String(a)); p.profile.awards_ids = [...existing]; }
             if (mt.locations?.length) p.metatakeLocations = mt.locations;
           }
         } catch (e) { console.warn("metatake fail:", e.message); }
@@ -1609,6 +1611,16 @@ async function handleResearchStream(env, body, controller, signal) {
       const covered = [...classic.covered].filter(f => p.profile[f] !== undefined && p.profile[f] !== null);
       if (covered.length) p.dirty = true;
       await putFieldRows(env, p.movieId, covered, Object.fromEntries(covered.map(f => [f, FIELD_DEFS[f]?.source || "unknown"])));
+    }
+
+    // enrichClassic sonrası tekrar merge: her durumda genre_ids TMDB'den gelir ve korunur.
+    for (const p of prepared) {
+      const mg = Array.isArray(p.movie.genre_ids) ? p.movie.genre_ids : [];
+      if (mg.length) {
+        const pg = Array.isArray(p.profile.genres_ids) ? p.profile.genres_ids : [];
+        const combined = new Set([...pg.map(String), ...mg.map(String)]);
+        p.profile.genres_ids = [...combined].map(x => { const n = Number(x); return Number.isFinite(n) ? n : x; });
+      }
     }
 
     const needWiki = !!(
@@ -1764,6 +1776,11 @@ async function handleMovieDetails(env, body, signal) {
   if (!profile.overview && movie.overview) profile.overview = movie.overview;
   if (profile.poster_path === undefined && movie.poster_path) profile.poster_path = movie.poster_path;
   if (!profile.release_date && movie.release_date) profile.release_date = movie.release_date;
+  if (Array.isArray(movie.genre_ids) && movie.genre_ids.length) {
+    const pg = Array.isArray(profile.genres_ids) ? profile.genres_ids : [];
+    const combined = new Set([...pg.map(String), ...movie.genre_ids.map(String)]);
+    profile.genres_ids = [...combined].map(x => { const n = Number(x); return Number.isFinite(n) ? n : x; });
+  }
 
   const fmCache = await getFilmmapCache(env, movieId);
   const mtCache = await getMetatakeExtendedCache(env, movieId);
@@ -1783,11 +1800,7 @@ async function handleMovieDetails(env, body, signal) {
   if (mt) {
     if (mt.narrative_setting?.length && (!profile.story_locations || !profile.story_locations.length)) profile.story_locations = mt.narrative_setting;
     if (mt.kindred_films?.length && (!profile.related_films || !profile.related_films.length)) profile.related_films = mt.kindred_films;
-    if (mt.awards?.length) {
-      const existingAwards = new Set(profile.awards_ids || []);
-      for (const a of mt.awards) existingAwards.add(String(a));
-      profile.awards_ids = [...existingAwards];
-    }
+    if (mt.awards?.length) { const existingAwards = new Set(profile.awards_ids || []); for (const a of mt.awards) existingAwards.add(String(a)); profile.awards_ids = [...existingAwards]; }
     if (mt.locations?.length) metatakeLocations = mt.locations;
   }
   const stale = findStaleFields(profile, fieldRows, forceAll);
@@ -1800,6 +1813,11 @@ async function handleMovieDetails(env, body, signal) {
     const covered = [...classic.covered].filter(f => profile[f] !== undefined && profile[f] !== null);
     if (covered.length) dirty = true;
     await putFieldRows(env, movieId, covered, Object.fromEntries(covered.map(f => [f, FIELD_DEFS[f]?.source || "unknown"])));
+  }
+  if (Array.isArray(movie.genre_ids) && movie.genre_ids.length) {
+    const pg = Array.isArray(profile.genres_ids) ? profile.genres_ids : [];
+    const combined = new Set([...pg.map(String), ...movie.genre_ids.map(String)]);
+    profile.genres_ids = [...combined].map(x => { const n = Number(x); return Number.isFinite(n) ? n : x; });
   }
   if (staleLLM.length) {
     try {
@@ -1916,6 +1934,7 @@ async function tmdbRoute(env, url, signal) {
   if (path === "/search/person") return tmdb(env, path, { query: url.searchParams.get("query") || "", language: url.searchParams.get("language") || "tr-TR", page: url.searchParams.get("page") || 1, include_adult: "false" }, signal);
   if (path === "/search/company") return tmdb(env, path, { query: url.searchParams.get("query") || "", page: url.searchParams.get("page") || 1 }, signal);
   if (path === "/search/keyword") return tmdb(env, path, { query: url.searchParams.get("query") || "", page: url.searchParams.get("page") || 1 }, signal);
+  if (path === "/person/popular") return tmdb(env, path, { language: url.searchParams.get("language") || "tr-TR", page: url.searchParams.get("page") || 1 }, signal);
   if (path === "/discover/movie") {
     const allowed = ["language","sort_by","vote_average.gte","vote_average.lte","vote_count.gte","page","primary_release_date.gte","primary_release_date.lte","with_genres","without_genres","with_original_language","with_origin_country","with_runtime.gte","with_runtime.lte","with_text_query","with_companies","with_keywords","without_companies","without_keywords"];
     const params = {};

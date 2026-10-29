@@ -214,12 +214,26 @@ function findStaleFields(profile, fieldRows, forceRefresh) {
   const fetched = new Map(fieldRows.map(r => [r.field, Number(r.fetched_at)]));
   const stale = [];
   const detailFields = new Set(["writers", "writers_ids", "cast", "cast_ids", "director", "director_ids", "producers", "actors", "omdb_directors"]);
+  // Array alanlar: boş array'ler stale sayılır (yeniden çekilsin).
+  const arrayFields = new Set([
+    "genres", "genres_ids", "spoken_languages", "spoken_languages_ids",
+    "production_countries", "production_countries_ids", "production_companies", "production_companies_ids",
+    "director", "director_ids", "writers", "writers_ids", "producers", "cast", "cast_ids",
+    "keywords", "keywords_ids", "story_locations", "story_period", "story_geography",
+    "season", "character_traits", "narrative_style", "production_process", "sound",
+    "reality", "story_dimensions", "related_films", "filming_locations", "filming_countries",
+    "awards_ids", "nominated_ids"
+  ]);
   for (const [field, def] of Object.entries(FIELD_DEFS)) {
     const raw = profile[field];
     const isEmptyArray = Array.isArray(raw) && raw.length === 0;
     const hasValue = raw !== undefined && raw !== null && !isEmptyArray;
     const badData = hasValue && detailFields.has(field) && isBadDetailArray(raw);
     if (!hasValue || badData) { stale.push(field); continue; }
+    if (arrayFields.has(field) && !Array.isArray(raw)) {
+      // Yanlış tipte (string vs) — stale say.
+      stale.push(field); continue;
+    }
     if (forceRefresh) { stale.push(field); continue; }
     if (def.ttl == null) continue;
     const at = fetched.get(field) || 0;
@@ -476,7 +490,6 @@ function extractGeminiText(data) {
   return texts.length ? texts.join("\n") : "";
 }
 
-// Gemini: thinking_config parametresi kullanılmıyor. Sadece model + input.
 async function callGeminiInteractions(env, key, model, prompt, outerSignal) {
   const data = await fetchJSON(GOOGLE_INTERACTIONS, {
     method: "POST", headers: { "Content-Type": "application/json", "x-goog-api-key": key },
@@ -647,8 +660,7 @@ async function callLLMWithFallback(env, prompt, maxOutputTokens, useSearch, oute
   if (geminiTried) providers.push("Gemini");
   if (groqTried) providers.push("Groq");
   throw new Error(`${providers.join(" + ") || "LLM"} tüm modellerde başarısız: ${errors.join(" | ")}`);
-  }
-// ============ FilmMap cache ============
+}
 async function getFilmmapCache(env, movieId) {
   if (!env.DB) return null;
   try {
@@ -716,27 +728,21 @@ async function filmmapLocations(env, movie, outerSignal) {
   if (!title) return { locations: [], fromCache: false };
   try {
     const body = {
-      jsonrpc: "2.0",
-      id: 1,
-      method: "tools/call",
+      jsonrpc: "2.0", id: 1, method: "tools/call",
       params: { name: "where_was_it_filmed", arguments: { title, limit: 100 } }
     };
     const signal = combineSignals(outerSignal, 10000);
     const res = await fetch("https://moviescenemap.com/mcp", {
       method: "POST",
       headers: { "Content-Type": "application/json", "Accept": "application/json, text/event-stream" },
-      body: JSON.stringify(body),
-      signal
+      body: JSON.stringify(body), signal
     });
     if (!res.ok) return { locations: [], fromCache: false, error: `HTTP ${res.status}` };
     const raw = await res.text();
     let data = safeJSON(raw, null);
     if (!data) {
       const lines = raw.split(/\r?\n/).filter(l => l.startsWith("data: "));
-      for (const l of lines) {
-        const parsed = safeJSON(l.slice(6), null);
-        if (parsed) { data = parsed; break; }
-      }
+      for (const l of lines) { const parsed = safeJSON(l.slice(6), null); if (parsed) { data = parsed; break; } }
     }
     if (!data) return { locations: [], fromCache: false, error: "parse fail" };
     if (data.error) return { locations: [], fromCache: false, error: data.error.message || "rpc error" };
@@ -744,10 +750,7 @@ async function filmmapLocations(env, movie, outerSignal) {
     const content = data?.result?.content;
     if (Array.isArray(content)) {
       for (const c of content) {
-        if (c?.type === "text" && typeof c.text === "string") {
-          const arr = safeJSON(c.text, null);
-          if (arr) { payload = arr; break; }
-        }
+        if (c?.type === "text" && typeof c.text === "string") { const arr = safeJSON(c.text, null); if (arr) { payload = arr; break; } }
       }
     }
     if (!payload && data?.result) payload = data.result;
@@ -795,15 +798,11 @@ async function metatakeExtended(env, movie, outerSignal) {
     if (!slug) return null;
 
     let film = null;
-    try {
-      const filmUrl = `https://metatake.net/api/v1/films/${encodeURIComponent(slug)}`;
-      film = await fetchJSON(filmUrl, { headers }, "Metatake film", 10000, outerSignal);
-    } catch (e) { console.warn("metatake film:", e.message); }
+    try { film = await fetchJSON(`https://metatake.net/api/v1/films/${encodeURIComponent(slug)}`, { headers }, "Metatake film", 10000, outerSignal); } catch (e) { console.warn("metatake film:", e.message); }
 
     let locations = [];
     try {
-      const locUrl = `https://metatake.net/api/v1/locations?film=${encodeURIComponent(slug)}&limit=100`;
-      const locData = await fetchJSON(locUrl, { headers }, "Metatake locations", 10000, outerSignal);
+      const locData = await fetchJSON(`https://metatake.net/api/v1/locations?film=${encodeURIComponent(slug)}&limit=100`, { headers }, "Metatake locations", 10000, outerSignal);
       const locList = Array.isArray(locData?.locations) ? locData.locations : [];
       locations = locList.map(loc => ({
         name: String(loc.name || "").trim(),
@@ -819,11 +818,7 @@ async function metatakeExtended(env, movie, outerSignal) {
 
     const settings = locations.filter(l => String(l.layer).toLowerCase() === "setting").map(l => l.name);
     const filmingPlaces = locations.filter(l => String(l.layer).toLowerCase() !== "setting").map(l => l.name);
-
-    const kindred = Array.isArray(film?.kindred)
-      ? film.kindred.map(k => ({ title: String(k.title || "").trim(), year: k.year != null ? Number(k.year) : null, slug: k.slug || null })).filter(k => k.title)
-      : [];
-
+    const kindred = Array.isArray(film?.kindred) ? film.kindred.map(k => ({ title: String(k.title || "").trim(), year: k.year != null ? Number(k.year) : null, slug: k.slug || null })).filter(k => k.title) : [];
     const takescore = film?.takescore || null;
     const lowConfidence = takescore?.low_confidence === true;
     const confidence = takescore ? (lowConfidence ? 0.4 : 0.85) : (match.analyzed ? 0.6 : null);
@@ -843,10 +838,7 @@ async function metatakeExtended(env, movie, outerSignal) {
     };
     await putMetatakeExtendedCache(env, movieId, result);
     return result;
-  } catch (e) {
-    console.warn("metatake extended:", e.message);
-    return null;
-  }
+  } catch (e) { console.warn("metatake extended:", e.message); return null; }
 }
 
 function extractJSON(text) {
@@ -865,26 +857,10 @@ function extractJSONArray(text) {
 function buildFilterSentence(filters) {
   const f = filters || {};
   const parts = [];
-  if (f.genres?.include?.length) {
-    const names = f.genres.include.map(x => x.label || x).filter(Boolean);
-    if (names.length) parts.push(`türü ${names.join(" veya ")} olan`);
-  }
-  if (f.genres?.exclude?.length) {
-    const names = f.genres.exclude.map(x => x.label || x).filter(Boolean);
-    if (names.length) parts.push(`${names.join(", ")} türünde olmamalı`);
-  }
-  const setInclude = (field, prefix) => {
-    const v = f[field];
-    if (!v?.include?.length) return;
-    const names = v.include.map(x => x.label || x).filter(Boolean);
-    if (names.length) parts.push(`${prefix}: ${names.join(" veya ")}`);
-  };
-  const setExclude = (field, suffix) => {
-    const v = f[field];
-    if (!v?.exclude?.length) return;
-    const names = v.exclude.map(x => x.label || x).filter(Boolean);
-    if (names.length) parts.push(`${suffix} ${names.join(", ")} olmamalı`);
-  };
+  if (f.genres?.include?.length) { const names = f.genres.include.map(x => x.label || x).filter(Boolean); if (names.length) parts.push(`türü ${names.join(" veya ")} olan`); }
+  if (f.genres?.exclude?.length) { const names = f.genres.exclude.map(x => x.label || x).filter(Boolean); if (names.length) parts.push(`${names.join(", ")} türünde olmamalı`); }
+  const setInclude = (field, prefix) => { const v = f[field]; if (!v?.include?.length) return; const names = v.include.map(x => x.label || x).filter(Boolean); if (names.length) parts.push(`${prefix}: ${names.join(" veya ")}`); };
+  const setExclude = (field, suffix) => { const v = f[field]; if (!v?.exclude?.length) return; const names = v.exclude.map(x => x.label || x).filter(Boolean); if (names.length) parts.push(`${suffix} ${names.join(", ")} olmamalı`); };
   setInclude("season", "hikâyesi şu mevsimde geçen"); setExclude("season", "hikâyesi şu mevsimlerde geçmemeli:");
   setInclude("reality", "gerçeklik"); setExclude("reality", "gerçeklik açısından:");
   setInclude("production_process", "yapım süreci"); setExclude("production_process", "yapım süreci şunlardan olmamalı:");
@@ -1053,7 +1029,7 @@ async function fillDetailsBatch(env, movies, staleFields, signal, context = {}) 
 async function fillDetails(env, movie, staleLLMFields, signal, context = {}) {
   const map = await fillDetailsBatch(env, [movie], staleLLMFields, signal, { ...context, maxAttempts: 2, timeoutMs: 20000 });
   return map.get(String(movie.id)) || {};
-                                       }
+               }
 function buildWikidataBatchQuery(movies) {
   const rows = movies.map(m => {
     const title = (m.original_title || m.title || "").replace(/\\/g, "\\\\").replace(/"/g, '\\"');
@@ -1150,7 +1126,7 @@ async function enrichClassic(env, movie, staleFields, outerSignal) {
   const covered = new Set();
   if (movie.id) {
     try {
-      const detail = await tmdb(env, `/movie/${movie.id}`, { language: "tr-TR", append_to_response: "credits,images" }, outerSignal);
+      const detail = await tmdb(env, `/movie/${movie.id}`, { language: "tr-TR", append_to_response: "credits,images,keywords" }, outerSignal);
       const genres = Array.isArray(detail.genres) ? detail.genres : [];
       if (need.has("genres")) { updates.genres = genres.map(g => g.name); covered.add("genres"); }
       if (need.has("genres_ids")) { updates.genres_ids = genres.map(g => g.id); covered.add("genres_ids"); }
@@ -1187,15 +1163,9 @@ async function enrichClassic(env, movie, staleFields, outerSignal) {
 
       if (need.has("original_poster_path")) {
         const originalPoster = pickOriginalPoster();
-        if (originalPoster) {
-          updates.original_poster_path = originalPoster.file_path;
-          covered.add("original_poster_path");
-        } else if (isTurkishFilm) {
-          updates.original_poster_path = null;
-          covered.add("original_poster_path");
-        } else if (detailPosterIsTurkish) {
-          updates.poster_path = null;
-        }
+        if (originalPoster) { updates.original_poster_path = originalPoster.file_path; covered.add("original_poster_path"); }
+        else if (isTurkishFilm) { updates.original_poster_path = null; covered.add("original_poster_path"); }
+        else if (detailPosterIsTurkish) { updates.poster_path = null; }
       }
 
       const kw = detail.keywords?.keywords || [];
@@ -1264,6 +1234,11 @@ function sanitizePeopleField(val) {
     if (typeof it === "string") {
       let t = it.trim();
       if (!t) continue;
+      // HTML tag içeriyorsa temizle
+      if (/<a\b/i.test(t)) {
+        const m = t.match(/>([^<>]+)</);
+        if (m && m[1]) t = m[1].trim();
+      }
       t = t.replace(/\s*\((?:person|nm|tt|id)[\s\/_-]*\d+\)\s*$/i, "").trim();
       if (!t || /^(nm|tt)\d+$/i.test(t) || /^\d+$/.test(t) || /^[QP]\d+$/i.test(t) || /^person[\/_-]\d+$/i.test(t) || /^id[\/_-]?\d+$/i.test(t) || /^@\d+$/.test(t) || /^\[object /i.test(t) || /^\{/.test(t) || /^\[/.test(t) || /":\s*"/.test(t) || /^[0-9a-f]{8}-[0-9a-f]{4}-/i.test(t)) continue;
       out.push({ name: t, profile_path: null });
@@ -1352,10 +1327,6 @@ function passesLocalFilters(profile, filters) {
   const imdb = Number(String(profile.imdbRating || "").replace(/[^\d.]/g, "")) || null;
   if (filters.imdbMin > 0 && imdb != null && imdb < filters.imdbMin) return false;
   if (filters.imdbMax < 10 && imdb != null && imdb > filters.imdbMax) return false;
-  // IMDb oy filtresi:
-  // - imdbVotesMin null ise varsayılan 100 uygulanır
-  // - explicit değer (100 altı dahil) olduğu gibi uygulanır
-  // - Oy verisi bilinmiyorsa filter uygulanmaz (kanıt yok)
   const minVotes = filters.imdbVotesMin == null ? DEFAULT_MIN_IMDB_VOTES : Number(filters.imdbVotesMin);
   if (minVotes > 0 && imdb != null) {
     const ivRaw = String(profile.imdbVotes || "").replace(/[^\d]/g, "");
@@ -1794,7 +1765,6 @@ async function handleMovieDetails(env, body, signal) {
   if (profile.poster_path === undefined && movie.poster_path) profile.poster_path = movie.poster_path;
   if (!profile.release_date && movie.release_date) profile.release_date = movie.release_date;
 
-  // FilmMap ve Metatake paralel; cache kontrolü ile hızlı dön.
   const fmCache = await getFilmmapCache(env, movieId);
   const mtCache = await getMetatakeExtendedCache(env, movieId);
   let metatakeLocations = null;

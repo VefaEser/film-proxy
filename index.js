@@ -22,6 +22,7 @@ const GROQ_MAX_MOVIES_PER_CALL = 5;
 const GROQ_MAX_PROMPT_CHARS = 7000;
 const LLM_DEADLINE_MS = 60000;
 const VERDICT_TTL = 86400;
+const DEFAULT_MIN_IMDB_VOTES = 100;
 
 const DEFAULT_STAGE1 = [
   "Sen bir film sınıflandırma uzmanısın. Yalnızca verilen bilgilerden hareket et; emin değilsen unknown de, uydurma.",
@@ -185,12 +186,14 @@ function isBadDetailArray(val) {
       || /^Q\d+$/.test(t)
       || /^person[\/_-]\d+$/i.test(t)
       || /^\[object /i.test(t)
-      || /^\{.*\}$/.test(t);
+      || /^\{.*\}$/.test(t)
+      || /^\[.*\]$/.test(t)
+      || /":\s*"/.test(t);
   };
   return val.some(v => {
     if (v == null) return true;
     if (typeof v === "string") return looksLikeId(v);
-    if (typeof v === "number") return true;
+    if (typeof v === "number" || typeof v === "boolean") return true;
     if (typeof v === "object") {
       const n = v.name ?? v.original_name;
       if (typeof n !== "string" || !n.trim()) return true;
@@ -432,6 +435,7 @@ function classifyError(msg) {
     if (/per minute|RPM|requests per minute/i.test(msg)) return { type: "ratelimit-minute", cooldown: 60, modelWide: false };
     return { type: "ratelimit", cooldown: null, modelWide: false };
   }
+  if (/HTTP 400|invalid_argument|unknown parameter/i.test(msg)) return { type: "invalid-param", cooldown: 300, modelWide: true };
   if (/HTTP 503|service_unavailable|high demand/i.test(msg)) return { type: "model_down", cooldown: 300, modelWide: true };
   if (/aborted due to timeout|timed? ?out|network|fetch failed|socket/i.test(msg)) return { type: "network", cooldown: 60, modelWide: false };
   return { type: "unknown", cooldown: 120, modelWide: false };
@@ -464,12 +468,12 @@ function extractGeminiText(data) {
   if (Array.isArray(steps)) for (const s of steps) walk(s);
   return texts.length ? texts.join("\n") : "";
 }
+
+// Gemini Interactions API — thinking_config parametresi yok; sadece model + input gönder.
 async function callGeminiInteractions(env, key, model, prompt, outerSignal) {
-  const body = { model, input: prompt };
-  if (!/lite/i.test(model)) body.generation_config = { thinking_config: { thinking_budget: 0 } };
   const data = await fetchJSON(GOOGLE_INTERACTIONS, {
     method: "POST", headers: { "Content-Type": "application/json", "x-goog-api-key": key },
-    body: JSON.stringify(body)
+    body: JSON.stringify({ model, input: prompt })
   }, `Gemini Interactions ${model}`, 20000, outerSignal);
   const text = extractGeminiText(data);
   if (!text) throw new Error(`Gemini Interactions ${model} yanıtında metin yok.`);
@@ -477,11 +481,9 @@ async function callGeminiInteractions(env, key, model, prompt, outerSignal) {
 }
 async function callGeminiGenerate(env, key, model, prompt, outerSignal) {
   const url = `${GOOGLE_GENERATE}/${encodeURIComponent(model)}:generateContent`;
-  const body = { contents: [{ parts: [{ text: prompt }] }] };
-  if (!/lite/i.test(model)) body.generationConfig = { thinkingConfig: { thinkingBudget: 0 } };
   const data = await fetchJSON(url, {
     method: "POST", headers: { "Content-Type": "application/json", "x-goog-api-key": key },
-    body: JSON.stringify(body)
+    body: JSON.stringify({ contents: [{ parts: [{ text: prompt }] }] })
   }, `Gemini generateContent ${model}`, 20000, outerSignal);
   const text = extractGeminiText(data);
   if (!text) throw new Error(`Gemini generateContent ${model} yanıtında metin yok.`);
@@ -637,7 +639,7 @@ async function callLLMWithFallback(env, prompt, maxOutputTokens, useSearch, oute
   if (geminiTried) providers.push("Gemini");
   if (groqTried) providers.push("Groq");
   throw new Error(`${providers.join(" + ") || "LLM"} tüm modellerde başarısız: ${errors.join(" | ")}`);
-    }
+  }
 // ============ FilmMap cache ============
 async function getFilmmapCache(env, movieId) {
   if (!env.DB) return null;
@@ -1017,7 +1019,6 @@ function buildStage2Rules(fields) {
   return rules.join("\n");
 }
 
-// Birden fazla filmi tek LLM çağrısında doldur (subrequest limitini aşmamak için).
 async function fillDetailsBatch(env, movies, staleFields, signal, context = {}) {
   const out = new Map();
   if (!staleFields.length || !movies.length) return out;
@@ -1047,7 +1048,6 @@ async function fillDetailsBatch(env, movies, staleFields, signal, context = {}) 
   return out;
 }
 
-// Tek film için sarmalayıcı.
 async function fillDetails(env, movie, staleLLMFields, signal, context = {}) {
   const map = await fillDetailsBatch(env, [movie], staleLLMFields, signal, { ...context, maxAttempts: 3 });
   return map.get(String(movie.id)) || {};
@@ -1106,7 +1106,7 @@ async function wikidataBatchOnce(env, movies, timeoutMs, outerSignal) {
   return results;
 }
 async function wikidataBatch(env, movies, outerSignal) {
-  try { return await wikidataBatchOnce(env, movies, 45000, outerSignal); }
+  try { return await wikidataBatchOnce(env, movies, 25000, outerSignal); }
   catch (e) { console.warn("wikidata batch:", e.message); return new Map(); }
 }
 
@@ -1242,6 +1242,7 @@ async function enrichClassic(env, movie, staleFields, outerSignal) {
   return { updates, covered };
 }
 
+// ---- Kişi alanı normalize edici ----
 function sanitizePeopleField(val) {
   if (!Array.isArray(val)) return val;
   const out = [];
@@ -1249,7 +1250,7 @@ function sanitizePeopleField(val) {
     if (it == null) continue;
     if (typeof it === "string") {
       const t = it.trim();
-      if (!t || /^(nm|tt)\d+$/i.test(t) || /^\d+$/.test(t) || /^Q\d+$/.test(t) || /^person[\/_-]\d+$/i.test(t) || /^\[object /i.test(t)) continue;
+      if (!t || /^(nm|tt)\d+$/i.test(t) || /^\d+$/.test(t) || /^Q\d+$/.test(t) || /^person[\/_-]\d+$/i.test(t) || /^\[object /i.test(t) || /^\{/.test(t) || /^\[/.test(t) || /":\s*"/.test(t)) continue;
       out.push({ name: t, profile_path: null });
     } else if (typeof it === "object") {
       const n = it.name ?? it.original_name;
@@ -1268,17 +1269,19 @@ function toNum(v) {
   const n = Number(String(v).replace(/[^\d.-]/g, ""));
   return Number.isFinite(n) ? n : null;
 }
-function matchSet(profileField, filterObj) {
+function matchSet(profileField, filterObj, altProfileField) {
   if (!filterObj) return { match: true, unknown: false, conflict: false, reasons: [] };
   const raw = Array.isArray(profileField) ? profileField.map(norm) : (profileField ? [norm(profileField)] : []);
-  const empty = raw.length === 0;
+  const altRaw = Array.isArray(altProfileField) ? altProfileField.map(norm) : (altProfileField ? [norm(altProfileField)] : []);
+  const allRaw = [...raw, ...altRaw];
+  const empty = allRaw.length === 0;
   const reasons = [];
   let match = true, unknown = false, conflict = false;
   const matches = (x) => {
     const v = norm(x.label || x);
-    if (raw.includes(v)) return true;
-    if (x.id != null && x.id !== "") { if (raw.includes(norm(x.id))) return true; }
-    return raw.some(h => h.includes(v) || v.includes(h));
+    if (allRaw.includes(v)) return true;
+    if (x.id != null && x.id !== "") { if (allRaw.includes(norm(x.id))) return true; }
+    return allRaw.some(h => h.includes(v) || v.includes(h));
   };
   if (filterObj.include?.length) {
     const missing = filterObj.include.filter(x => !matches(x));
@@ -1336,9 +1339,11 @@ function passesLocalFilters(profile, filters) {
   const imdb = Number(String(profile.imdbRating || "").replace(/[^\d.]/g, "")) || null;
   if (filters.imdbMin > 0 && imdb != null && imdb < filters.imdbMin) return false;
   if (filters.imdbMax < 10 && imdb != null && imdb > filters.imdbMax) return false;
-  if (filters.imdbVotesMin > 0 && imdb != null) {
-    const iv = Number(String(profile.imdbVotes || "").replace(/[^\d]/g, ""));
-    if (iv && iv < filters.imdbVotesMin) return false;
+  // Varsayılan 100 IMDb oy: kullanıcı 0 bıraktıysa 100 minimum uygulanır.
+  const minVotes = filters.imdbVotesMin > 0 ? filters.imdbVotesMin : DEFAULT_MIN_IMDB_VOTES;
+  if (minVotes > 0 && imdb != null) {
+    const iv = Number(String(profile.imdbVotes || "").replace(/[^\d]/g, "")) || 0;
+    if (iv < minVotes) return false;
   }
   const year = yearOf(profile) || null;
   if (filters.yearMin != null && year != null && year < filters.yearMin) return false;
@@ -1469,18 +1474,26 @@ function evaluateFilters(profile, filters, semanticVerdict, metatakeLocations, f
     return state;
   }
   const setChecks = [
-    ["genres_ids", "genres", "Tür"], ["spoken_languages_ids", "original_language", "Dil"],
-    ["production_countries_ids", "production_countries", "Ülke"], ["story_locations", "story_locations", "Hikâye yeri"],
-    ["story_period", "story_period", "Dönem"], ["story_geography", "story_geography", "Coğrafya"],
-    ["season", "season", "Mevsim"], ["character_traits", "character_traits", "Karakter niteliği"],
-    ["aspect_ratio", "aspect_ratio", "En-boy oranı"], ["narrative_style", "narrative_style", "Anlatım tarzı"],
-    ["production_process", "production_process", "Çekim süreci"], ["sound", "sound", "Ses"],
-    ["reality", "reality", "Gerçeklik"], ["story_dimensions", "story_dimensions", "Hikâye boyutları"]
+    ["genres_ids", "genres", "Tür", "genres"],
+    ["spoken_languages_ids", "original_language", "Dil", "spoken_languages"],
+    ["production_countries_ids", "production_countries", "Ülke", "production_countries"],
+    ["story_locations", "story_locations", "Hikâye yeri", null],
+    ["story_period", "story_period", "Dönem", null],
+    ["story_geography", "story_geography", "Coğrafya", null],
+    ["season", "season", "Mevsim", null],
+    ["character_traits", "character_traits", "Karakter niteliği", null],
+    ["aspect_ratio", "aspect_ratio", "En-boy oranı", null],
+    ["narrative_style", "narrative_style", "Anlatım tarzı", null],
+    ["production_process", "production_process", "Çekim süreci", null],
+    ["sound", "sound", "Ses", null],
+    ["reality", "reality", "Gerçeklik", null],
+    ["story_dimensions", "story_dimensions", "Hikâye boyutları", null]
   ];
-  for (const [profileField, filterField, label] of setChecks) {
+  for (const [profileField, filterField, label, altField] of setChecks) {
     const f = filters[filterField];
     if (!f) continue;
-    const res = matchSet(profile[profileField], f);
+    const alt = altField ? profile[altField] : undefined;
+    const res = matchSet(profile[profileField], f, alt);
     if (!res.match) state.match = false;
     if (res.unknown) state.unknown = true;
     if (res.conflict) state.conflicts = true;
@@ -1612,10 +1625,12 @@ async function handleResearchStream(env, body, controller, signal) {
       await putFieldRows(env, p.movieId, covered, Object.fromEntries(covered.map(f => [f, FIELD_DEFS[f]?.source || "unknown"])));
     }
 
-    const needWiki = !!(filters.original_work?.include?.length || filters.original_work?.exclude?.length
+    // Wikidata sadece gerçekten gerekli filtreler için çalışır (location filtreleri artık FilmMap'e bırakıldı).
+    const needWiki = !!(
+      filters.original_work?.include?.length || filters.original_work?.exclude?.length
       || filters.filming_locations?.include?.length || filters.filming_locations?.exclude?.length
       || filters.award?.include?.length || filters.award?.exclude?.length
-      || filters.locationMin != null || filters.locationMax != null);
+    );
     if (needWiki) {
       const wikiNeeded = prepared.filter(p => ["original_work", "filming_locations", "filming_countries", "awards_ids", "nominated_ids"].some(f => p.staleDeterministic.includes(f)));
       if (wikiNeeded.length) {
@@ -1731,6 +1746,7 @@ async function handleResearchStream(env, body, controller, signal) {
         stage2b_used: useStage2b,
         web_used: (useStage1 || useStage2b) && stage1UseSearch,
         web_ok: false,
+        ai_model_used: useStage1 || useStage2b ? "Gemini 3.x Flash / Groq GPT-OSS" : null,
         location_count: locInfo.count,
         location_count_estimated: locInfo.estimated,
         location_count_source: locInfo.source,
@@ -1931,7 +1947,8 @@ async function handleRequest(request, env, ctx) {
         geminiKeys: [!!env.GEMINI_API_KEY_1, !!env.GEMINI_API_KEY_2, !!env.GEMINI_API_KEY_3],
         adminToken: !!env.ADMIN_TOKEN,
         metatake: true, filmmap: true, staticOptions: true,
-        d1: !!env.DB
+        d1: !!env.DB,
+        defaultMinImdbVotes: DEFAULT_MIN_IMDB_VOTES
       });
     }
     if (url.pathname === "/static/options" && request.method === "GET") {

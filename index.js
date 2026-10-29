@@ -1679,7 +1679,8 @@ async function handleResearchStream(env, body, controller, signal) {
 
     const needWiki = !!(filters.original_work?.include?.length || filters.original_work?.exclude?.length
       || filters.filming_locations?.include?.length || filters.filming_locations?.exclude?.length
-      || filters.award?.include?.length || filters.award?.exclude?.length);
+      || filters.award?.include?.length || filters.award?.exclude?.length
+      || filters.locationMin != null || filters.locationMax != null);
     if (needWiki) {
       const wikiNeeded = prepared.filter(p => ["original_work", "filming_locations", "filming_countries", "awards_ids", "nominated_ids"].some(f => p.staleDeterministic.includes(f)));
       if (wikiNeeded.length) {
@@ -1697,16 +1698,10 @@ async function handleResearchStream(env, body, controller, signal) {
           await putFieldRows(env, p.movieId, covered, Object.fromEntries(covered.map(f => [f, "wikidata"])));
         }
         for (const p of prepared) {
-          if (!p.profile.location_mode) {
-            const derived = deriveLocationModeFromSources(p.profile, p.metatakeLocations || [], p.filmmap || [], p.profile.filming_locations || []);
-            if (derived.mode) { p.profile.location_mode = derived.mode; p.locationModeEstimated = derived.estimated; p.locationModeSource = derived.source; }
-          }
-        }
       }
     }
 
     const afterLocal = prepared.filter(p => passesLocalFilters(p.profile, filters));
-
 const stage2bFields =
     const useStage2b = settings.useAI && stage2bFields.length > 0;
     const useStage1 = settings.useAI && hasSemanticFilters(filters) && !useStage2b;

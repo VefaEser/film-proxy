@@ -55,6 +55,9 @@ const DEFAULT_STAGE2 = [
   "Doldurulacak alanlar:",
   "{{RULES}}",
   "",
+  "related_films_detail alanı: [{'title': '...', 'year': 2000, 'relation': 'same_plot_diff_script', 'reason': 'Aynı hikaye farklı senaryo'}] formatında.",
+  "color_style alanı: ['black_white','color','mostly_color','mostly_bw','blue_filter','yellow_filter','selective_color','colorized','limited_palette','sepia','mono_tint','bw_red_accent','mixed_bw_color'] listesinden seçim.",
+  "",
   "Yanıt YALNIZCA geçerli JSON: [{'id': <film_id>, '<alan>': <değer>}]"
 ].join("\n");
 
@@ -66,22 +69,29 @@ const DEFAULT_FILTER_INFO = {
   "filter_info.sound": "[YZ bağlamı]\n- ambient: Doğal ortam sesi.\n- music: Yoğun müzik.\n- effects: Yoğun efekt.\n- voiceover_ext: Dış ses.\n- voiceover_int: İç ses.\n- silent: Sessiz film.\n- dubbed: Dublaj.",
   "filter_info.story_geography": "[YZ bağlamı]\n- city: Şehir.\n- town: Kasaba.\n- village: Köy.\n- mountain: Dağlık.\n- desert: Çöl.\n- steppe: Bozkır.\n- forest: Orman.\n- seaside: Deniz kenarı.\n- riverside: Nehir kenarı.\n- opensea: Açık deniz.\n- air: Havada.",
   "filter_info.character_traits": "[YZ bağlamı]\nKarakter ana/yan/figüran + cinsiyet/yaş/engel kombinasyonu.",
-  "filter_info.story_dimensions": "[YZ bağlamı]\n- has_sequel: Devam filmi var.\n- is_sequel: Devam filmi.\n- series_tight: Diziyle sıkı bağlantılı.\n- series_loose: Diziyle alakalı.\n- concept: Konsept filmi.\n- has_version: Farklı versiyonu var.\n- same_event: Aynı olay farklı film.",
-  "filter_info.story_period": "[YZ bağlamı]\nHikâyenin geçtiği dönem (d1940 = 1940'lar, c20 = 20. yüzyıl, bc = milattan önce, future = gelecek).",
+  "filter_info.story_dimensions": "[YZ bağlamı]\n- has_sequel: Devam filmi var.\n- is_sequel: Devam filmi.\n- series_sequel: Bir dizideki hikayenin devamı.\n- series_prequel: Bir dizideki hikayenin öncesi.\n- series_spinoff: Bir dizideki karakterlerin farklı bir hikayesi.\n- concept: Konsept filmi.\n- similar_script_version: Aynı hikayeyi benzer bir senaryoyla anlatan başka bir film var.\n- same_plot_diff_script: Aynı hikayeyi farklı bir senaryoyla anlatan başka bir film var.\n- same_plot_diff_angle: Aynı hikayenin farklı bir yönünü anlatan başka bir film var.",
+  "filter_info.story_period": "[YZ bağlamı]\nHikâyenin geçtiği tarihsel dönem. Kodlar: bc = milattan önce; c1..c19 = 1.-19. yüzyıl; d1900 = 1900'ler; d1910 = 1910'lar; d1920 = 1920'ler; d1930 = 1930'lar; d1940 = 1940'lar; d1950 = 1950'lar; d1960 = 1960'lar; d1970 = 1970'ler; d1980 = 1980'lar; d1990 = 1990'lar; d2000 = 2000'ler; d2010 = 2010'lar; d2020 = 2020'ler; future = gelecek (henüz gerçekleşmemiş yıl).",
   "filter_info.story_locations": "[YZ bağlamı]\n- city: Şehir.\n- town: Kasaba.\n- village: Köy.\n- mountain: Dağlık.\n- desert: Çöl.\n- steppe: Bozkır.\n- forest: Orman.\n- seaside: Deniz kenarı.\n- riverside: Nehir kenarı.\n- opensea: Açık deniz.\n- air: Havada.",
-  "filter_info.family_content": "[YZ bağlamı]\nintensity: none=hiç yok, few=birkaç sahne, side=yan konu, main=ana konu. approach: bad=kötü, neutral=tarafsız, legit=meşrulaştırıyor."
+  "filter_info.family_content": "[YZ bağlamı]\nintensity: none=hiç yok, few=birkaç sahne, side=yan konu, main=ana konu. approach: bad=kötü, neutral=tarafsız, legit=meşrulaştırıyor.",
+  "filter_info.color": "[YZ bağlamı]\n- black_white: Tamamen siyah beyaz.\n- color: Tamamen renkli.\n- mostly_color: Çoğunlukla renkli.\n- mostly_bw: Çoğunlukla siyah beyaz.\n- blue_filter: Baskın mavi tonlu.\n- yellow_filter: Baskın sarı tonlu.\n- selective_color: Seçici renk (bazı nesneler renkli).\n- colorized: Sonradan renklendirilmiş.\n- limited_palette: Sınırlı renk paleti.\n- sepia: Sepya tonu.\n- mono_tint: Tek renk monokrom.\n- bw_red_accent: Siyah beyaz + kırmızı vurgu.\n- mixed_bw_color: Renkli ve siyah beyaz karışık.",
+  "filter_info.dialogue_density_subtitle": "Diyalog yoğunluğu altyazı metninden hesaplanır: karakter sayısı / süre_dk / 10 = yüzde."
 };
 
 const INTENSITY_TR = { none: "hiç yok", few: "bir veya birkaç sahnede var", side: "yan konu (yoğun)", main: "ana konu (çok yoğun)" };
 const APPROACH_TR = { bad: "kötü gösteriyor", neutral: "tarafsız kalıyor", legit: "meşrulaştırıyor" };
 const TRAIT_TR = {
-  tobacco: "tütün kullanımı", alcohol: "alkol kullanımı", drugs: "uyuşturucu kullanımı",
-  sex_nudity: "cinsellik ve çıplaklık", violence: "şiddet ve kan",
-  crimes_against_humanity: "insanlığa karşı suçlar", terror: "terör",
-  illegal: "yasadışı eylemler", lgbt: "LGBT+ içeriği",
-  pedophilia: "pedofili/ensest", unmarried: "nikahsız ilişkiler",
-  profanity: "argo ve küfür", disturbing: "ürkütücü sahneler",
-  racism: "ırkçılık/ayrımcılık"
+  tobacco: "tütün ve nikotin ürünleri kullanımı", alcohol: "alkol kullanımı", drugs: "uyuşturucu ve yasadışı madde kullanımı",
+  sex_nudity: "cinsellik, çıplaklık ve cinsel sahneler",
+  violence: "şiddet, kan, dövüş, yaralanma, işkence ve ölüm sahneleri",
+  crimes_against_humanity: "insanlığa karşı suçlar, soykırım ve toplu katliam",
+  terror: "terör, terörizm ve terör örgütleri",
+  illegal: "yasadışı eylemler, suç, kaçakçılık ve kanun dışı faaliyetler",
+  lgbt: "LGBT+ içeriği, eşcinsel ilişki ve cinsiyet kimliği",
+  pedophilia: "pedofili, çocuk istismarı, ensest, reşit olmayanlarla cinsellik ve diğer cinsel sapkınlıklar",
+  unmarried: "nikahsız ilişkiler, evlilik dışı birliktelik",
+  profanity: "argo, küfür, hakaret ve kaba dil",
+  disturbing: "ürkütücü, rahatsız edici, mide bulandırıcı veya travmatik sahneler",
+  racism: "ırkçılık, ayrımcılık, dini değerlere hakaret, nefret söylemi ve nefret suçu"
 };
 
 let geminiRR = 0;
@@ -220,8 +230,8 @@ function findStaleFields(profile, fieldRows, forceRefresh) {
     "director", "director_ids", "writers", "writers_ids", "producers", "cast", "cast_ids",
     "keywords", "keywords_ids", "story_locations", "story_period", "story_geography",
     "season", "character_traits", "narrative_style", "production_process", "sound",
-    "reality", "story_dimensions", "related_films", "filming_locations", "filming_countries",
-    "awards_ids", "nominated_ids"
+    "reality", "story_dimensions", "related_films", "related_films_detail", "filming_locations", "filming_countries",
+    "awards_ids", "nominated_ids", "color_style"
   ]);
   for (const [field, def] of Object.entries(FIELD_DEFS)) {
     const raw = profile[field];
@@ -334,7 +344,6 @@ async function putVerdict(env, movieId, signature, verdict, reason) {
   } catch (e) { console.warn("verdict write:", e.message); }
 }
 
-// ==== BATCH D1 HELPERS — subrequest limitini aşmamak için ====
 async function getProfileRowsBatch(env, movieIds) {
   if (!env.DB || !movieIds.length) return new Map();
   try {
@@ -416,7 +425,6 @@ async function putVerdictsBatch(env, entries, signature) {
     await env.DB.batch(stmts);
   } catch (e) { console.warn("verdicts batch write:", e.message); }
 }
-// ==== END BATCH D1 HELPERS ====
 
 async function getMetatakeCache(env, movieId) {
   if (!env.DB) return null;
@@ -741,7 +749,7 @@ async function callLLMWithFallback(env, prompt, maxOutputTokens, useSearch, oute
   if (geminiTried) providers.push("Gemini");
   if (groqTried) providers.push("Groq");
   throw new Error(`${providers.join(" + ") || "LLM"} tüm modellerde başarısız: ${errors.join(" | ")}`);
-}
+    }
 async function getFilmmapCache(env, movieId) {
   if (!env.DB) return null;
   try {
@@ -922,6 +930,52 @@ async function metatakeExtended(env, movie, outerSignal) {
   } catch (e) { console.warn("metatake extended:", e.message); return null; }
 }
 
+async function opensubtitlesDensity(env, movie, outerSignal) {
+  if (!env.OPENSUBTITLES_API_KEY) return null;
+  const imdbId = String(movie.imdbID || movie.imdb_id || "").replace(/^tt/, "");
+  const runtime = Number(movie.runtime) || 0;
+  if (!imdbId || !runtime) return null;
+  try {
+    const base = "https://api.opensubtitles.com/api/v1";
+    const headers = { "Api-Key": env.OPENSUBTITLES_API_KEY, "User-Agent": USER_AGENT, "Accept": "application/json" };
+    const searchUrl = `${base}/subtitles?imdb_id=${encodeURIComponent(imdbId)}&languages=en`;
+    const search = await fetchJSON(searchUrl, { headers }, "OpenSubtitles search", 15000, outerSignal);
+    const items = Array.isArray(search?.data) ? search.data : [];
+    if (!items.length) return null;
+    items.sort((a, b) => Number((b.attributes?.download_count) || 0) - Number((a.attributes?.download_count) || 0));
+    const best = items[0];
+    const fileId = best?.attributes?.files?.[0]?.file_id;
+    if (!fileId) return null;
+    if (!env.OPENSUBTITLES_USERNAME || !env.OPENSUBTITLES_PASSWORD) return null;
+    const login = await fetchJSON(`${base}/login`, {
+      method: "POST",
+      headers: { ...headers, "Content-Type": "application/json" },
+      body: JSON.stringify({ username: env.OPENSUBTITLES_USERNAME, password: env.OPENSUBTITLES_PASSWORD })
+    }, "OpenSubtitles login", 10000, outerSignal);
+    const token = login?.token;
+    if (!token) return null;
+    const dl = await fetchJSON(`${base}/download`, {
+      method: "POST",
+      headers: { ...headers, "Content-Type": "application/json", "Authorization": `Bearer ${token}` },
+      body: JSON.stringify({ file_id: fileId })
+    }, "OpenSubtitles download", 15000, outerSignal);
+    const link = dl?.link;
+    if (!link) return null;
+    const ac = new AbortController();
+    const timer = setTimeout(() => ac.abort(), 15000);
+    const subRes = await fetch(link, { signal: combineSignals(outerSignal, ac.signal) });
+    clearTimeout(timer);
+    if (!subRes.ok) return null;
+    const text = await subRes.text();
+    const plain = text.replace(/<[^>]+>/g, "").replace(/\\N/g, " ").replace(/[{][^}]*[}]/g, "").trim();
+    const chars = plain.length;
+    if (chars < 100) return null;
+    const charsPerMin = chars / runtime;
+    const density = Math.max(0, Math.min(100, Math.round(charsPerMin / 10)));
+    return { density, chars, runtime };
+  } catch (e) { console.warn("opensubtitles:", e.message); return null; }
+}
+
 function extractJSON(text) {
   const clean = String(text).replace(/^```(?:json)?\s*/i, "").replace(/\s*```\s*$/, "").trim();
   const start = clean.indexOf("{"), end = clean.lastIndexOf("}");
@@ -952,6 +1006,7 @@ function buildFilterSentence(filters) {
   setInclude("character_traits", "karakter özellikleri"); setExclude("character_traits", "karakter özellikleri şunlardan olmamalı:");
   setInclude("story_dimensions", "hikâye boyutları"); setExclude("story_dimensions", "hikâye boyutları şunlardan olmamalı:");
   setInclude("aspect_ratio", "en-boy oranı"); setExclude("aspect_ratio", "en-boy oranı şunlardan olmamalı:");
+  setInclude("color", "görsel renk stili"); setExclude("color", "görsel renk stili şunlardan olmamalı:");
   if (f.family_content) {
     for (const [key, val] of Object.entries(f.family_content)) {
       if (!val) continue;
@@ -1026,7 +1081,6 @@ function ratioFieldsNeeded(filters) {
   if (f.dayRatioMin != null) fields.push("day_ratio");
   if (f.outdoorRatioMin != null) fields.push("indoor_ratio");
   if (f.dialogueDensityMin != null) fields.push("dialogue_density");
-  if (f.colorRatioMin != null) fields.push("color_ratio");
   return fields;
 }
 function locationFieldsNeeded(filters) {
@@ -1067,11 +1121,12 @@ function buildStage2Rules(fields) {
     else if (f === "night_ratio") rules.push(`night_ratio: 0-100 tam sayı — filmde gece geçen sahnelerin yüzdesi`);
     else if (f === "indoor_ratio") rules.push(`indoor_ratio: 0-100 tam sayı — filmde iç mekânda geçen sahnelerin yüzdesi`);
     else if (f === "dialogue_density") rules.push(`dialogue_density: 0-100 tam sayı — diyalog yoğunluğu yüzdesi`);
-    else if (f === "color_ratio") rules.push(`color_ratio: 0-100 tam sayı — renkli çekim yüzdesi`);
     else if (f === "family_content") rules.push(`family_content: {"main_characters": <int>, "supporting_characters": <int>, "extras": <int>, "<trait>": {"intensity": "none|few|side|main", "approach": "bad|neutral|legit"}}`);
     else if (f === "story_period") rules.push(`story_period: string[] (dönem etiketleri)`);
     else if (f === "story_locations") rules.push(`story_locations: string[] (yer adları)`);
     else if (f === "aspect_ratio") rules.push(`aspect_ratio: string (ör. "2.39:1")`);
+    else if (f === "color_style") rules.push(`color_style: string[]; geçerli değerler: black_white, color, mostly_color, mostly_bw, blue_filter, yellow_filter, selective_color, colorized, limited_palette, sepia, mono_tint, bw_red_accent, mixed_bw_color`);
+    else if (f === "dialogue_density_subtitle") rules.push(`dialogue_density_subtitle: 0-100 tam sayı (altyazıdan hesaplanmış)`);
     else if (f === "location_count") rules.push(`location_count: 1-100 arası tam sayı — hikâyede geçen farklı mekân sayısı.`);
     else rules.push(`${f}: uygun değer`);
   }
@@ -1334,7 +1389,6 @@ function toNum(v) {
   return Number.isFinite(n) ? n : null;
 }
 
-// matchSet: include için OR semantiği (TMDB pipe=OR ile uyumlu).
 function matchSet(profileField, filterObj, altProfileField) {
   if (!filterObj) return { match: true, unknown: false, conflict: false, reasons: [] };
   const raw = Array.isArray(profileField) ? profileField.map(norm) : (profileField ? [norm(profileField)] : []);
@@ -1497,14 +1551,10 @@ function evalRatioFilters(profile, filters, state) {
   if (filters.dialogueDensityMin != null) {
     const t = ratioThreshold(filters.dialogueDensityMin);
     const v = toNum(profile.dialogue_density);
-    if (v === null) { state.unknown = true; state.reasons.push("Diyalog yoğunluğu: bilinmiyor"); }
-    else if (v < t.min || v > t.max) { state.match = false; state.reasons.push(`Diyalog %${v} [${t.min}-${t.max}] dışı`); }
-  }
-  if (filters.colorRatioMin != null) {
-    const t = ratioThreshold(filters.colorRatioMin);
-    const v = toNum(profile.color_ratio);
-    if (v === null) { state.unknown = true; state.reasons.push("Renkli oranı: bilinmiyor"); }
-    else if (v < t.min || v > t.max) { state.match = false; state.reasons.push(`Renkli %${v} [${t.min}-${t.max}] dışı`); }
+    const vs = toNum(profile.dialogue_density_subtitle);
+    const chosen = (v != null) ? v : vs;
+    if (chosen === null) { state.unknown = true; state.reasons.push("Diyalog yoğunluğu: bilinmiyor"); }
+    else if (chosen < t.min || chosen > t.max) { state.match = false; state.reasons.push(`Diyalog %${chosen} [${t.min}-${t.max}] dışı`); }
   }
 }
 
@@ -1555,7 +1605,8 @@ function evaluateFilters(profile, filters, semanticVerdict, metatakeLocations, f
     ["production_process", "production_process", "Çekim süreci", null],
     ["sound", "sound", "Ses", null],
     ["reality", "reality", "Gerçeklik", null],
-    ["story_dimensions", "story_dimensions", "Hikâye boyutları", null]
+    ["story_dimensions", "story_dimensions", "Hikâye boyutları", null],
+    ["color_style", "color", "Görsel renk stili", null]
   ];
   for (const [profileField, filterField, label, altField] of setChecks) {
     const f = filters[filterField];
@@ -1614,7 +1665,6 @@ async function handleResearchStream(env, body, controller, signal) {
   try {
     const filters = body.filters || {};
 
-    // Subrequest bütçesini önceden hesapla (Cloudflare Workers free: 50, margin bırak: 45)
     const needFilmMap = !!(
       filters.filming_locations?.include?.length || filters.filming_locations?.exclude?.length
       || filters.locationMin != null || filters.locationMax != null
@@ -1719,6 +1769,24 @@ async function handleResearchStream(env, body, controller, signal) {
     }
     if (allCoveredFields.length) await putFieldRowsBatch(env, allCoveredFields);
 
+    if (filters.dialogueDensityMin != null) {
+      const subtitleTargets = prepared.filter(p => p.profile.dialogue_density == null || !settings.useAI);
+      if (subtitleTargets.length && env.OPENSUBTITLES_API_KEY) {
+        const subFields = [];
+        await Promise.all(subtitleTargets.slice(0, 5).map(async (p) => {
+          try {
+            const r = await opensubtitlesDensity(env, p.movie, signal);
+            if (r && r.density != null) {
+              p.profile.dialogue_density_subtitle = r.density;
+              p.dirty = true;
+              subFields.push({ movieId: p.movieId, field: "dialogue_density_subtitle", source: "opensubtitles" });
+            }
+          } catch (e) { console.warn("subtitle fail:", p.movieId, e.message); }
+        }));
+        if (subFields.length) await putFieldRowsBatch(env, subFields);
+      }
+    }
+
     for (const p of prepared) {
       const mg = Array.isArray(p.movie.genre_ids) ? p.movie.genre_ids : [];
       if (mg.length) {
@@ -1762,6 +1830,9 @@ async function handleResearchStream(env, body, controller, signal) {
       }
       if (filters.related_films && (filters.related_films.include?.length || filters.related_films.exclude?.length)) {
         if (afterLocal.some(p => !p.profile.related_films || !p.profile.related_films.length)) fields.add("related_films");
+      }
+      if (filters.color && (filters.color.include?.length || filters.color.exclude?.length)) {
+        if (afterLocal.some(p => !p.profile.color_style || !p.profile.color_style.length)) fields.add("color_style");
       }
       return Array.from(fields);
     })();
@@ -1862,6 +1933,8 @@ async function handleResearchStream(env, body, controller, signal) {
         location_count: locInfo.count,
         location_count_estimated: locInfo.estimated,
         location_count_source: locInfo.source,
+        related_films_detail: Array.isArray(p.profile.related_films_detail) ? p.profile.related_films_detail : (Array.isArray(p.profile.related_films) ? p.profile.related_films : []),
+        color_style: Array.isArray(p.profile.color_style) ? p.profile.color_style : null,
         movie_lists: movieLists,
         _fromCache: p.staleDeterministic.length === 0
       };
@@ -1945,6 +2018,16 @@ async function handleMovieDetails(env, body, signal) {
       await putFieldRows(env, movieId, covered, Object.fromEntries(covered.map(f => [f, "llm"])));
     } catch (e) { console.warn("stage2 details fail:", e.message); }
   }
+  if (profile.dialogue_density_subtitle == null && env.OPENSUBTITLES_API_KEY) {
+    try {
+      const r = await opensubtitlesDensity(env, movie, signal);
+      if (r && r.density != null) {
+        profile.dialogue_density_subtitle = r.density;
+        dirty = true;
+        await putFieldRows(env, movieId, ["dialogue_density_subtitle"], { dialogue_density_subtitle: "opensubtitles" });
+      }
+    } catch (e) { console.warn("subtitle details fail:", e.message); }
+  }
   if (dirty || forceAll) await putProfileRow(env, movieId, movie.title, yearOf(movie), profile, forceAll);
   const merged = { ...movie, ...profile };
   for (const f of ["director","writers","cast","producers","actors"]) {
@@ -1954,6 +2037,9 @@ async function handleMovieDetails(env, body, signal) {
   merged.location_count = locInfo.count;
   merged.location_count_estimated = locInfo.estimated;
   merged.location_count_source = locInfo.source;
+  merged.related_films_detail = Array.isArray(profile.related_films_detail) ? profile.related_films_detail : (Array.isArray(profile.related_films) ? profile.related_films : []);
+  merged.color_style = Array.isArray(profile.color_style) ? profile.color_style : null;
+  merged.dialogue_density_subtitle = profile.dialogue_density_subtitle ?? null;
   return { movie: merged };
 }
 
@@ -2071,6 +2157,7 @@ async function handleRequest(request, env, ctx) {
         geminiModel: env.GEMINI_MODEL || GEMINI_MODEL_DEFAULT, geminiModels: buildGeminiChain(env),
         groqModel: env.GROQ_MODEL || GROQ_MODEL_DEFAULT, groqModels: buildGroqChain(env),
         tmdb: !!env.TMDB_API_KEY, omdb: !!env.OMDB_API_KEY, tavily: !!env.TAVILY_API_KEY,
+        opensubtitles: !!env.OPENSUBTITLES_API_KEY,
         groqKeys: [!!env.GROQ_API_KEY_1, !!env.GROQ_API_KEY_2, !!env.GROQ_API_KEY_3],
         geminiKeys: [!!env.GEMINI_API_KEY_1, !!env.GEMINI_API_KEY_2, !!env.GEMINI_API_KEY_3],
         adminToken: !!env.ADMIN_TOKEN,

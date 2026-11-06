@@ -1,6 +1,9 @@
+// auth.js — Kayıt/giriş/şifre sıfırlama + güvenlik (timing-safe, rate limit, hesap kilidi, Turnstile).
 const PBKDF2_ITER = 100000;
 const SESSION_TTL = 30 * 86400;
 const RECOVER_TTL = 900;
+const MAX_FAILED_ATTEMPTS = 5;
+const LOCK_DURATION_SEC = 900;
 
 const CORS = {
   "Access-Control-Allow-Origin": "*",
@@ -30,6 +33,84 @@ function getCookie(req, name) {
 function sessionCookieHeader(token, maxAge) { return `sid=${token}; Path=/; HttpOnly; Secure; SameSite=None; Max-Age=${maxAge}`; }
 function clearSessionCookie() { return `sid=; Path=/; HttpOnly; Secure; SameSite=None; Max-Age=0`; }
 function isValidEmail(s) { return /^[^\s@]+@[^\s@]+\.[^\s@]{2,}$/.test(String(s || "").trim()); }
+
+export function timingSafeEqualStr(a, b) {
+  if (typeof a !== "string" || typeof b !== "string") return false;
+  const len = Math.max(a.length, b.length);
+  let diff = a.length ^ b.length;
+  for (let i = 0; i < len; i++) diff |= (a.charCodeAt(i) || 0) ^ (b.charCodeAt(i) || 0);
+  return diff === 0;
+}
+
+async function verifyTurnstile(env, token, ip) {
+  if (!env.TURNSTILE_SECRET_KEY) return true;
+  if (!token) return false;
+  try {
+    const body = new URLSearchParams();
+    body.set("secret", env.TURNSTILE_SECRET_KEY);
+    body.set("response", String(token));
+    if (ip) body.set("remoteip", String(ip));
+    const res = await fetch("https://challenges.cloudflare.com/turnstile/v0/siteverify", { method: "POST", body });
+    const data = await res.json();
+    return data.success === true;
+  } catch { return false; }
+}
+
+async function checkIpLock(env, ip) {
+  if (!env.DB || !ip) return { locked: false };
+  try {
+    const row = await env.DB.prepare("SELECT attempts, locked_until_ts FROM login_attempts WHERE ip = ?").bind(ip).first();
+    if (!row) return { locked: false };
+    const now = Math.floor(Date.now() / 1000);
+    if (row.locked_until_ts && row.locked_until_ts > now) return { locked: true, until: row.locked_until_ts };
+    return { locked: false };
+  } catch { return { locked: false }; }
+}
+async function recordIpFailure(env, ip) {
+  if (!env.DB || !ip) return;
+  const now = Math.floor(Date.now() / 1000);
+  try {
+    const row = await env.DB.prepare("SELECT attempts FROM login_attempts WHERE ip = ?").bind(ip).first();
+    const attempts = (row?.attempts || 0) + 1;
+    const lockUntil = attempts >= MAX_FAILED_ATTEMPTS ? now + LOCK_DURATION_SEC : null;
+    await env.DB.prepare(
+      `INSERT INTO login_attempts (ip, attempts, last_attempt_ts, locked_until_ts) VALUES (?, ?, ?, ?)
+       ON CONFLICT(ip) DO UPDATE SET attempts = excluded.attempts, last_attempt_ts = excluded.last_attempt_ts, locked_until_ts = COALESCE(excluded.locked_until_ts, login_attempts.locked_until_ts)`
+    ).bind(ip, attempts, now, lockUntil).run();
+  } catch (e) { console.warn("ip attempt write:", e.message); }
+}
+async function resetIpFailures(env, ip) {
+  if (!env.DB || !ip) return;
+  try { await env.DB.prepare("DELETE FROM login_attempts WHERE ip = ?").bind(ip).run(); } catch {}
+}
+
+async function checkUserLock(env, userId) {
+  if (!env.DB || !userId) return { locked: false };
+  try {
+    const row = await env.DB.prepare("SELECT failed_attempts, locked_until_ts FROM user_lockouts WHERE user_id = ?").bind(userId).first();
+    if (!row) return { locked: false };
+    const now = Math.floor(Date.now() / 1000);
+    if (row.locked_until_ts && row.locked_until_ts > now) return { locked: true, until: row.locked_until_ts };
+    return { locked: false };
+  } catch { return { locked: false }; }
+}
+async function recordUserFailure(env, userId) {
+  if (!env.DB || !userId) return;
+  const now = Math.floor(Date.now() / 1000);
+  try {
+    const row = await env.DB.prepare("SELECT failed_attempts FROM user_lockouts WHERE user_id = ?").bind(userId).first();
+    const attempts = (row?.failed_attempts || 0) + 1;
+    const lockUntil = attempts >= MAX_FAILED_ATTEMPTS ? now + LOCK_DURATION_SEC : null;
+    await env.DB.prepare(
+      `INSERT INTO user_lockouts (user_id, failed_attempts, locked_until_ts) VALUES (?, ?, ?)
+       ON CONFLICT(user_id) DO UPDATE SET failed_attempts = excluded.failed_attempts, locked_until_ts = COALESCE(excluded.locked_until_ts, user_lockouts.locked_until_ts)`
+    ).bind(userId, attempts, lockUntil).run();
+  } catch (e) { console.warn("user lock write:", e.message); }
+}
+async function resetUserFailures(env, userId) {
+  if (!env.DB || !userId) return;
+  try { await env.DB.prepare("DELETE FROM user_lockouts WHERE user_id = ?").bind(userId).run(); } catch {}
+}
 
 async function getSession(env, token) {
   if (!env.DB || !token) return null;
@@ -94,10 +175,6 @@ async function ensureAdminUser(env) {
   } catch (e) { console.warn("ensureAdminUser:", e.message); return null; }
 }
 
-// Yer tutucu: ileride Resend ile e-posta doğrulaması eklenecek.
-// TODO: Resend entegrasyonu — alan adı doğrulandığında bu fonksiyon doldurulacak.
-// async function sendVerificationEmail(env, toEmail, username, verificationToken) { /* ... */ }
-
 export async function handleAuth(request, env, ctx) {
   if (request.method === "OPTIONS") return new Response(null, { status: 204, headers: CORS });
   const url = new URL(request.url);
@@ -105,6 +182,10 @@ export async function handleAuth(request, env, ctx) {
 
   if (path === "/register" && request.method === "POST") {
     let body; try { body = await request.json(); } catch { return jsonErr("Geçersiz JSON", 400); }
+    const ip = request.headers.get("CF-Connecting-IP") || "";
+    const turnstileToken = body.turnstileToken || "";
+    const okCaptcha = await verifyTurnstile(env, turnstileToken, ip);
+    if (!okCaptcha) return jsonErr("CAPTCHA doğrulaması başarısız", 400);
     const username = String(body.username || "").trim();
     const password = String(body.password || "");
     const email = String(body.email || "").trim();
@@ -127,19 +208,16 @@ export async function handleAuth(request, env, ctx) {
       for (const q of securityQuestions) {
         const normAns = String(q.answer || "").trim().toLowerCase();
         if (!normAns) return jsonErr("Güvenlik cevabı boş olamaz", 400);
-        hashedQ.push({ key: String(q.key || ""), answerHash: await hashPassword(normAns, salt) });
+        const qSalt = randomHex(16);
+        hashedQ.push({ key: String(q.key || ""), answerHash: await hashPassword(normAns, qSalt), answerSalt: qSalt });
       }
       const result = await env.DB.prepare(
         `INSERT INTO users (register_number, username, email, password_hash, password_salt, security_questions_json,
           is_admin, is_approved, is_public, is_suspended, is_email_verified, created_at, updated_at)
          VALUES (?, ?, ?, ?, ?, ?, 0, 0, 0, 0, 0, ?, ?)`
       ).bind(regNum, username, email, hash, salt, JSON.stringify(hashedQ), now, now).run();
-      const userId = result.meta.last_row_id;
       return jsonRes({
-        ok: true,
-        userId,
-        username,
-        registerNumber: regNum,
+        ok: true, userId: result.meta.last_row_id, username, registerNumber: regNum,
         pendingApproval: true,
         notice: "Kaydınız alındı. Yönetici onayından sonra üyeliğiniz aktifleşecek. Lütfen gerçek bir e-posta adresi kullandığınızdan emin olun; e-posta doğrulaması gerekebilir."
       });
@@ -148,23 +226,31 @@ export async function handleAuth(request, env, ctx) {
 
   if (path === "/login" && request.method === "POST") {
     let body; try { body = await request.json(); } catch { return jsonErr("Geçersiz JSON", 400); }
+    const ip = request.headers.get("CF-Connecting-IP") || "";
+    const ipLock = await checkIpLock(env, ip);
+    if (ipLock.locked) return jsonErr(`Çok fazla başarısız deneme. ${Math.ceil((ipLock.until - Math.floor(Date.now() / 1000)) / 60)} dk sonra tekrar deneyin.`, 429);
     const login = String(body.login || "").trim();
     const password = String(body.password || "");
     if (!login || !password) return jsonErr("Kullanıcı adı/numara ve şifre gerekli", 400);
     const user = await findUserByLogin(env, login);
-    if (!user) return jsonErr("Kullanıcı bulunamadı", 401);
+    if (!user) { await recordIpFailure(env, ip); return jsonErr("Kullanıcı bulunamadı", 401); }
     if (user.is_suspended) return jsonErr("Hesap askıya alınmış", 403);
+    const userLock = await checkUserLock(env, user.id);
+    if (userLock.locked) return jsonErr(`Hesabınız geçici olarak kilitli. ${Math.ceil((userLock.until - Math.floor(Date.now() / 1000)) / 60)} dk sonra tekrar deneyin. Admin ile iletişime geçebilirsiniz.`, 429);
     if (!user.is_approved && !user.is_admin) return jsonErr("Hesabınız yönetici onayı bekliyor. Onaylandığında giriş yapabilirsiniz.", 403);
     const check = await hashPassword(password, user.password_salt);
-    if (check !== user.password_hash) return jsonErr("Şifre yanlış", 401);
-    const session = await createSession(env, user.id, request.headers.get("CF-Connecting-IP") || "", request.headers.get("User-Agent") || "");
+    if (!timingSafeEqualStr(check, user.password_hash)) {
+      await recordIpFailure(env, ip);
+      await recordUserFailure(env, user.id);
+      return jsonErr("Şifre yanlış", 401);
+    }
+    await resetIpFailures(env, ip);
+    await resetUserFailures(env, user.id);
+    const session = await createSession(env, user.id, ip, request.headers.get("User-Agent") || "");
     return new Response(JSON.stringify({
       ok: true, userId: user.id, username: user.username, registerNumber: user.register_number,
       isAdmin: !!user.is_admin, isPublic: !!user.is_public, isApproved: !!user.is_approved, isEmailVerified: !!user.is_email_verified
-    }), {
-      status: 200,
-      headers: { ...CORS, "Content-Type": "application/json", "Set-Cookie": sessionCookieHeader(session.token, SESSION_TTL) }
-    });
+    }), { status: 200, headers: { ...CORS, "Content-Type": "application/json", "Set-Cookie": sessionCookieHeader(session.token, SESSION_TTL) } });
   }
 
   if (path === "/logout" && request.method === "POST") {
@@ -187,28 +273,10 @@ export async function handleAuth(request, env, ctx) {
       const admin = await ensureAdminUser(env);
       if (admin) {
         const s = await createSession(env, admin.id, "", "admin-bridge");
-        return new Response(JSON.stringify({
-          ok: true, userId: admin.id, username: admin.username, registerNumber: admin.register_number,
-          isAdmin: true, isPublic: !!admin.is_public, isApproved: true, isEmailVerified: true
-        }), {
-          status: 200,
-          headers: { ...CORS, "Content-Type": "application/json", "Set-Cookie": sessionCookieHeader(s.token, SESSION_TTL) }
-        });
+        return new Response(JSON.stringify({ ok: true, userId: admin.id, username: admin.username, registerNumber: admin.register_number, isAdmin: true, isPublic: !!admin.is_public, isApproved: true, isEmailVerified: true }), { status: 200, headers: { ...CORS, "Content-Type": "application/json", "Set-Cookie": sessionCookieHeader(s.token, SESSION_TTL) } });
       }
     }
     return jsonRes({ ok: false, user: null });
-  }
-
-  if (path === "/admin-login" && request.method === "POST") {
-    const auth = request.headers.get("Authorization") || "";
-    if (!env.ADMIN_TOKEN || auth !== `Bearer ${env.ADMIN_TOKEN}`) return jsonErr("Yetkisiz", 401);
-    const admin = await ensureAdminUser(env);
-    if (!admin) return jsonErr("Admin hesabı oluşturulamadı", 500);
-    const s = await createSession(env, admin.id, "", "admin-bridge");
-    return new Response(JSON.stringify({ ok: true, userId: admin.id, username: admin.username, registerNumber: admin.register_number, isAdmin: true }), {
-      status: 200,
-      headers: { ...CORS, "Content-Type": "application/json", "Set-Cookie": sessionCookieHeader(s.token, SESSION_TTL) }
-    });
   }
 
   if (path === "/recover/start" && request.method === "POST") {
@@ -231,8 +299,9 @@ export async function handleAuth(request, env, ctx) {
     if (answers.length !== questions.length) return jsonErr("Cevap sayısı eşleşmiyor", 400);
     for (let i = 0; i < questions.length; i++) {
       const normAns = String(answers[i] || "").trim().toLowerCase();
-      const h = await hashPassword(normAns, user.password_salt);
-      if (h !== questions[i].answerHash) return jsonErr("Güvenlik cevabı yanlış", 401);
+      const salt = questions[i].answerSalt || user.password_salt;
+      const h = await hashPassword(normAns, salt);
+      if (!timingSafeEqualStr(h, questions[i].answerHash)) return jsonErr("Güvenlik cevabı yanlış", 401);
     }
     const token = randomHex(32);
     const hash = await sha256Hex(token);
@@ -254,7 +323,7 @@ export async function handleAuth(request, env, ctx) {
     const newSalt = randomHex(16);
     const newHash = await hashPassword(newPassword, newSalt);
     await env.DB.prepare("UPDATE users SET password_hash = ?, password_salt = ?, updated_at = ? WHERE id = ?").bind(newHash, newSalt, now, row.user_id).run();
-    await env.DB.prepare("DELETE FROM user_sessions WHERE user_id = ? AND user_agent = 'recover'").bind(row.user_id).run();
+    await env.DB.prepare("DELETE FROM user_sessions WHERE user_id = ?").bind(row.user_id).run();
     return jsonRes({ ok: true });
   }
 
@@ -268,11 +337,12 @@ export async function handleAuth(request, env, ctx) {
     const user = await env.DB.prepare("SELECT password_hash, password_salt FROM users WHERE id = ?").bind(sess.user_id).first();
     if (!user) return jsonErr("Kullanıcı bulunamadı", 404);
     const oldHash = await hashPassword(oldPw, user.password_salt);
-    if (oldHash !== user.password_hash) return jsonErr("Mevcut şifre yanlış", 401);
+    if (!timingSafeEqualStr(oldHash, user.password_hash)) return jsonErr("Mevcut şifre yanlış", 401);
     const newSalt = randomHex(16);
     const newHash = await hashPassword(newPw, newSalt);
     await env.DB.prepare("UPDATE users SET password_hash = ?, password_salt = ?, updated_at = ? WHERE id = ?").bind(newHash, newSalt, Math.floor(Date.now() / 1000), sess.user_id).run();
-    return jsonRes({ ok: true });
+    await env.DB.prepare("DELETE FROM user_sessions WHERE user_id = ?").bind(sess.user_id).run();
+    return jsonRes({ ok: true, message: "Şifre güncellendi. Lütfen yeniden giriş yapın." });
   }
 
   if (path === "/rename" && request.method === "POST") {
@@ -303,4 +373,4 @@ export async function getCurrentUserWithAdminBridge(env, request) {
     if (admin) return { user_id: admin.id, username: admin.username, is_admin: 1, is_public: admin.is_public, register_number: admin.register_number, is_approved: 1, is_email_verified: 1 };
   }
   return null;
-                          }
+}

@@ -1,4 +1,8 @@
 import { FIELD_DEFS, LLM_FIELDS, FIELD_RULES, SEMANTIC_FIELDS } from "./fields.config.js";
+import { handleAuth } from "./auth.js";
+import { handleUser } from "./users.js";
+import { handleSocial } from "./social.js";
+import { handleAdmin } from "./admin.js";
 
 const GEMINI_MODEL_CHAIN = ["gemini-3.8-flash", "gemini-3.7-flash", "gemini-3.6-flash", "gemini-3.5-flash-lite", "gemini-3.1-flash-lite"];
 const GEMINI_MODEL_DEFAULT = "gemini-3.8-flash";

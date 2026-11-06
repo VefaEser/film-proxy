@@ -1,4 +1,4 @@
-import { getCurrentUser, getCurrentUserWithAdminBridge } from "./auth.js";
+import { getCurrentUserWithAdminBridge } from "./auth.js";
 
 const CORS = {
   "Access-Control-Allow-Origin": "*",
@@ -6,18 +6,10 @@ const CORS = {
   "Access-Control-Allow-Headers": "Content-Type,Authorization",
   "Access-Control-Allow-Credentials": "true"
 };
-function jsonRes(data, status = 200) {
-  return new Response(JSON.stringify(data), { status, headers: { ...CORS, "Content-Type": "application/json; charset=utf-8" } });
-}
+function jsonRes(data, status = 200) { return new Response(JSON.stringify(data), { status, headers: { ...CORS, "Content-Type": "application/json; charset=utf-8" } }); }
 function jsonErr(msg, status = 500) { return jsonRes({ error: String(msg) }, status); }
-function norm(s) {
-  return String(s || "").trim().toLowerCase()
-    .replace(/İ/g, "i").replace(/I/g, "ı").replace(/Ş/g, "ş").replace(/Ğ/g, "ğ")
-    .replace(/Ü/g, "ü").replace(/Ö/g, "ö").replace(/Ç/g, "ç").replace(/\s+/g, " ");
-}
 function safeJSON(t, fb = null) { try { return JSON.parse(t); } catch { return fb; } }
 
-// CSV parsing: only Const, Original Title, Title, URL, Imdb Rating, Num Votes, Runtime, Year, Genres, Directors
 function parseCsv(text) {
   const lines = String(text || "").replace(/^\uFEFF/, "").trim().split(/\r?\n/);
   if (!lines.length) return [];
@@ -55,45 +47,30 @@ function parseCsv(text) {
   }
   return out;
 }
+function movieIdFromImdb(imdbId) { return "imdb:" + String(imdbId || "").replace(/^tt/, ""); }
 
-function movieIdFromImdb(imdbId) {
-  return "imdb:" + String(imdbId || "").replace(/^tt/, "");
-}
-
-// Conflict-aware CSV import
 async function importCsv(env, userId, listType, items) {
   if (!env.DB) throw new Error("DB yok");
   const now = Math.floor(Date.now() / 1000);
   let added = 0, skipped = 0, conflicts = 0;
-  // Check existing movies in other lists for same imdb_id (conflict → don't mark)
-  const allExisting = await env.DB.prepare(
-    "SELECT list_type, imdb_id FROM user_movies WHERE user_id = ?"
-  ).bind(userId).all();
+  const allExisting = await env.DB.prepare("SELECT list_type, imdb_id FROM user_movies WHERE user_id = ?").bind(userId).all();
   const byImdb = new Map();
-  for (const r of allExisting.results || []) {
-    if (!byImdb.has(r.imdb_id)) byImdb.set(r.imdb_id, new Set());
-    byImdb.get(r.imdb_id).add(r.list_type);
-  }
+  for (const r of allExisting.results || []) { if (!byImdb.has(r.imdb_id)) byImdb.set(r.imdb_id, new Set()); byImdb.get(r.imdb_id).add(r.list_type); }
   const stmts = [];
   for (const it of items) {
     const conflicting = byImdb.get(it.imdbId);
-    if (conflicting && [...conflicting].some(t => t !== listType)) {
-      conflicts++;
-      continue;
-    }
+    if (conflicting && [...conflicting].some(t => t !== listType)) { conflicts++; continue; }
     stmts.push(env.DB.prepare(
       `INSERT INTO user_movies (user_id, list_type, movie_id, imdb_id, title_original, title_tr, year, imdb_rating, imdb_votes, runtime, genres, directors, source, source_meta_json, created_at, updated_at)
        VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 'csv', NULL, ?, ?)
        ON CONFLICT(user_id, list_type, movie_id) DO UPDATE SET
          title_original = excluded.title_original, title_tr = excluded.title_tr, year = excluded.year,
          imdb_rating = excluded.imdb_rating, imdb_votes = excluded.imdb_votes, runtime = excluded.runtime,
-         genres = excluded.genres, directors = excluded.directors, updated_at = excluded.updated_at`
+         genres = excluded.genres, directors = excluded.directors, source = excluded.source, updated_at = excluded.updated_at`
     ).bind(userId, listType, movieIdFromImdb(it.imdbId), it.imdbId, it.titleOriginal, it.titleTr, it.year, it.imdbRating, it.imdbVotes, it.runtime, it.genres, it.directors, now, now));
     added++;
   }
-  if (stmts.length) {
-    for (let i = 0; i < stmts.length; i += 40) await env.DB.batch(stmts.slice(i, i + 40));
-  }
+  for (let i = 0; i < stmts.length; i += 40) await env.DB.batch(stmts.slice(i, i + 40));
   return { added, skipped, conflicts };
 }
 
@@ -103,8 +80,7 @@ async function importCsvFile(env, userId, listType, csvText) {
   const res = await importCsv(env, userId, listType, items);
   const hash = String(items.length) + "|" + (items[0]?.imdbId || "");
   await env.DB.prepare(
-    `INSERT INTO csv_imports (user_id, list_type, filename, content_hash, row_count, conflicts, imported_at)
-     VALUES (?, ?, NULL, ?, ?, ?, ?)`
+    `INSERT INTO csv_imports (user_id, list_type, filename, content_hash, row_count, conflicts, imported_at) VALUES (?, ?, NULL, ?, ?, ?, ?)`
   ).bind(userId, listType, hash, items.length, res.conflicts, Math.floor(Date.now() / 1000)).run();
   return { ...res, total: items.length };
 }
@@ -116,18 +92,13 @@ async function getList(env, userId, listType, page = 1, pageSize = 10, sort = "y
     `SELECT movie_id, imdb_id, title_original, title_tr, year, imdb_rating, imdb_votes, runtime, genres, directors, source
      FROM user_movies WHERE user_id = ? AND list_type = ? ORDER BY ${orderBy} LIMIT ? OFFSET ?`
   ).bind(userId, listType, pageSize, offset).all();
-  const { results: countRows } = await env.DB.prepare(
-    "SELECT COUNT(*) AS c FROM user_movies WHERE user_id = ? AND list_type = ?"
-  ).bind(userId, listType).all();
-  const total = countRows[0]?.c || 0;
-  return { items: results || [], total, page, pageSize };
+  const { results: countRows } = await env.DB.prepare("SELECT COUNT(*) AS c FROM user_movies WHERE user_id = ? AND list_type = ?").bind(userId, listType).all();
+  return { items: results || [], total: countRows[0]?.c || 0, page, pageSize };
 }
 
 async function getMovieCounts(env, movieId) {
   if (!env.DB) return { watched: 0, want: 0, wont: 0 };
-  const { results } = await env.DB.prepare(
-    `SELECT list_type, COUNT(*) AS c FROM user_movies WHERE movie_id = ? GROUP BY list_type`
-  ).bind(movieId).all();
+  const { results } = await env.DB.prepare(`SELECT list_type, COUNT(*) AS c FROM user_movies WHERE movie_id = ? GROUP BY list_type`).bind(movieId).all();
   const out = { watched: 0, want: 0, wont: 0 };
   for (const r of results || []) out[r.list_type] = r.c;
   return out;
@@ -140,21 +111,17 @@ export async function handleUser(request, env, ctx) {
   const sess = await getCurrentUserWithAdminBridge(env, request);
   const isAuth = !!sess && !sess.is_suspended;
 
-  // Public: movie counts
   if (path.startsWith("/movie-counts/") && request.method === "GET") {
     const movieId = decodeURIComponent(path.replace("/movie-counts/", ""));
-    const counts = await getMovieCounts(env, movieId);
-    return jsonRes({ counts });
+    return jsonRes({ counts: await getMovieCounts(env, movieId) });
   }
 
-  // Public: view public user profile
   if (path.startsWith("/public/") && request.method === "GET") {
     const username = decodeURIComponent(path.replace("/public/", ""));
     if (!env.DB) return jsonErr("DB yok", 503);
-    const user = await env.DB.prepare(
-      "SELECT id, username, register_number, is_public, is_suspended, created_at FROM users WHERE username = ? COLLATE NOCASE AND deleted_at IS NULL"
-    ).bind(username).first();
+    const user = await env.DB.prepare("SELECT id, username, register_number, is_public, is_suspended, created_at FROM users WHERE username = ? COLLATE NOCASE AND deleted_at IS NULL").bind(username).first();
     if (!user) return jsonErr("Kullanıcı bulunamadı", 404);
+    if (user.is_suspended) return jsonErr("Bu profil gizli", 403);
     if (!user.is_public) return jsonErr("Bu profil gizli", 403);
     const lists = {};
     for (const lt of ["watched", "want", "wont"]) {
@@ -168,52 +135,36 @@ export async function handleUser(request, env, ctx) {
 
   if (!isAuth) return jsonErr("Giriş gerekli", 401);
 
-  // Own profile
   if (path === "/profile" && request.method === "GET") {
     return jsonRes({
-      userId: sess.user_id,
-      username: sess.username,
-      registerNumber: sess.register_number,
-      isAdmin: !!sess.is_admin,
-      isPublic: !!sess.is_public,
-      isApproved: !!sess.is_approved
+      userId: sess.user_id, username: sess.username, registerNumber: sess.register_number,
+      isAdmin: !!sess.is_admin, isPublic: !!sess.is_public, isApproved: !!sess.is_approved, isEmailVerified: !!sess.is_email_verified
     });
   }
   if (path === "/profile" && request.method === "PUT") {
     let body; try { body = await request.json(); } catch { return jsonErr("Geçersiz JSON", 400); }
     if (typeof body.isPublic === "boolean") {
-      await env.DB.prepare("UPDATE users SET is_public = ?, updated_at = ? WHERE id = ?")
-        .bind(body.isPublic ? 1 : 0, Math.floor(Date.now() / 1000), sess.user_id).run();
+      await env.DB.prepare("UPDATE users SET is_public = ?, updated_at = ? WHERE id = ?").bind(body.isPublic ? 1 : 0, Math.floor(Date.now() / 1000), sess.user_id).run();
     }
     return jsonRes({ ok: true });
   }
-
-  // CSV import per list
   if (path === "/csv-import" && request.method === "POST") {
     let body; try { body = await request.json(); } catch { return jsonErr("Geçersiz JSON", 400); }
     const listType = String(body.listType || "");
     const csvText = String(body.csvText || "");
     if (!["watched", "want", "wont"].includes(listType)) return jsonErr("listType watched/want/wont olmalı", 400);
     if (!csvText) return jsonErr("csvText boş", 400);
-    try {
-      const r = await importCsvFile(env, sess.user_id, listType, csvText);
-      return jsonRes({ ok: true, ...r });
-    } catch (e) { return jsonErr(e.message, 400); }
+    try { const r = await importCsvFile(env, sess.user_id, listType, csvText); return jsonRes({ ok: true, ...r }); }
+    catch (e) { return jsonErr(e.message, 400); }
   }
-
-  // Get list (paginated)
   if (path.startsWith("/lists/") && request.method === "GET") {
     const lt = path.split("/")[2];
     if (!["watched", "want", "wont"].includes(lt)) return jsonErr("Geçersiz liste", 400);
     const page = Math.max(1, parseInt(url.searchParams.get("page") || "1"));
     const sort = url.searchParams.get("sort") === "imdb" ? "imdb_desc" : "year_desc";
-    try {
-      const data = await getList(env, sess.user_id, lt, page, 10, sort);
-      return jsonRes(data);
-    } catch (e) { return jsonErr(e.message, 500); }
+    try { return jsonRes(await getList(env, sess.user_id, lt, page, 10, sort)); }
+    catch (e) { return jsonErr(e.message, 500); }
   }
-
-  // Add one manually
   if (path === "/lists/add" && request.method === "POST") {
     let body; try { body = await request.json(); } catch { return jsonErr("Geçersiz JSON", 400); }
     const lt = String(body.listType || "");
@@ -222,34 +173,22 @@ export async function handleUser(request, env, ctx) {
     if (!["watched", "want", "wont"].includes(lt)) return jsonErr("Geçersiz liste", 400);
     if (!movieId) return jsonErr("movieId veya imdbId gerekli", 400);
     const now = Math.floor(Date.now() / 1000);
-    // Remove from other lists (only one marking per movie)
-    await env.DB.prepare("DELETE FROM user_movies WHERE user_id = ? AND movie_id = ? AND list_type != ?")
-      .bind(sess.user_id, movieId, lt).run();
+    await env.DB.prepare("DELETE FROM user_movies WHERE user_id = ? AND movie_id = ? AND list_type != ?").bind(sess.user_id, movieId, lt).run();
     await env.DB.prepare(
       `INSERT INTO user_movies (user_id, list_type, movie_id, imdb_id, title_original, title_tr, year, imdb_rating, imdb_votes, runtime, genres, directors, source, created_at, updated_at)
        VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 'manual', ?, ?)
        ON CONFLICT(user_id, list_type, movie_id) DO UPDATE SET updated_at = excluded.updated_at`
-    ).bind(
-      sess.user_id, lt, movieId, imdbId || null,
-      body.titleOriginal || null, body.titleTr || null,
-      body.year || null, body.imdbRating || null, body.imdbVotes || null, body.runtime || null,
-      body.genres || null, body.directors || null,
-      now, now
-    ).run();
+    ).bind(sess.user_id, lt, movieId, imdbId || null, body.titleOriginal || null, body.titleTr || null, body.year || null,
+      body.imdbRating || null, body.imdbVotes || null, body.runtime || null, body.genres || null, body.directors || null, now, now).run();
     return jsonRes({ ok: true });
   }
-
-  // Remove
   if (path.startsWith("/lists/remove/") && request.method === "DELETE") {
     const parts = path.replace("/lists/remove/", "").split("/");
     const lt = parts[0], movieId = decodeURIComponent(parts.slice(1).join("/"));
     if (!["watched", "want", "wont"].includes(lt)) return jsonErr("Geçersiz liste", 400);
-    await env.DB.prepare("DELETE FROM user_movies WHERE user_id = ? AND list_type = ? AND movie_id = ?")
-      .bind(sess.user_id, lt, movieId).run();
+    await env.DB.prepare("DELETE FROM user_movies WHERE user_id = ? AND list_type = ? AND movie_id = ?").bind(sess.user_id, lt, movieId).run();
     return jsonRes({ ok: true });
   }
-
-  // Refresh one movie (fetch from sources; may 404 if fetch fails)
   if (path === "/lists/refresh" && request.method === "POST") {
     let body; try { body = await request.json(); } catch { return jsonErr("Geçersiz JSON", 400); }
     const listType = String(body.listType || "");
@@ -258,13 +197,9 @@ export async function handleUser(request, env, ctx) {
     const { items } = await getList(env, sess.user_id, listType, page, 10, "year_desc");
     return jsonRes({ ok: true, items });
   }
-
-  // User votes
   if (path.startsWith("/votes/") && request.method === "GET") {
     const movieId = decodeURIComponent(path.replace("/votes/", ""));
-    const { results } = await env.DB.prepare(
-      "SELECT field, value_json, updated_at FROM user_votes WHERE user_id = ? AND movie_id = ?"
-    ).bind(sess.user_id, movieId).all();
+    const { results } = await env.DB.prepare("SELECT field, value_json, updated_at FROM user_votes WHERE user_id = ? AND movie_id = ?").bind(sess.user_id, movieId).all();
     const votes = {};
     for (const r of results || []) votes[r.field] = safeJSON(r.value_json, null);
     return jsonRes({ movieId, votes });
@@ -276,49 +211,38 @@ export async function handleUser(request, env, ctx) {
     const now = Math.floor(Date.now() / 1000);
     const stmts = [];
     for (const [field, value] of Object.entries(votes)) {
-      if (value === null || value === undefined) {
-        stmts.push(env.DB.prepare("DELETE FROM user_votes WHERE user_id = ? AND movie_id = ? AND field = ?")
-          .bind(sess.user_id, movieId, field));
-      } else {
-        stmts.push(env.DB.prepare(
-          `INSERT INTO user_votes (user_id, movie_id, field, value_json, updated_at) VALUES (?, ?, ?, ?, ?)
-           ON CONFLICT(user_id, movie_id, field) DO UPDATE SET value_json = excluded.value_json, updated_at = excluded.updated_at`
-        ).bind(sess.user_id, movieId, field, JSON.stringify(value), now));
-      }
+      if (value === null || value === undefined) stmts.push(env.DB.prepare("DELETE FROM user_votes WHERE user_id = ? AND movie_id = ? AND field = ?").bind(sess.user_id, movieId, field));
+      else stmts.push(env.DB.prepare(
+        `INSERT INTO user_votes (user_id, movie_id, field, value_json, updated_at) VALUES (?, ?, ?, ?, ?)
+         ON CONFLICT(user_id, movie_id, field) DO UPDATE SET value_json = excluded.value_json, updated_at = excluded.updated_at`
+      ).bind(sess.user_id, movieId, field, JSON.stringify(value), now));
     }
     if (stmts.length) await env.DB.batch(stmts);
     return jsonRes({ ok: true });
   }
-
-  // Own private vote list
   if (path === "/votes" && request.method === "GET") {
-    const { results } = await env.DB.prepare(
-      "SELECT movie_id, field, value_json, updated_at FROM user_votes WHERE user_id = ? ORDER BY updated_at DESC LIMIT 500"
-    ).bind(sess.user_id).all();
+    const { results } = await env.DB.prepare("SELECT movie_id, field, value_json, updated_at FROM user_votes WHERE user_id = ? ORDER BY updated_at DESC LIMIT 500").bind(sess.user_id).all();
     return jsonRes({ votes: results || [] });
   }
-
-  // Aggregate votes for a movie (used by film card)
   if (path.startsWith("/votes-aggregate/") && request.method === "GET") {
     const movieId = decodeURIComponent(path.replace("/votes-aggregate/", ""));
-    const { results } = await env.DB.prepare(
-      "SELECT field, value_json FROM user_votes WHERE movie_id = ?"
-    ).bind(movieId).all();
+    const { results } = await env.DB.prepare("SELECT field, value_json FROM user_votes WHERE movie_id = ?").bind(movieId).all();
     const fieldMap = {};
+    let totalVotes = 0;
     for (const r of results || []) {
       const val = safeJSON(r.value_json, null);
       if (!fieldMap[r.field]) fieldMap[r.field] = new Map();
       const key = JSON.stringify(val);
       fieldMap[r.field].set(key, (fieldMap[r.field].get(key) || 0) + 1);
+      totalVotes++;
     }
     const aggregated = {};
     for (const [field, counts] of Object.entries(fieldMap)) {
       let bestKey = null, bestCount = 0;
       for (const [k, c] of counts) if (c > bestCount) { bestKey = k; bestCount = c; }
-      aggregated[field] = { value: safeJSON(bestKey, null), count: bestCount, total: results.length };
+      aggregated[field] = { value: safeJSON(bestKey, null), count: bestCount, total: totalVotes };
     }
     return jsonRes({ movieId, aggregated });
   }
-
   return jsonErr("Kullanıcı route bulunamadı", 404);
-}
+      }

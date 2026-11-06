@@ -1,6 +1,6 @@
 const days = (n) => n * 86400;
 
-export const SCHEMA_VERSION = 6;
+export const SCHEMA_VERSION = 7;
 
 export const FIELD_DEFS = {
   genres:                 { source: "tmdb", ttl: days(90), required: true },
@@ -64,7 +64,7 @@ export const FIELD_DEFS = {
   awards_ids:         { source: "wikidata", ttl: days(90) },
   nominated_ids:      { source: "wikidata", ttl: days(90) },
 
-  dialogue_density_subtitle: { source: "opensubtitles", ttl: days(90) },
+  dialogue_density_subtitle: { source: "subtitles", ttl: days(90) },
 
   filmmap_locations:  { source: "filmmap", ttl: days(90) },
   metatake_locations: { source: "metatake", ttl: days(90) },
@@ -73,10 +73,7 @@ export const FIELD_DEFS = {
   web_evidence:       { source: "tavily", ttl: days(30) }
 };
 
-export const LLM_FIELDS = Object.entries(FIELD_DEFS)
-  .filter(([, d]) => d.source === "llm")
-  .map(([k]) => k);
-
+export const LLM_FIELDS = Object.entries(FIELD_DEFS).filter(([, d]) => d.source === "llm").map(([k]) => k);
 export const VALID_SOURCES = [...new Set(Object.values(FIELD_DEFS).map(d => d.source))];
 
 export const FIELD_RULES = {
@@ -89,20 +86,17 @@ export const FIELD_RULES = {
   character_traits: 'character_traits: "male_main"|"female_main"|"child_main"|"lgbt_main"|"male_support"|"female_support"|"child_support"|"lgbt_support"|"young_main"|"middle_main"|"old_main"|"disabled_main"|"animal" vb.',
   story_dimensions: 'story_dimensions: "has_sequel"|"is_sequel"|"series_sequel"|"series_prequel"|"series_spinoff"|"concept"|"similar_script_version"|"same_plot_diff_script"|"same_plot_diff_angle"',
   color_style: 'color_style: ["black_white","color","mostly_color","mostly_bw","blue_filter","yellow_filter","selective_color","colorized","limited_palette","sepia","mono_tint","bw_red_accent","mixed_bw_color"]',
-  location_mode: 'location_mode: "single" (tamamı tek mekânda) | "mostly_single" (çoğunlukla tek mekân) | "few" (2-4) | "many" (5+)'
+  location_mode: 'location_mode: "single"|"mostly_single"|"few"|"many"'
 };
 
 export const SEMANTIC_FIELDS = [
   "story_period", "story_geography", "character_traits",
   "narrative_style", "production_process", "sound", "reality",
   "story_dimensions", "family_content", "season", "aspect_ratio",
-  "original_work", "color"
+  "original_work", "color_style"
 ];
 
-export const RATIO_FIELDS = [
-  "day_ratio", "indoor_ratio", "dialogue_density"
-];
-
+export const RATIO_FIELDS = ["day_ratio", "indoor_ratio", "dialogue_density"];
 export const LOCATION_FIELDS = ["location_count"];
 
 export const DETERMINISTIC_FILTERS = [
@@ -115,5 +109,4 @@ export const DETERMINISTIC_FILTERS = [
 ];
 
 export const METATAKE_FIELDS = ["story_locations", "related_films", "related_films_detail", "location_mode", "location_count"];
-
 export const FILMMAP_FIELDS = ["filmmap_locations", "filming_locations"];

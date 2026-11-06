@@ -1,9 +1,13 @@
 // research.js — Araştırma akışı ve film detayları.
 import { FIELD_DEFS, FIELD_RULES, SEMANTIC_FIELDS } from "./fields.config.js";
-import { getProfileRowsBatch, getFieldRowsBatch, getFieldRows, putFieldRowsBatch, putProfileRowsBatch, putFieldRows, putProfileRow, getProfileRow, findStaleFields, movieKey, yearOf } from "./db.js";
+import {
+  getProfileRowsBatch, getFieldRowsBatch, getFieldRows, putFieldRowsBatch, putProfileRowsBatch,
+  putFieldRows, putProfileRow, getProfileRow, findStaleFields, movieKey, yearOf,
+  getVerdictsBatch, putVerdictsBatch, getFilmmapCache, getMetatakeExtendedCache
+} from "./db.js";
 import { callLLMWithFallback, getPromptTemplate } from "./llm.js";
 import { enrichClassic, sanitizePeopleField } from "./enrich.js";
-import { filmmapLocations, metatakeExtended, wikidataBatch, fetchSubtitleDensity, omdb, tmdb } from "./sources.js";
+import { filmmapLocations, metatakeExtended, wikidataBatch, fetchSubtitleDensity } from "./sources.js";
 import { buildFilterSentence, buildFilterContext, semanticSignature, hasSemanticFilters, ratioFieldsNeeded, locationFieldsNeeded, evaluateFilters, getLocationCount } from "./filters.js";
 import { getAllConfig, getMovieLists } from "./config.js";
 
@@ -25,6 +29,18 @@ function buildStage2Rules(fields) {
     else rules.push(`${f}: uygun değer`);
   }
   return rules.join("\n");
+}
+function extractJSONArray(text) {
+  const clean = String(text).replace(/^```(?:json)?\s*/i, "").replace(/\s*```\s*$/, "").trim();
+  const start = clean.indexOf("["), end = clean.lastIndexOf("]");
+  if (start < 0 || end < start) return null;
+  try { return JSON.parse(clean.slice(start, end + 1)); } catch { return null; }
+}
+function extractJSON(text) {
+  const clean = String(text).replace(/^```(?:json)?\s*/i, "").replace(/\s*```\s*$/, "").trim();
+  const start = clean.indexOf("{"), end = clean.lastIndexOf("}");
+  if (start < 0 || end < start) throw new Error("LLM geçerli JSON döndürmedi.");
+  return JSON.parse(clean.slice(start, end + 1));
 }
 async function classifyBatch(env, movies, filterSentence, filterContext, useSearch, signal, context = {}) {
   const payload = movies.map(m => ({ id: m.id, title: m.original_title || m.title || "", year: yearOf(m), overview: (m.overview || "").slice(0, 300) }));
@@ -58,18 +74,6 @@ async function fillDetailsBatch(env, movies, staleFields, signal, context = {}) 
     if (Object.keys(updates).length) out.set(String(item.id), updates);
   }
   return out;
-}
-function extractJSONArray(text) {
-  const clean = String(text).replace(/^```(?:json)?\s*/i, "").replace(/\s*```\s*$/, "").trim();
-  const start = clean.indexOf("["), end = clean.lastIndexOf("]");
-  if (start < 0 || end < start) return null;
-  try { return JSON.parse(clean.slice(start, end + 1)); } catch { return null; }
-}
-function extractJSON(text) {
-  const clean = String(text).replace(/^```(?:json)?\s*/i, "").replace(/\s*```\s*$/, "").trim();
-  const start = clean.indexOf("{"), end = clean.lastIndexOf("}");
-  if (start < 0 || end < start) throw new Error("LLM geçerli JSON döndürmedi.");
-  return JSON.parse(clean.slice(start, end + 1));
 }
 
 export async function handleResearchStream(env, body, controller, signal) {
@@ -403,4 +407,4 @@ export async function handleMovieDetails(env, body, signal) {
   merged.color_style = Array.isArray(profile.color_style) ? profile.color_style : null;
   merged.dialogue_density_subtitle = profile.dialogue_density_subtitle ?? null;
   return { movie: merged };
-  } 
+  }

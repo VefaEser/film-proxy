@@ -1,3 +1,4 @@
+// social.js — Yorumlar, mesajlar, öneriler + girişsiz admin iletişim formu.
 import { getCurrentUserWithAdminBridge } from "./auth.js";
 
 const CORS = {
@@ -17,12 +18,27 @@ export async function handleSocial(request, env, ctx) {
   const sess = await getCurrentUserWithAdminBridge(env, request);
   const now = () => Math.floor(Date.now() / 1000);
 
+  // Girişsiz admin iletişim formu
+  if (path === "/contact-admin" && request.method === "POST") {
+    let body; try { body = await request.json(); } catch { return jsonErr("Geçersiz JSON", 400); }
+    const email = String(body.email || "").trim();
+    const subject = String(body.subject || "").trim().slice(0, 200);
+    const content = String(body.content || "").trim();
+    if (!content || content.length < 5) return jsonErr("Mesaj en az 5 karakter olmalı", 400);
+    if (content.length > 2000) return jsonErr("Mesaj çok uzun", 400);
+    const ip = request.headers.get("CF-Connecting-IP") || "";
+    try {
+      await env.DB.prepare(
+        `INSERT INTO admin_messages (email, subject, content, ip, created_at) VALUES (?, ?, ?, ?, ?)`
+      ).bind(email || null, subject || null, content, ip, now()).run();
+      return jsonRes({ ok: true, message: "Mesajınız admin'e iletildi." });
+    } catch (e) { return jsonErr("Mesaj kaydedilemedi: " + e.message, 500); }
+  }
+
   if (path.startsWith("/comments/") && request.method === "GET") {
     const movieId = decodeURIComponent(path.replace("/comments/", ""));
     const { results } = await env.DB.prepare(
-      `SELECT c.id, c.content, c.created_at, u.username, u.register_number
-       FROM comments c JOIN users u ON u.id = c.user_id
-       WHERE c.movie_id = ? AND c.status = 'approved' ORDER BY c.created_at DESC LIMIT 100`
+      `SELECT c.id, c.content, c.created_at, u.username, u.register_number FROM comments c JOIN users u ON u.id = c.user_id WHERE c.movie_id = ? AND c.status = 'approved' ORDER BY c.created_at DESC LIMIT 100`
     ).bind(movieId).all();
     return jsonRes({ movieId, comments: results || [] });
   }
@@ -32,9 +48,7 @@ export async function handleSocial(request, env, ctx) {
     let body; try { body = await request.json(); } catch { return jsonErr("Geçersiz JSON", 400); }
     const content = String(body.content || "").trim();
     if (content.length < 3 || content.length > 2000) return jsonErr("Yorum 3-2000 karakter", 400);
-    const result = await env.DB.prepare(
-      `INSERT INTO comments (movie_id, user_id, content, status, created_at, updated_at) VALUES (?, ?, ?, 'pending', ?, ?)`
-    ).bind(movieId, sess.user_id, content, now(), now()).run();
+    const result = await env.DB.prepare(`INSERT INTO comments (movie_id, user_id, content, status, created_at, updated_at) VALUES (?, ?, ?, 'pending', ?, ?)`).bind(movieId, sess.user_id, content, now(), now()).run();
     return jsonRes({ ok: true, id: result.meta.last_row_id, status: "pending", message: "Yorumunuz onay kuyruğuna alındı." });
   }
   if (path.startsWith("/comments/") && request.method === "PUT") {
@@ -62,9 +76,7 @@ export async function handleSocial(request, env, ctx) {
   if (path === "/messages" && request.method === "GET") {
     if (!sess) return jsonErr("Giriş gerekli", 401);
     const { results } = await env.DB.prepare(
-      `SELECT m.id, m.from_user_id, m.content, m.read_at, m.created_at, u.username AS from_username
-       FROM messages m JOIN users u ON u.id = m.from_user_id
-       WHERE m.to_user_id = ? ORDER BY m.created_at DESC LIMIT 100`
+      `SELECT m.id, m.from_user_id, m.content, m.read_at, m.created_at, u.username AS from_username FROM messages m JOIN users u ON u.id = m.from_user_id WHERE m.to_user_id = ? ORDER BY m.created_at DESC LIMIT 100`
     ).bind(sess.user_id).all();
     return jsonRes({ messages: results || [] });
   }
@@ -90,9 +102,7 @@ export async function handleSocial(request, env, ctx) {
     const stmts = [];
     for (const [field, value] of Object.entries(suggestions)) {
       if (value === null || value === undefined) continue;
-      stmts.push(env.DB.prepare(
-        `INSERT INTO edit_suggestions (movie_id, user_id, field, suggested_value_json, status, created_at) VALUES (?, ?, ?, ?, 'pending', ?)`
-      ).bind(movieId, sess.user_id, field, JSON.stringify(value), now()));
+      stmts.push(env.DB.prepare(`INSERT INTO edit_suggestions (movie_id, user_id, field, suggested_value_json, status, created_at) VALUES (?, ?, ?, ?, 'pending', ?)`).bind(movieId, sess.user_id, field, JSON.stringify(value), now()));
     }
     if (stmts.length) await env.DB.batch(stmts);
     return jsonRes({ ok: true, count: stmts.length, message: "Önerileriniz kaydedildi, teşekkürler." });
@@ -100,12 +110,10 @@ export async function handleSocial(request, env, ctx) {
   if (path.startsWith("/edit-suggestions/") && request.method === "GET") {
     if (!sess) return jsonErr("Giriş gerekli", 401);
     const movieId = decodeURIComponent(path.replace("/edit-suggestions/", ""));
-    const { results } = await env.DB.prepare(
-      `SELECT field, suggested_value_json, status, created_at FROM edit_suggestions WHERE movie_id = ? AND user_id = ? ORDER BY created_at DESC`
-    ).bind(movieId, sess.user_id).all();
+    const { results } = await env.DB.prepare(`SELECT field, suggested_value_json, status, created_at FROM edit_suggestions WHERE movie_id = ? AND user_id = ? ORDER BY created_at DESC`).bind(movieId, sess.user_id).all();
     const map = {};
     for (const r of results || []) map[r.field] = safeJSON(r.suggested_value_json, null);
     return jsonRes({ movieId, suggestions: map });
   }
   return jsonErr("Social route bulunamadı", 404);
-}
+      }

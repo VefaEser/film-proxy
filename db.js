@@ -1,9 +1,32 @@
-// db.js — D1 veritabanı yardımcıları, önbellek katmanları, dead_keys yönetimi.
+// db.js — D1 yardımcıları, önbellek katmanları, dead_keys + paylaşılan HTTP yardımcıları.
 import { FIELD_DEFS } from "./fields.config.js";
 
 export const VERDICT_TTL = 86400;
 export const deadKeysCache = { ts: 0, gemini: new Map(), groq: new Set() };
 
+// ----- Paylaşılan HTTP yardımcıları (index.js ve diğer modüller tarafından import edilir) -----
+export const CORS = {
+  "Access-Control-Allow-Origin": "*",
+  "Access-Control-Allow-Methods": "GET,POST,PUT,DELETE,OPTIONS",
+  "Access-Control-Allow-Headers": "Content-Type,Authorization"
+};
+export function response(data, status = 200) {
+  return new Response(JSON.stringify(data), { status, headers: { ...CORS, "Content-Type": "application/json; charset=utf-8" } });
+}
+export function jsonError(message, status = 500, extra = {}) { return response({ error: String(message), ...extra }, status); }
+export function timingSafeEqualStr(a, b) {
+  if (typeof a !== "string" || typeof b !== "string") return false;
+  const len = Math.max(a.length, b.length);
+  let diff = a.length ^ b.length;
+  for (let i = 0; i < len; i++) diff |= (a.charCodeAt(i) || 0) ^ (b.charCodeAt(i) || 0);
+  return diff === 0;
+}
+export function isAdmin(request, env) {
+  if (!env.ADMIN_TOKEN) return false;
+  return timingSafeEqualStr(request.headers.get("Authorization") || "", `Bearer ${env.ADMIN_TOKEN}`);
+}
+
+// ----- Ortak yardımcılar -----
 export function safeJSON(text, fallback = null) { try { return JSON.parse(text); } catch { return fallback; } }
 export function norm(s) {
   return String(s || "").trim().toLowerCase()
@@ -278,7 +301,6 @@ export async function markDeadKey(env, provider, keyIndex, untilTs, reason, mode
 export function logLlmCall(env, provider, model, keyIndex, ok, latencyMs, errSnippet, context) {
   if (!env.DB) return;
   const now = Math.floor(Date.now() / 1000);
-  const ctx = context || {};
   env.DB.prepare("INSERT INTO llm_calls (ts, provider, model, key_index, ok, latency_ms, error_snippet) VALUES (?, ?, ?, ?, ?, ?, ?)")
     .bind(now, provider, model, keyIndex, ok ? 1 : 0, latencyMs, errSnippet || null).run()
     .catch(e => console.warn("llm_calls:", e.message));
@@ -290,4 +312,4 @@ export async function getDailyModelCalls(env, provider, model) {
     const row = await env.DB.prepare("SELECT COUNT(*) AS c FROM llm_calls WHERE provider = ? AND model = ? AND ok = 1 AND ts > ?").bind(provider, model, since).first();
     return Number(row?.c || 0);
   } catch { return 0; }
-      } 
+                      }

@@ -1,4 +1,5 @@
-// auth.js — Kayıt/giriş/şifre sıfırlama + güvenlik (timing-safe, rate limit, hesap kilidi, Turnstile).
+// DOSYA: auth.js
+// Kayıt/giriş/şifre sıfırlama + güvenlik + permissions döndürme.
 const PBKDF2_ITER = 100000;
 const SESSION_TTL = 30 * 86400;
 const RECOVER_TTL = 900;
@@ -40,6 +41,14 @@ export function timingSafeEqualStr(a, b) {
   let diff = a.length ^ b.length;
   for (let i = 0; i < len; i++) diff |= (a.charCodeAt(i) || 0) ^ (b.charCodeAt(i) || 0);
   return diff === 0;
+}
+
+async function fetchPermissions(env, userId) {
+  if (!env.DB || !userId) return [];
+  try {
+    const { results } = await env.DB.prepare("SELECT permission FROM user_permissions WHERE user_id = ?").bind(userId).all();
+    return (results || []).map(r => r.permission);
+  } catch { return []; }
 }
 
 async function verifyTurnstile(env, token, ip) {
@@ -218,7 +227,7 @@ export async function handleAuth(request, env, ctx) {
       ).bind(regNum, username, email, hash, salt, JSON.stringify(hashedQ), now, now).run();
       return jsonRes({
         ok: true, userId: result.meta.last_row_id, username, registerNumber: regNum,
-        pendingApproval: true,
+        pendingApproval: true, permissions: [],
         notice: "Kaydınız alındı. Yönetici onayından sonra üyeliğiniz aktifleşecek. Lütfen gerçek bir e-posta adresi kullandığınızdan emin olun; e-posta doğrulaması gerekebilir."
       });
     } catch (e) { return jsonErr(e.message, 500); }
@@ -246,10 +255,12 @@ export async function handleAuth(request, env, ctx) {
     }
     await resetIpFailures(env, ip);
     await resetUserFailures(env, user.id);
+    const permissions = await fetchPermissions(env, user.id);
     const session = await createSession(env, user.id, ip, request.headers.get("User-Agent") || "");
     return new Response(JSON.stringify({
       ok: true, userId: user.id, username: user.username, registerNumber: user.register_number,
-      isAdmin: !!user.is_admin, isPublic: !!user.is_public, isApproved: !!user.is_approved, isEmailVerified: !!user.is_email_verified
+      isAdmin: !!user.is_admin, isPublic: !!user.is_public, isApproved: !!user.is_approved, isEmailVerified: !!user.is_email_verified,
+      permissions
     }), { status: 200, headers: { ...CORS, "Content-Type": "application/json", "Set-Cookie": sessionCookieHeader(session.token, SESSION_TTL) } });
   }
 
@@ -263,9 +274,11 @@ export async function handleAuth(request, env, ctx) {
     const token = getCookie(request, "sid");
     const sess = await getSession(env, token);
     if (sess) {
+      const permissions = await fetchPermissions(env, sess.user_id);
       return jsonRes({
         ok: true, userId: sess.user_id, username: sess.username, registerNumber: sess.register_number,
-        isAdmin: !!sess.is_admin, isPublic: !!sess.is_public, isApproved: !!sess.is_approved, isEmailVerified: !!sess.is_email_verified
+        isAdmin: !!sess.is_admin, isPublic: !!sess.is_public, isApproved: !!sess.is_approved, isEmailVerified: !!sess.is_email_verified,
+        permissions
       });
     }
     const auth = request.headers.get("Authorization") || "";
@@ -273,10 +286,14 @@ export async function handleAuth(request, env, ctx) {
       const admin = await ensureAdminUser(env);
       if (admin) {
         const s = await createSession(env, admin.id, "", "admin-bridge");
-        return new Response(JSON.stringify({ ok: true, userId: admin.id, username: admin.username, registerNumber: admin.register_number, isAdmin: true, isPublic: !!admin.is_public, isApproved: true, isEmailVerified: true }), { status: 200, headers: { ...CORS, "Content-Type": "application/json", "Set-Cookie": sessionCookieHeader(s.token, SESSION_TTL) } });
+        return new Response(JSON.stringify({
+          ok: true, userId: admin.id, username: admin.username, registerNumber: admin.register_number,
+          isAdmin: true, isPublic: !!admin.is_public, isApproved: true, isEmailVerified: true,
+          permissions: ["refresh_movie", "edit_suggestions_approve", "comment_approve", "user_manage", "field_unlock", "csv_import_cards", "view_private"]
+        }), { status: 200, headers: { ...CORS, "Content-Type": "application/json", "Set-Cookie": sessionCookieHeader(s.token, SESSION_TTL) } });
       }
     }
-    return jsonRes({ ok: false, user: null });
+    return jsonRes({ ok: false, user: null, permissions: [] });
   }
 
   if (path === "/recover/start" && request.method === "POST") {
@@ -373,4 +390,4 @@ export async function getCurrentUserWithAdminBridge(env, request) {
     if (admin) return { user_id: admin.id, username: admin.username, is_admin: 1, is_public: admin.is_public, register_number: admin.register_number, is_approved: 1, is_email_verified: 1 };
   }
   return null;
-}
+    }

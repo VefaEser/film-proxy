@@ -1,6 +1,5 @@
 // enrich.js — TMDB/OMDb zenginleştirme ve kişi sanitizasyonu.
-import { tmdb, omdb, fetchJSON } from "./sources.js";
-import { yearOf } from "./db.js";
+import { tmdb, omdbBest } from "./sources.js";
 
 export async function enrichClassic(env, movie, staleFields, outerSignal) {
   const need = new Set(staleFields); const updates = {}; const covered = new Set();
@@ -63,7 +62,8 @@ export async function enrichClassic(env, movie, staleFields, outerSignal) {
   }
   if (["imdbRating","imdbVotes","imdbID","omdb_directors","actors","rated","awards","metascore","boxOffice","omdb_poster"].some(f => need.has(f))) {
     try {
-      const data = await omdb(env, movie.original_title ? { t: movie.original_title, y: String(yearOf(movie) || "") } : (movie.imdb_id ? { i: movie.imdb_id } : {}), outerSignal);
+      // omdbBest: önce title+yıl dener, başarısızsa imdb_id ile dener (fallback korundu)
+      const data = await omdbBest(env, movie, outerSignal);
       const clean = (v) => (v === "N/A" || v === undefined ? null : v);
       if (need.has("imdbRating")) { updates.imdbRating = clean(data.imdbRating); covered.add("imdbRating"); }
       if (need.has("imdbVotes")) { updates.imdbVotes = clean(data.imdbVotes); covered.add("imdbVotes"); }
@@ -112,4 +112,4 @@ export function sanitizePeopleField(val) {
     }
   }
   return out;
-                   } 
+        }

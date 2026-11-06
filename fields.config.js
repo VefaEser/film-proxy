@@ -89,11 +89,14 @@ export const FIELD_RULES = {
   location_mode: 'location_mode: "single"|"mostly_single"|"few"|"many"'
 };
 
+// ÖNEMLİ: "color" kullanılır (filtre anahtarı filters.color'a karşılık gelir).
+// "color_style" alan adı FIELD_DEFS'te profil verisi için kullanılır; semantic filtrelerde
+// client tarafından "color" anahtarıyla gönderilir, bu yüzden burada "color" yer almalı.
 export const SEMANTIC_FIELDS = [
   "story_period", "story_geography", "character_traits",
   "narrative_style", "production_process", "sound", "reality",
   "story_dimensions", "family_content", "season", "aspect_ratio",
-  "original_work", "color_style"
+  "original_work", "color"
 ];
 
 export const RATIO_FIELDS = ["day_ratio", "indoor_ratio", "dialogue_density"];

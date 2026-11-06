@@ -1,5 +1,5 @@
 // sources.js — TMDB, OMDb, Wikidata, FilmMap, Metatake, Commons ve altyazı kaynakları.
-import { safeJSON, movieKey, yearOf, norm, getFilmmapCache, putFilmmapCache, getMetatakeExtendedCache, putMetatakeExtendedCache, putFieldRowsBatch } from "./db.js";
+import { safeJSON, movieKey, yearOf, norm, getFilmmapCache, putFilmmapCache, getMetatakeExtendedCache, putMetatakeExtendedCache } from "./db.js";
 
 const TMDB_BASE = "https://api.themoviedb.org/3";
 const USER_AGENT = "FilmKesifMotoru/1.0 (https://github.com/VefaEser/film-proxy; contact: vefaeser@ornitonerenk.com)";
@@ -40,7 +40,8 @@ export async function omdb(env, params, outerSignal) {
   if (data.Response === "False") throw new Error(data.Error || "OMDb sonucu bulunamadı.");
   return data;
 }
-async function omdbBest(env, movie, outerSignal) {
+// Eski davranış: önce title+yıl dener, başarısız olursa imdb_id ile dener.
+export async function omdbBest(env, movie, outerSignal) {
   const title = movie.original_title || movie.title || "";
   const year = String(yearOf(movie) || "");
   let lastErr = null;

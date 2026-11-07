@@ -1,4 +1,5 @@
-// index.js — Ana giriş noktası. Modüler rotalar + CORS + arama üyelik kontrolü + admin D1/CSV kart endpoint'leri.
+// DOSYA: index.js
+// Değişiklikler: D1/CSV admin endpoint'leri artık session cookie ile de yetkilendiriliyor (bearer OR cookie).
 import { corsHeaders } from "./cors.js";
 import { handleAuth, getCurrentUserWithAdminBridge } from "./auth.js";
 import { handleUser } from "./users.js";
@@ -12,11 +13,15 @@ import {
   getMovieLists, metatakeExtended, filmmapLocations, deadKeysCache
 } from "./worker-core.js";
 
-const CORS = {
-  "Access-Control-Allow-Origin": "*",
-  "Access-Control-Allow-Methods": "GET,POST,PUT,DELETE,OPTIONS",
-  "Access-Control-Allow-Headers": "Content-Type,Authorization"
-};
+const CORS = { "Access-Control-Allow-Origin": "*", "Access-Control-Allow-Methods": "GET,POST,PUT,DELETE,OPTIONS", "Access-Control-Allow-Headers": "Content-Type,Authorization" };
+
+// === YENİ: Admin yetkisi bearer token VEYA admin session cookie ile kontrol edilir ===
+async function requireAdminEither(env, request) {
+  if (isAdmin(request, env)) return { via: "bearer" };
+  const user = await getCurrentUserWithAdminBridge(env, request);
+  if (user && user.is_admin) return { via: "cookie", user };
+  return null;
+}
 
 async function handleRequest(request, env, ctx) {
   if (request.method === "OPTIONS") return new Response(null, { status: 204, headers: CORS });
@@ -32,51 +37,23 @@ async function handleRequest(request, env, ctx) {
   const url = _u;
   try {
     if (url.pathname === "/health") {
-      return response({
-        ok: true,
-        geminiModel: env.GEMINI_MODEL || GEMINI_MODEL_DEFAULT, geminiModels: buildGeminiChain(env),
-        groqModel: env.GROQ_MODEL || GROQ_MODEL_DEFAULT, groqModels: buildGroqChain(env),
-        tmdb: !!env.TMDB_API_KEY, omdb: !!env.OMDB_API_KEY, tavily: !!env.TAVILY_API_KEY,
-        opensubtitles: !!env.OPENSUBTITLES_API_KEY,
-        subsource: !!env.SUBSOURCE_API_KEY, subdl: !!env.SUBDL_API_KEY,
-        turnstile: !!env.TURNSTILE_SECRET_KEY,
-        groqKeys: [!!env.GROQ_API_KEY_1, !!env.GROQ_API_KEY_2, !!env.GROQ_API_KEY_3],
-        geminiKeys: [!!env.GEMINI_API_KEY_1, !!env.GEMINI_API_KEY_2, !!env.GEMINI_API_KEY_3],
-        adminToken: !!env.ADMIN_TOKEN,
-        metatake: true, filmmap: true, staticOptions: true,
-        d1: !!env.DB, defaultMinImdbVotes: 100
-      });
+      return response({ ok: true, geminiModel: env.GEMINI_MODEL || GEMINI_MODEL_DEFAULT, geminiModels: buildGeminiChain(env), groqModel: env.GROQ_MODEL || GROQ_MODEL_DEFAULT, groqModels: buildGroqChain(env), tmdb: !!env.TMDB_API_KEY, omdb: !!env.OMDB_API_KEY, tavily: !!env.TAVILY_API_KEY, opensubtitles: !!env.OPENSUBTITLES_API_KEY, subsource: !!env.SUBSOURCE_API_KEY, subdl: !!env.SUBDL_API_KEY, turnstile: !!env.TURNSTILE_SECRET_KEY, groqKeys: [!!env.GROQ_API_KEY_1, !!env.GROQ_API_KEY_2, !!env.GROQ_API_KEY_3], geminiKeys: [!!env.GEMINI_API_KEY_1, !!env.GEMINI_API_KEY_2, !!env.GEMINI_API_KEY_3], adminToken: !!env.ADMIN_TOKEN, metatake: true, filmmap: true, staticOptions: true, d1: !!env.DB, defaultMinImdbVotes: 100 });
     }
     if (url.pathname === "/static/options" && request.method === "GET") return response({ options: await getAllStaticOptions(env) });
-    if (url.pathname === "/metatake/locations" && request.method === "GET") {
-      const movieId = url.searchParams.get("movie_id") || "";
-      const title = url.searchParams.get("title") || "";
-      if (!movieId && !title) return jsonError("movie_id veya title gerekli.", 400);
-      const mt = await metatakeExtended(env, { id: movieId, title, original_title: title }, request.signal);
-      return response({ locations: mt?.locations || [], confidence: mt?.confidence ?? null });
-    }
-    if (url.pathname === "/filmmap/locations" && request.method === "GET") {
-      const movieId = url.searchParams.get("movie_id") || "";
-      const title = url.searchParams.get("title") || "";
-      if (!movieId && !title) return jsonError("movie_id veya title gerekli.", 400);
-      const fm = await filmmapLocations(env, { id: movieId, title, original_title: title }, request.signal);
-      return response({ locations: fm.locations || [], fromCache: fm.fromCache });
-    }
-    if (url.pathname === "/movie/lists" && request.method === "POST") {
-      let body; try { body = await request.json(); } catch { return jsonError("Geçersiz JSON.", 400); }
-      const ids = Array.isArray(body.movie_ids) ? body.movie_ids.map(String) : [];
-      const lists = await getMovieLists(env, ids);
-      const obj = {};
-      for (const [k, v] of lists) obj[k] = v;
-      return response({ lists: obj });
-    }
+    if (url.pathname === "/metatake/locations" && request.method === "GET") { const movieId = url.searchParams.get("movie_id") || ""; const title = url.searchParams.get("title") || ""; if (!movieId && !title) return jsonError("movie_id veya title gerekli.", 400); const mt = await metatakeExtended(env, { id: movieId, title, original_title: title }, request.signal); return response({ locations: mt?.locations || [], confidence: mt?.confidence ?? null }); }
+    if (url.pathname === "/filmmap/locations" && request.method === "GET") { const movieId = url.searchParams.get("movie_id") || ""; const title = url.searchParams.get("title") || ""; if (!movieId && !title) return jsonError("movie_id veya title gerekli.", 400); const fm = await filmmapLocations(env, { id: movieId, title, original_title: title }, request.signal); return response({ locations: fm.locations || [], fromCache: fm.fromCache }); }
+    if (url.pathname === "/movie/lists" && request.method === "POST") { let body; try { body = await request.json(); } catch { return jsonError("Geçersiz JSON.", 400); } const ids = Array.isArray(body.movie_ids) ? body.movie_ids.map(String) : []; const lists = await getMovieLists(env, ids); const obj = {}; for (const [k, v] of lists) obj[k] = v; return response({ lists: obj }); }
+
+    // ===== Admin endpoint'leri (bearer OR session cookie) =====
     if (url.pathname === "/admin/ping" && request.method === "GET") {
-      if (!isAdmin(request, env)) return jsonError("Yetkisiz.", 401);
-      return response({ ok: true });
+      const auth = await requireAdminEither(env, request);
+      if (!auth) return jsonError("Yetkisiz.", 401);
+      return response({ ok: true, via: auth.via });
     }
     if (url.pathname === "/admin/config" && request.method === "GET") return response({ config: await getAllConfig(env) });
     if (url.pathname === "/admin/config" && request.method === "PUT") {
-      if (!isAdmin(request, env)) return jsonError("Yetkisiz.", 401);
+      const auth = await requireAdminEither(env, request);
+      if (!auth) return jsonError("Yetkisiz.", 401);
       let body; try { body = await request.json(); } catch { return jsonError("Geçersiz JSON.", 400); }
       if (!body.key || typeof body.value !== "string") return jsonError("key ve value gerekli.", 400);
       const { setConfig } = await import("./config.js");
@@ -85,18 +62,22 @@ async function handleRequest(request, env, ctx) {
     }
     if (url.pathname === "/admin/filter_info" && request.method === "GET") return response({ config: await getFilterInfoAll(env) });
     if (url.pathname === "/admin/stats" && request.method === "GET") {
-      if (!isAdmin(request, env)) return jsonError("Yetkisiz.", 401);
+      const auth = await requireAdminEither(env, request);
+      if (!auth) return jsonError("Yetkisiz.", 401);
       return response({ stats: await getLlmStats(env), deadKeys: await getActiveDeadKeys(env) });
     }
     if (url.pathname === "/admin/dead_keys" && request.method === "DELETE") {
-      if (!isAdmin(request, env)) return jsonError("Yetkisiz.", 401);
+      const auth = await requireAdminEither(env, request);
+      if (!auth) return jsonError("Yetkisiz.", 401);
       if (env.DB) await env.DB.prepare("DELETE FROM dead_keys").run();
       deadKeysCache.ts = 0;
       return response({ ok: true });
     }
-    // Yeni: D1'deki tüm film kartları (admin)
+
+    // === D1 Kartları (bearer OR session cookie) ===
     if (url.pathname === "/admin/movie-profiles" && request.method === "GET") {
-      if (!isAdmin(request, env)) return jsonError("Yetkisiz.", 401);
+      const auth = await requireAdminEither(env, request);
+      if (!auth) return jsonError("Yetkisiz.", 401);
       const page = Math.max(1, parseInt(url.searchParams.get("page") || "1"));
       const pageSize = 20;
       const offset = (page - 1) * pageSize;
@@ -106,20 +87,22 @@ async function handleRequest(request, env, ctx) {
       const { results: countRows } = await env.DB.prepare("SELECT COUNT(*) AS c FROM movie_profiles").all();
       return response({ movies: results || [], total: countRows[0]?.c || 0, page, pageSize });
     }
-    // Yeni: CSV kaynaklı filmler (admin)
+    // === CSV Filmleri (bearer OR session cookie) ===
     if (url.pathname === "/admin/csv-cards" && request.method === "GET") {
-      if (!isAdmin(request, env)) return jsonError("Yetkisiz.", 401);
+      const auth = await requireAdminEither(env, request);
+      if (!auth) return jsonError("Yetkisiz.", 401);
       const page = Math.max(1, parseInt(url.searchParams.get("page") || "1"));
       const pageSize = 20;
       const offset = (page - 1) * pageSize;
       const { results } = await env.DB.prepare(
-        `SELECT um.movie_id, um.imdb_id, um.tmdb_id, um.title_original, um.title_tr, um.year, um.imdb_rating, um.list_type, um.source, um.updated_at, u.username
+        `SELECT um.movie_id, um.imdb_id, um.tmdb_id, um.title_original, um.title_tr, um.year, um.imdb_rating, um.user_rating, um.list_type, um.source, um.updated_at, u.username
          FROM user_movies um JOIN users u ON u.id = um.user_id
          WHERE um.source = 'csv' ORDER BY um.updated_at DESC LIMIT ? OFFSET ?`
       ).bind(pageSize, offset).all();
       const { results: countRows } = await env.DB.prepare("SELECT COUNT(*) AS c FROM user_movies WHERE source = 'csv'").all();
       return response({ cards: results || [], total: countRows[0]?.c || 0, page, pageSize });
     }
+
     if (url.pathname.startsWith("/tmdb/")) return response(await tmdbRoute(env, url, request.signal));
     if (url.pathname === "/omdb") {
       const params = {};

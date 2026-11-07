@@ -1,4 +1,4 @@
-// index.js — Ana giriş noktası. Modüler rotalar + CORS + arama üyelik kontrolü.
+// index.js — Ana giriş noktası. Modüler rotalar + CORS + arama üyelik kontrolü + admin D1/CSV kart endpoint'leri.
 import { corsHeaders } from "./cors.js";
 import { handleAuth, getCurrentUserWithAdminBridge } from "./auth.js";
 import { handleUser } from "./users.js";
@@ -94,6 +94,32 @@ async function handleRequest(request, env, ctx) {
       deadKeysCache.ts = 0;
       return response({ ok: true });
     }
+    // Yeni: D1'deki tüm film kartları (admin)
+    if (url.pathname === "/admin/movie-profiles" && request.method === "GET") {
+      if (!isAdmin(request, env)) return jsonError("Yetkisiz.", 401);
+      const page = Math.max(1, parseInt(url.searchParams.get("page") || "1"));
+      const pageSize = 20;
+      const offset = (page - 1) * pageSize;
+      const { results } = await env.DB.prepare(
+        `SELECT movie_id, title, year, updated_at FROM movie_profiles ORDER BY updated_at DESC LIMIT ? OFFSET ?`
+      ).bind(pageSize, offset).all();
+      const { results: countRows } = await env.DB.prepare("SELECT COUNT(*) AS c FROM movie_profiles").all();
+      return response({ movies: results || [], total: countRows[0]?.c || 0, page, pageSize });
+    }
+    // Yeni: CSV kaynaklı filmler (admin)
+    if (url.pathname === "/admin/csv-cards" && request.method === "GET") {
+      if (!isAdmin(request, env)) return jsonError("Yetkisiz.", 401);
+      const page = Math.max(1, parseInt(url.searchParams.get("page") || "1"));
+      const pageSize = 20;
+      const offset = (page - 1) * pageSize;
+      const { results } = await env.DB.prepare(
+        `SELECT um.movie_id, um.imdb_id, um.tmdb_id, um.title_original, um.title_tr, um.year, um.imdb_rating, um.list_type, um.source, um.updated_at, u.username
+         FROM user_movies um JOIN users u ON u.id = um.user_id
+         WHERE um.source = 'csv' ORDER BY um.updated_at DESC LIMIT ? OFFSET ?`
+      ).bind(pageSize, offset).all();
+      const { results: countRows } = await env.DB.prepare("SELECT COUNT(*) AS c FROM user_movies WHERE source = 'csv'").all();
+      return response({ cards: results || [], total: countRows[0]?.c || 0, page, pageSize });
+    }
     if (url.pathname.startsWith("/tmdb/")) return response(await tmdbRoute(env, url, request.signal));
     if (url.pathname === "/omdb") {
       const params = {};
@@ -107,7 +133,6 @@ async function handleRequest(request, env, ctx) {
     }
     if (url.pathname === "/research" || url.pathname === "/llm-interactions") {
       if (request.method !== "POST") return jsonError("Bu uç nokta POST bekliyor.", 405);
-      // Üyelik kontrolü
       const user = await getCurrentUserWithAdminBridge(env, request);
       if (!user) return jsonError("Arama yapmak için giriş yapmalısınız.", 401);
       let body; try { body = await request.json(); } catch { return jsonError("Geçersiz JSON gövdesi.", 400); }

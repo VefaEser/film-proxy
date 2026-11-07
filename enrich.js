@@ -1,8 +1,9 @@
-// enrich.js — TMDB/OMDb zenginleştirme ve kişi sanitizasyonu.
+// enrich.js — TMDB/OMDb zenginleştirme + original_language + imdb_id + hata raporlama.
 import { tmdb, omdbBest } from "./sources.js";
 
 export async function enrichClassic(env, movie, staleFields, outerSignal) {
   const need = new Set(staleFields); const updates = {}; const covered = new Set();
+  const errors = [];
   if (movie.id) {
     try {
       const detail = await tmdb(env, `/movie/${movie.id}`, { language: "tr-TR", append_to_response: "credits,images,keywords" }, outerSignal);
@@ -12,6 +13,8 @@ export async function enrichClassic(env, movie, staleFields, outerSignal) {
       const langs = Array.isArray(detail.spoken_languages) ? detail.spoken_languages : [];
       if (need.has("spoken_languages")) { updates.spoken_languages = langs.map(l => l.name || l.english_name || l.iso_639_1); covered.add("spoken_languages"); }
       if (need.has("spoken_languages_ids")) { updates.spoken_languages_ids = langs.map(l => l.iso_639_1); covered.add("spoken_languages_ids"); }
+      const originalLang = detail.original_language || "";
+      if (need.has("original_language") && originalLang) { updates.original_language = originalLang; covered.add("original_language"); }
       const countries = Array.isArray(detail.production_countries) ? detail.production_countries : [];
       if (need.has("production_countries")) { updates.production_countries = countries.map(c => c.name || c.iso_3166_1); covered.add("production_countries"); }
       if (need.has("production_countries_ids")) { updates.production_countries_ids = countries.map(c => c.iso_3166_1); covered.add("production_countries_ids"); }
@@ -19,8 +22,6 @@ export async function enrichClassic(env, movie, staleFields, outerSignal) {
       const companies = Array.isArray(detail.production_companies) ? detail.production_companies : [];
       if (need.has("production_companies")) { updates.production_companies = companies.map(c => c.name); covered.add("production_companies"); }
       if (need.has("production_companies_ids")) { updates.production_companies_ids = companies.map(c => c.id); covered.add("production_companies_ids"); }
-
-      const originalLang = detail.original_language || "";
       const isTurkishFilm = originalLang === "tr";
       const posters = detail.images?.posters || [];
       const trPosterPath = detail.poster_path || "";
@@ -39,7 +40,6 @@ export async function enrichClassic(env, movie, staleFields, outerSignal) {
       const kw = detail.keywords?.keywords || [];
       if (need.has("keywords")) { updates.keywords = kw.map(k => k.name); covered.add("keywords"); }
       if (need.has("keywords_ids")) { updates.keywords_ids = kw.map(k => k.id); covered.add("keywords_ids"); }
-
       const credits = detail.credits;
       if (credits) {
         const crew = credits.crew || [];
@@ -58,16 +58,21 @@ export async function enrichClassic(env, movie, staleFields, outerSignal) {
         if (need.has("cast_ids")) { updates.cast_ids = (credits.cast || []).slice(0, 20).map(c => c.id); covered.add("cast_ids"); }
       }
       if (!movie.imdb_id && detail.imdb_id) movie.imdb_id = detail.imdb_id;
-    } catch (e) { console.warn("tmdb detail enrich:", e.message); }
+    } catch (e) { console.warn("tmdb detail enrich:", e.message); errors.push({ source: "tmdb", error: String(e.message || e) }); }
   }
   if (["imdbRating","imdbVotes","imdbID","omdb_directors","actors","rated","awards","metascore","boxOffice","omdb_poster"].some(f => need.has(f))) {
     try {
-      // omdbBest: önce title+yıl dener, başarısızsa imdb_id ile dener (fallback korundu)
       const data = await omdbBest(env, movie, outerSignal);
       const clean = (v) => (v === "N/A" || v === undefined ? null : v);
       if (need.has("imdbRating")) { updates.imdbRating = clean(data.imdbRating); covered.add("imdbRating"); }
       if (need.has("imdbVotes")) { updates.imdbVotes = clean(data.imdbVotes); covered.add("imdbVotes"); }
-      if (need.has("imdbID")) { updates.imdbID = clean(data.imdbID); covered.add("imdbID"); }
+      if (need.has("imdbID")) {
+        const v = clean(data.imdbID);
+        updates.imdbID = v;
+        if (v) updates.imdb_id = v;
+        covered.add("imdbID");
+        if (v) covered.add("imdb_id");
+      }
       if (need.has("omdb_directors")) { updates.omdb_directors = clean(data.Director); covered.add("omdb_directors"); }
       if (need.has("actors")) { updates.actors = data.Actors && data.Actors !== "N/A" ? data.Actors.split(",").map(s => s.trim()).filter(Boolean) : []; covered.add("actors"); }
       if (need.has("rated")) { updates.rated = clean(data.Rated); covered.add("rated"); }
@@ -75,11 +80,10 @@ export async function enrichClassic(env, movie, staleFields, outerSignal) {
       if (need.has("metascore")) { updates.metascore = clean(data.Metascore); covered.add("metascore"); }
       if (need.has("boxOffice")) { updates.boxOffice = clean(data.BoxOffice); covered.add("boxOffice"); }
       if (need.has("omdb_poster")) { updates.omdb_poster = clean(data.Poster); covered.add("omdb_poster"); }
-    } catch (e) { console.warn("omdb enrich:", e.message); }
+    } catch (e) { console.warn("omdb enrich:", e.message); errors.push({ source: "omdb", error: String(e.message || e) }); }
   }
-  return { updates, covered };
+  return { updates, covered, errors };
 }
-
 export function personNameFromObj(it) {
   if (!it || typeof it !== "object") return "";
   const candidates = [it.name, it.original_name, it.full_name, it.title, it.label];

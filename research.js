@@ -1,4 +1,4 @@
-// research.js — Araştırma akışı ve film detayları.
+// research.js — Araştırma akışı, film detayları + imdb_id + kaynak hata raporlama.
 import { FIELD_DEFS, FIELD_RULES, SEMANTIC_FIELDS } from "./fields.config.js";
 import {
   getProfileRowsBatch, getFieldRowsBatch, getFieldRows, putFieldRowsBatch, putProfileRowsBatch,
@@ -15,7 +15,7 @@ function buildStage2Rules(fields) {
   const rules = [];
   for (const f of fields) {
     if (FIELD_RULES[f]) rules.push(FIELD_RULES[f]);
-    else if (f === "day_ratio") rules.push(`day_ratio: 0-100 tam sayı — filmde gündüz geçen sahnelerin yüzdesi`);
+    else if (f === "day_ratio") rules.push(`day_ratio: 0-100 tam sayı`);
     else if (f === "night_ratio") rules.push(`night_ratio: 0-100 tam sayı`);
     else if (f === "indoor_ratio") rules.push(`indoor_ratio: 0-100 tam sayı`);
     else if (f === "dialogue_density") rules.push(`dialogue_density: 0-100 tam sayı`);
@@ -23,7 +23,7 @@ function buildStage2Rules(fields) {
     else if (f === "story_period") rules.push(`story_period: string[]`);
     else if (f === "story_locations") rules.push(`story_locations: string[]`);
     else if (f === "aspect_ratio") rules.push(`aspect_ratio: string (ör. "2.39:1")`);
-    else if (f === "color_style") rules.push(`color_style: string[] (black_white, color, mostly_color, mostly_bw, blue_filter, yellow_filter, selective_color, colorized, limited_palette, sepia, mono_tint, bw_red_accent, mixed_bw_color)`);
+    else if (f === "color_style") rules.push(`color_style: string[]`);
     else if (f === "dialogue_density_subtitle") rules.push(`dialogue_density_subtitle: 0-100 tam sayı`);
     else if (f === "location_count") rules.push(`location_count: 1-100 tam sayı`);
     else rules.push(`${f}: uygun değer`);
@@ -96,11 +96,9 @@ export async function handleResearchStream(env, body, controller, signal) {
     const forceRefresh = body.refresh === true || body.forceAll === true;
     const forceAll = body.forceAll === true;
     send({ type: "start", total });
-
     const allMovieIds = movies.map(m => movieKey(m)).filter(Boolean);
     const profilesMap = await getProfileRowsBatch(env, allMovieIds);
     const fieldsMap = await getFieldRowsBatch(env, allMovieIds);
-
     const prepared = [];
     for (let i = 0; i < movies.length; i++) {
       const movie = movies[i]; const movieId = movieKey(movie);
@@ -114,21 +112,20 @@ export async function handleResearchStream(env, body, controller, signal) {
       if (!profile.overview && movie.overview) profile.overview = movie.overview;
       if (profile.poster_path === undefined && movie.poster_path) profile.poster_path = movie.poster_path;
       if (!profile.release_date && movie.release_date) profile.release_date = movie.release_date;
+      if (!profile.imdb_id && movie.imdb_id) profile.imdb_id = movie.imdb_id;
       const mgInit = Array.isArray(movie.genre_ids) ? movie.genre_ids : [];
       if (mgInit.length) {
         const pgInit = Array.isArray(profile.genres_ids) ? profile.genres_ids : [];
         const combined = new Set([...pgInit.map(String), ...mgInit.map(String)]);
         profile.genres_ids = [...combined].map(x => { const n = Number(x); return Number.isFinite(n) ? n : x; });
       }
-      prepared.push({ movie, movieId, profile, fieldRows, staleDeterministic: [], filmmap: null, metatakeLocations: null, dirty: false });
+      prepared.push({ movie, movieId, profile, fieldRows, staleDeterministic: [], filmmap: null, metatakeLocations: null, dirty: false, sourceErrors: [] });
     }
-
     if (needFilmMap) await Promise.all(prepared.map(async (p) => {
       if (signal?.aborted) return;
-      try { const fm = await filmmapLocations(env, p.movie, signal); p.filmmap = fm.locations || []; }
-      catch (e) { console.warn("filmmap fail:", e.message); p.filmmap = []; }
+      try { const fm = await filmmapLocations(env, p.movie, signal); p.filmmap = fm.locations || []; if (fm.error) p.sourceErrors.push({ source: "filmmap", error: fm.error }); }
+      catch (e) { console.warn("filmmap fail:", e.message); p.filmmap = []; p.sourceErrors.push({ source: "filmmap", error: String(e.message || e) }); }
     }));
-
     if (needMetatake) await Promise.all(prepared.map(async (p) => {
       if (signal?.aborted) return;
       try {
@@ -139,15 +136,13 @@ export async function handleResearchStream(env, body, controller, signal) {
           if (mt.awards?.length) { const s = new Set(p.profile.awards_ids || []); for (const a of mt.awards) s.add(String(a)); p.profile.awards_ids = [...s]; }
           if (mt.locations?.length) p.metatakeLocations = mt.locations;
         }
-      } catch (e) { console.warn("metatake fail:", e.message); }
+      } catch (e) { console.warn("metatake fail:", e.message); p.sourceErrors.push({ source: "metatake", error: String(e.message || e) }); }
     }));
-
     for (const p of prepared) {
       let stale = findStaleFields(p.profile, p.fieldRows, forceRefresh);
       if (forceAll) stale = Object.keys(FIELD_DEFS);
       p.staleDeterministic = stale.filter(f => FIELD_DEFS[f]?.source !== "llm");
     }
-
     const ENRICH_CONCURRENCY = 4;
     const allCoveredFields = [];
     for (let i = 0; i < prepared.length; i += ENRICH_CONCURRENCY) {
@@ -160,13 +155,17 @@ export async function handleResearchStream(env, body, controller, signal) {
         try {
           const classic = await enrichClassic(env, p.movie, p.staleDeterministic, signal);
           Object.assign(p.profile, classic.updates);
+          if (classic.errors?.length) p.sourceErrors.push(...classic.errors);
           const covered = [...classic.covered].filter(f => p.profile[f] !== undefined && p.profile[f] !== null);
           if (covered.length) { p.dirty = true; for (const f of covered) allCoveredFields.push({ movieId: p.movieId, field: f, source: FIELD_DEFS[f]?.source || "unknown" }); }
         } catch (e) { console.warn("enrich fail:", p.movieId, e.message); }
       }));
     }
     if (allCoveredFields.length) await putFieldRowsBatch(env, allCoveredFields);
-
+    for (const p of prepared) {
+      if (p.profile.imdbID && !p.profile.imdb_id) p.profile.imdb_id = p.profile.imdbID;
+      if (p.movie.imdb_id && !p.profile.imdb_id) p.profile.imdb_id = p.movie.imdb_id;
+    }
     if (filters.dialogueDensityMin != null) {
       const subtitleTargets = prepared.filter(p => p.profile.dialogue_density == null || !settings.useAI);
       if (subtitleTargets.length) {
@@ -175,12 +174,11 @@ export async function handleResearchStream(env, body, controller, signal) {
           try {
             const r = await fetchSubtitleDensity(env, p.movie, signal);
             if (r && r.density != null) { p.profile.dialogue_density_subtitle = r.density; p.dirty = true; subFields.push({ movieId: p.movieId, field: "dialogue_density_subtitle", source: r.source || "subtitles" }); }
-          } catch (e) { console.warn("subtitle fail:", p.movieId, e.message); }
+          } catch (e) { console.warn("subtitle fail:", p.movieId, e.message); p.sourceErrors.push({ source: "subtitles", error: String(e.message || e) }); }
         }));
         if (subFields.length) await putFieldRowsBatch(env, subFields);
       }
     }
-
     for (const p of prepared) {
       const mg = Array.isArray(p.movie.genre_ids) ? p.movie.genre_ids : [];
       if (mg.length) {
@@ -189,7 +187,6 @@ export async function handleResearchStream(env, body, controller, signal) {
         p.profile.genres_ids = [...combined].map(x => { const n = Number(x); return Number.isFinite(n) ? n : x; });
       }
     }
-
     const needWiki = !!(filters.original_work?.include?.length || filters.original_work?.exclude?.length || filters.filming_locations?.include?.length || filters.filming_locations?.exclude?.length || filters.award?.include?.length || filters.award?.exclude?.length);
     if (needWiki) {
       const wikiNeeded = prepared.filter(p => ["original_work", "filming_locations", "filming_countries", "awards_ids", "nominated_ids"].some(f => p.staleDeterministic.includes(f)));
@@ -208,11 +205,7 @@ export async function handleResearchStream(env, body, controller, signal) {
         if (wikiCovered.length) await putFieldRowsBatch(env, wikiCovered);
       }
     }
-
-    const afterLocal = prepared.filter(p => {
-      const dummy = evaluateFilters(p.profile, filters, null, null, null);
-      return dummy.match;
-    });
+    const afterLocal = prepared.filter(p => evaluateFilters(p.profile, filters, null, null, null).match);
     const stage2bFields = (() => {
       const fields = new Set(ratioFieldsNeeded(filters));
       for (const f of locationFieldsNeeded(filters)) fields.add(f);
@@ -226,7 +219,6 @@ export async function handleResearchStream(env, body, controller, signal) {
     const stage1UseSearch = settings.useWebResearch;
     let semanticVerdicts = new Map();
     let stage1Error = null;
-
     if (useStage2b) {
       send({ type: "step", index: 0, total: afterLocal.length, title: "Oransal/semantik alanlar dolduruluyor", stage: "sınıflandırılıyor", fields: stage2bFields.slice(0, 6) });
       const needMap = new Map();
@@ -286,10 +278,8 @@ export async function handleResearchStream(env, body, controller, signal) {
         if (newVerdicts.length) await putVerdictsBatch(env, newVerdicts, signature);
       }
     }
-
     const movieIds = afterLocal.map(p => p.movieId);
     const listsMap = await getMovieLists(env, movieIds);
-
     const profileUpdates = [];
     const results = [];
     for (const p of afterLocal) {
@@ -310,7 +300,8 @@ export async function handleResearchStream(env, body, controller, signal) {
         related_films_detail: Array.isArray(p.profile.related_films_detail) ? p.profile.related_films_detail : (Array.isArray(p.profile.related_films) ? p.profile.related_films : []),
         color_style: Array.isArray(p.profile.color_style) ? p.profile.color_style : null,
         movie_lists: movieLists,
-        _fromCache: p.staleDeterministic.length === 0
+        _fromCache: p.staleDeterministic.length === 0,
+        _source_errors: p.sourceErrors.length ? p.sourceErrors : null
       };
       for (const f of ["director","writers","cast","producers","actors"]) if (result[f] !== undefined) result[f] = sanitizePeopleField(result[f]);
       results.push(result);
@@ -337,12 +328,12 @@ export async function handleMovieDetails(env, body, signal) {
   if (!profile.overview && movie.overview) profile.overview = movie.overview;
   if (profile.poster_path === undefined && movie.poster_path) profile.poster_path = movie.poster_path;
   if (!profile.release_date && movie.release_date) profile.release_date = movie.release_date;
+  if (!profile.imdb_id && movie.imdb_id) profile.imdb_id = movie.imdb_id;
   if (Array.isArray(movie.genre_ids) && movie.genre_ids.length) {
     const pg = Array.isArray(profile.genres_ids) ? profile.genres_ids : [];
     const combined = new Set([...pg.map(String), ...movie.genre_ids.map(String)]);
     profile.genres_ids = [...combined].map(x => { const n = Number(x); return Number.isFinite(n) ? n : x; });
   }
-
   const fmCache = await getFilmmapCache(env, movieId);
   const mtCache = await getMetatakeExtendedCache(env, movieId);
   let metatakeLocations = null;
@@ -368,9 +359,11 @@ export async function handleMovieDetails(env, body, signal) {
   const staleDet = stale.filter(f => FIELD_DEFS[f]?.source !== "llm");
   const staleLLM = stale.filter(f => FIELD_DEFS[f]?.source === "llm");
   let dirty = false;
+  const sourceErrors = [];
   if (staleDet.length) {
     const classic = await enrichClassic(env, movie, staleDet, signal);
     Object.assign(profile, classic.updates);
+    if (classic.errors?.length) sourceErrors.push(...classic.errors);
     const covered = [...classic.covered].filter(f => profile[f] !== undefined && profile[f] !== null);
     if (covered.length) dirty = true;
     await putFieldRows(env, movieId, covered, Object.fromEntries(covered.map(f => [f, FIELD_DEFS[f]?.source || "unknown"])));
@@ -396,6 +389,8 @@ export async function handleMovieDetails(env, body, signal) {
       if (r && r.density != null) { profile.dialogue_density_subtitle = r.density; dirty = true; await putFieldRows(env, movieId, ["dialogue_density_subtitle"], { dialogue_density_subtitle: r.source || "subtitles" }); }
     } catch (e) { console.warn("subtitle details fail:", e.message); }
   }
+  if (profile.imdbID && !profile.imdb_id) profile.imdb_id = profile.imdbID;
+  if (movie.imdb_id && !profile.imdb_id) profile.imdb_id = movie.imdb_id;
   if (dirty || forceAll) await putProfileRow(env, movieId, movie.title, yearOf(movie), profile, forceAll);
   const merged = { ...movie, ...profile };
   for (const f of ["director","writers","cast","producers","actors"]) if (merged[f] !== undefined) merged[f] = sanitizePeopleField(merged[f]);
@@ -406,5 +401,6 @@ export async function handleMovieDetails(env, body, signal) {
   merged.related_films_detail = Array.isArray(profile.related_films_detail) ? profile.related_films_detail : (Array.isArray(profile.related_films) ? profile.related_films : []);
   merged.color_style = Array.isArray(profile.color_style) ? profile.color_style : null;
   merged.dialogue_density_subtitle = profile.dialogue_density_subtitle ?? null;
+  if (sourceErrors.length) merged._source_errors = sourceErrors;
   return { movie: merged };
-  }
+        }

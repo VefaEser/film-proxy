@@ -1,12 +1,11 @@
 const days = (n) => n * 86400;
-
-export const SCHEMA_VERSION = 7;
-
+export const SCHEMA_VERSION = 8;
 export const FIELD_DEFS = {
   genres:                 { source: "tmdb", ttl: days(90), required: true },
   genres_ids:             { source: "tmdb", ttl: days(90), required: true },
   spoken_languages:       { source: "tmdb", ttl: days(90), required: true },
   spoken_languages_ids:   { source: "tmdb", ttl: days(90), required: true },
+  original_language:      { source: "tmdb", ttl: days(90), required: true },
   production_countries:   { source: "tmdb", ttl: days(90), required: true },
   production_countries_ids: { source: "tmdb", ttl: days(90), required: true },
   runtime:                { source: "tmdb", ttl: days(90) },
@@ -22,13 +21,11 @@ export const FIELD_DEFS = {
   cast_ids:               { source: "tmdb", ttl: days(90) },
   keywords:               { source: "tmdb", ttl: days(90) },
   keywords_ids:           { source: "tmdb", ttl: days(90) },
-
   story_locations:    { source: "llm", ttl: days(90), prefer: "metatake" },
   related_films:      { source: "llm", ttl: days(90), prefer: "metatake" },
   related_films_detail: { source: "llm", ttl: days(90), prefer: "metatake" },
   location_mode:      { source: "llm", ttl: days(90), prefer: "metatake" },
   location_count:     { source: "llm", ttl: days(90), prefer: "metatake" },
-
   story_period:       { source: "llm", ttl: days(90) },
   story_geography:    { source: "llm", ttl: days(90) },
   character_traits:   { source: "llm", ttl: days(90) },
@@ -46,7 +43,6 @@ export const FIELD_DEFS = {
   aspect_ratio:       { source: "llm", ttl: days(90) },
   season:             { source: "llm", ttl: days(90) },
   color_style:        { source: "llm", ttl: days(90) },
-
   imdbRating:         { source: "omdb", ttl: days(7) },
   imdbVotes:          { source: "omdb", ttl: days(7) },
   imdbID:             { source: "omdb", ttl: days(7) },
@@ -57,25 +53,20 @@ export const FIELD_DEFS = {
   metascore:          { source: "omdb", ttl: days(7) },
   boxOffice:          { source: "omdb", ttl: days(7) },
   omdb_poster:        { source: "omdb", ttl: days(7) },
-
   original_work:      { source: "wikidata", ttl: days(90) },
   filming_locations:  { source: "wikidata", ttl: days(90) },
   filming_countries:  { source: "wikidata", ttl: days(90) },
   awards_ids:         { source: "wikidata", ttl: days(90) },
   nominated_ids:      { source: "wikidata", ttl: days(90) },
-
   dialogue_density_subtitle: { source: "subtitles", ttl: days(90) },
-
   filmmap_locations:  { source: "filmmap", ttl: days(90) },
   metatake_locations: { source: "metatake", ttl: days(90) },
   metatake_confidence:{ source: "metatake", ttl: days(90) },
   commons_images:     { source: "commons", ttl: days(90) },
   web_evidence:       { source: "tavily", ttl: days(30) }
 };
-
 export const LLM_FIELDS = Object.entries(FIELD_DEFS).filter(([, d]) => d.source === "llm").map(([k]) => k);
 export const VALID_SOURCES = [...new Set(Object.values(FIELD_DEFS).map(d => d.source))];
-
 export const FIELD_RULES = {
   season: 'season: "winter"|"summer"|"spring"|"autumn"',
   reality: 'reality: "true"|"mostly_true"|"inspired"|"realistic"|"fictional"|"utopic"',
@@ -83,33 +74,23 @@ export const FIELD_RULES = {
   production_process: 'production_process: "amateur"|"indie"|"art"|"big"|"bmovie"|"avant"|"studio"|"no_music"|"rare_music"|"handheld"|"propaganda"|"dogme"',
   sound: 'sound: "ambient"|"music"|"effects"|"voiceover_ext"|"voiceover_int"|"silent"|"dubbed"',
   story_geography: 'story_geography: "city"|"town"|"village"|"mountain"|"desert"|"steppe"|"forest"|"seaside"|"riverside"|"opensea"|"air"',
-  character_traits: 'character_traits: "male_main"|"female_main"|"child_main"|"lgbt_main"|"male_support"|"female_support"|"child_support"|"lgbt_support"|"young_main"|"middle_main"|"old_main"|"disabled_main"|"animal" vb.',
-  story_dimensions: 'story_dimensions: "has_sequel"|"is_sequel"|"series_sequel"|"series_prequel"|"series_spinoff"|"concept"|"similar_script_version"|"same_plot_diff_script"|"same_plot_diff_angle"',
+  character_traits: 'character_traits: string[]',
+  story_dimensions: 'story_dimensions: string[]',
   color_style: 'color_style: ["black_white","color","mostly_color","mostly_bw","blue_filter","yellow_filter","selective_color","colorized","limited_palette","sepia","mono_tint","bw_red_accent","mixed_bw_color"]',
   location_mode: 'location_mode: "single"|"mostly_single"|"few"|"many"'
 };
-
-// ÖNEMLİ: "color" kullanılır (filtre anahtarı filters.color'a karşılık gelir).
-// "color_style" alan adı FIELD_DEFS'te profil verisi için kullanılır; semantic filtrelerde
-// client tarafından "color" anahtarıyla gönderilir, bu yüzden burada "color" yer almalı.
 export const SEMANTIC_FIELDS = [
   "story_period", "story_geography", "character_traits",
   "narrative_style", "production_process", "sound", "reality",
   "story_dimensions", "family_content", "season", "aspect_ratio",
   "original_work", "color"
 ];
-
 export const RATIO_FIELDS = ["day_ratio", "indoor_ratio", "dialogue_density"];
 export const LOCATION_FIELDS = ["location_count"];
-
 export const DETERMINISTIC_FILTERS = [
-  "yearMin", "yearMax", "runtimeMin", "runtimeMax",
-  "imdbMin", "imdbMax", "imdbVotesMin",
-  "tmdbMin", "tmdbMax", "tmdbVotesMin",
-  "genres", "original_language", "production_countries",
-  "rated", "company", "keywords", "award",
-  "director", "writers", "cast"
+  "yearMin", "yearMax", "runtimeMin", "runtimeMax", "imdbMin", "imdbMax", "imdbVotesMin",
+  "tmdbMin", "tmdbMax", "tmdbVotesMin", "genres", "original_language", "production_countries",
+  "rated", "company", "keywords", "award", "director", "writers", "cast"
 ];
-
 export const METATAKE_FIELDS = ["story_locations", "related_films", "related_films_detail", "location_mode", "location_count"];
 export const FILMMAP_FIELDS = ["filmmap_locations", "filming_locations"];

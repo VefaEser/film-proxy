@@ -1,9 +1,5 @@
 // DOSYA: research.js
-// Değişiklikler:
-// - import'a LLM_FIELDS eklendi
-// - settings.useAI: forceAll ise true'ya zorlanır
-// - Aktif filtrelere göre stale field'lar zorla eklenir (production_companies_ids, director_ids, writers_ids, cast_ids, keywords_ids)
-// - stage2bFields: forceAll ise tüm LLM_FIELDS
+// handleResearchStream: CSV verilerini profile merge eder; forceAll ise useAI zorla true, tüm LLM_FIELDS.
 import { FIELD_DEFS, FIELD_RULES, SEMANTIC_FIELDS, LLM_FIELDS } from "./fields.config.js";
 import {
   getProfileRowsBatch, getFieldRowsBatch, getFieldRows, putFieldRowsBatch, putProfileRowsBatch,
@@ -20,7 +16,7 @@ function buildStage2Rules(fields) {
   const rules = [];
   for (const f of fields) {
     if (FIELD_RULES[f]) rules.push(FIELD_RULES[f]);
-    else if (f === "day_ratio") rules.push(`day_ratio: 0-100 tam sayı — filmde gündüz geçen sahnelerin yüzdesi`);
+    else if (f === "day_ratio") rules.push(`day_ratio: 0-100 tam sayı`);
     else if (f === "night_ratio") rules.push(`night_ratio: 0-100 tam sayı`);
     else if (f === "indoor_ratio") rules.push(`indoor_ratio: 0-100 tam sayı`);
     else if (f === "dialogue_density") rules.push(`dialogue_density: 0-100 tam sayı`);
@@ -35,49 +31,27 @@ function buildStage2Rules(fields) {
   }
   return rules.join("\n");
 }
-function extractJSONArray(text) {
-  const clean = String(text).replace(/^```(?:json)?\s*/i, "").replace(/\s*```\s*$/, "").trim();
-  const start = clean.indexOf("["), end = clean.lastIndexOf("]");
-  if (start < 0 || end < start) return null;
-  try { return JSON.parse(clean.slice(start, end + 1)); } catch { return null; }
-}
-function extractJSON(text) {
-  const clean = String(text).replace(/^```(?:json)?\s*/i, "").replace(/\s*```\s*$/, "").trim();
-  const start = clean.indexOf("{"), end = clean.lastIndexOf("}");
-  if (start < 0 || end < start) throw new Error("LLM geçerli JSON döndürmedi.");
-  return JSON.parse(clean.slice(start, end + 1));
-}
+function extractJSONArray(text) { const clean = String(text).replace(/^```(?:json)?\s*/i, "").replace(/\s*```\s*$/, "").trim(); const start = clean.indexOf("["), end = clean.lastIndexOf("]"); if (start < 0 || end < start) return null; try { return JSON.parse(clean.slice(start, end + 1)); } catch { return null; } }
+function extractJSON(text) { const clean = String(text).replace(/^```(?:json)?\s*/i, "").replace(/\s*```\s*$/, "").trim(); const start = clean.indexOf("{"), end = clean.lastIndexOf("}"); if (start < 0 || end < start) throw new Error("LLM geçerli JSON döndürmedi."); return JSON.parse(clean.slice(start, end + 1)); }
 async function classifyBatch(env, movies, filterSentence, filterContext, useSearch, signal, context = {}) {
   const payload = movies.map(m => ({ id: m.id, title: m.original_title || m.title || "", year: yearOf(m), overview: (m.overview || "").slice(0, 300) }));
   const template = await getPromptTemplate(env, "prompt_template.stage1");
   const prompt = template.replace(/\{\{FILTER_SENTENCE\}\}/g, filterSentence).replace(/\{\{FILTER_CONTEXT\}\}/g, filterContext || "(bağlam yok)").replace(/\{\{MOVIES\}\}/g, JSON.stringify(payload));
   const raw = await callLLMWithFallback(env, prompt, 800, useSearch, signal, { ...context, method: "stage1", hasSemantic: true, maxAttempts: 3 });
-  const arr = extractJSONArray(raw) || [];
-  const byId = new Map();
-  for (const item of arr) {
-    if (!item || item.id == null) continue;
-    const match = String(item.match || "").toLowerCase();
-    byId.set(String(item.id), { verdict: ["yes","no","unknown"].includes(match) ? match : "unknown", reason: String(item.reason || "").slice(0, 200) });
-  }
+  const arr = extractJSONArray(raw) || []; const byId = new Map();
+  for (const item of arr) { if (!item || item.id == null) continue; const match = String(item.match || "").toLowerCase(); byId.set(String(item.id), { verdict: ["yes","no","unknown"].includes(match) ? match : "unknown", reason: String(item.reason || "").slice(0, 200) }); }
   return byId;
 }
 async function fillDetailsBatch(env, movies, staleFields, signal, context = {}) {
-  const out = new Map();
-  if (!staleFields.length || !movies.length) return out;
+  const out = new Map(); if (!staleFields.length || !movies.length) return out;
   const template = await getPromptTemplate(env, "prompt_template.stage2");
   const moviePayload = movies.map(m => ({ id: m.id, title: m.title, original_title: m.original_title, year: yearOf(m), overview: (m.overview || "").slice(0, 400) }));
   const rules = buildStage2Rules(staleFields);
   const prompt = template.replace(/\{\{MOVIES\}\}/g, JSON.stringify(moviePayload)).replace(/\{\{RULES\}\}/g, rules);
   let raw;
-  try { raw = await callLLMWithFallback(env, prompt, 2000, false, signal, { ...context, method: "stage2", hasSemantic: true, maxAttempts: 3, timeoutMs: context.timeoutMs }); }
-  catch (e) { console.warn("fillDetailsBatch:", String(e.message || e).slice(0, 200)); return out; }
+  try { raw = await callLLMWithFallback(env, prompt, 2000, false, signal, { ...context, method: "stage2", hasSemantic: true, maxAttempts: 3, timeoutMs: context.timeoutMs }); } catch (e) { console.warn("fillDetailsBatch:", String(e.message || e).slice(0, 200)); return out; }
   const arr = extractJSONArray(raw) || (() => { try { const o = extractJSON(raw); return o.movies || []; } catch { return []; } })();
-  for (const item of arr) {
-    if (!item || item.id == null) continue;
-    const updates = {};
-    for (const f of staleFields) if (item[f] !== undefined && item[f] !== null) updates[f] = item[f];
-    if (Object.keys(updates).length) out.set(String(item.id), updates);
-  }
+  for (const item of arr) { if (!item || item.id == null) continue; const updates = {}; for (const f of staleFields) if (item[f] !== undefined && item[f] !== null) updates[f] = item[f]; if (Object.keys(updates).length) out.set(String(item.id), updates); }
   return out;
 }
 
@@ -97,7 +71,6 @@ export async function handleResearchStream(env, body, controller, signal) {
     const movies = Array.isArray(body.movies) ? body.movies.slice(0, effectiveBatch) : [];
     const total = movies.length;
     if (!total) { send({ type: "done", movies: [] }); return; }
-    // === YENİ: forceAll ise useAI zorla açılır ===
     const settings = { useAI: body.useAI === true || body.forceAll === true, useWebResearch: body.useWebResearch === true };
     const forceRefresh = body.refresh === true || body.forceAll === true;
     const forceAll = body.forceAll === true;
@@ -119,6 +92,16 @@ export async function handleResearchStream(env, body, controller, signal) {
       if (profile.poster_path === undefined && movie.poster_path) profile.poster_path = movie.poster_path;
       if (!profile.release_date && movie.release_date) profile.release_date = movie.release_date;
       if (!profile.imdb_id && movie.imdb_id) profile.imdb_id = movie.imdb_id;
+      if (!profile.imdbID && movie.imdbID) profile.imdbID = movie.imdbID;
+      // === CSV'den gelen verileri profile merge et ===
+      if (!profile.original_title && movie.original_title) profile.original_title = movie.original_title;
+      if (!profile.title && movie.title) profile.title = movie.title;
+      if (!profile.runtime && movie.runtime != null) profile.runtime = movie.runtime;
+      if (!profile.imdbRating && movie.imdbRating != null) profile.imdbRating = movie.imdbRating;
+      if (!profile.imdbVotes && movie.imdbVotes != null) profile.imdbVotes = String(movie.imdbVotes);
+      if (!profile.genres && Array.isArray(movie.genres)) profile.genres = movie.genres;
+      if (!profile.director && Array.isArray(movie.director)) profile.director = movie.director;
+      if (!profile.user_rating && movie.user_rating != null) profile.user_rating = movie.user_rating;
       const mgInit = Array.isArray(movie.genre_ids) ? movie.genre_ids : [];
       if (mgInit.length) {
         const pgInit = Array.isArray(profile.genres_ids) ? profile.genres_ids : [];
@@ -148,7 +131,6 @@ export async function handleResearchStream(env, body, controller, signal) {
       let stale = findStaleFields(p.profile, p.fieldRows, forceRefresh);
       if (forceAll) stale = Object.keys(FIELD_DEFS);
       p.staleDeterministic = stale.filter(f => FIELD_DEFS[f]?.source !== "llm");
-      // === YENİ: Aktif filtreler için gerekli deterministic field'ları zorla çek ===
       const forced = new Set(p.staleDeterministic);
       if (filters.company && (!Array.isArray(p.profile.production_companies_ids) || p.profile.production_companies_ids.length === 0)) forced.add("production_companies_ids");
       if (filters.director && (!Array.isArray(p.profile.director_ids) || p.profile.director_ids.length === 0)) forced.add("director_ids");
@@ -185,10 +167,8 @@ export async function handleResearchStream(env, body, controller, signal) {
       if (subtitleTargets.length) {
         const subFields = [];
         await Promise.all(subtitleTargets.slice(0, 5).map(async (p) => {
-          try {
-            const r = await fetchSubtitleDensity(env, p.movie, signal);
-            if (r && r.density != null) { p.profile.dialogue_density_subtitle = r.density; p.dirty = true; subFields.push({ movieId: p.movieId, field: "dialogue_density_subtitle", source: r.source || "subtitles" }); }
-          } catch (e) { console.warn("subtitle fail:", p.movieId, e.message); p.sourceErrors.push({ source: "subtitles", error: String(e.message || e) }); }
+          try { const r = await fetchSubtitleDensity(env, p.movie, signal); if (r && r.density != null) { p.profile.dialogue_density_subtitle = r.density; p.dirty = true; subFields.push({ movieId: p.movieId, field: "dialogue_density_subtitle", source: r.source || "subtitles" }); } }
+          catch (e) { console.warn("subtitle fail:", p.movieId, e.message); p.sourceErrors.push({ source: "subtitles", error: String(e.message || e) }); }
         }));
         if (subFields.length) await putFieldRowsBatch(env, subFields);
       }
@@ -221,7 +201,6 @@ export async function handleResearchStream(env, body, controller, signal) {
     }
     const afterLocal = prepared.filter(p => evaluateFilters(p.profile, filters, null, null, null).match);
     const stage2bFields = (() => {
-      // === YENİ: forceAll ise TÜM LLM alanları doldurulur ===
       if (forceAll && settings.useAI) return LLM_FIELDS;
       const fields = new Set(ratioFieldsNeeded(filters));
       for (const f of locationFieldsNeeded(filters)) fields.add(f);
@@ -263,11 +242,7 @@ export async function handleResearchStream(env, body, controller, signal) {
       const signature = semanticSignature(filters);
       const cachedVerdicts = await getVerdictsBatch(env, afterLocal.map(p => p.movieId), signature);
       const cacheMisses = [];
-      for (const p of afterLocal) {
-        const cached = cachedVerdicts.get(p.movieId);
-        if (cached && cached.verdict !== "unknown" && !forceRefresh) semanticVerdicts.set(p.movieId, cached);
-        else cacheMisses.push(p);
-      }
+      for (const p of afterLocal) { const cached = cachedVerdicts.get(p.movieId); if (cached && cached.verdict !== "unknown" && !forceRefresh) semanticVerdicts.set(p.movieId, cached); else cacheMisses.push(p); }
       if (cacheMisses.length) {
         const newVerdicts = [];
         try {
@@ -280,15 +255,8 @@ export async function handleResearchStream(env, body, controller, signal) {
             const chunk = cacheMisses.slice(start, start + batchSize);
             try {
               const verdicts = await classifyBatch(env, chunk.map(p => p.movie), sentence, context, stage1UseSearch, signal, { movie_id: chunk[0].movieId });
-              for (const p of chunk) {
-                const v = verdicts.get(String(p.movie.id)) || { verdict: "unknown", reason: "LLM yanıt vermedi" };
-                semanticVerdicts.set(p.movieId, v);
-                if (v.verdict !== "unknown") newVerdicts.push({ movieId: p.movieId, verdict: v.verdict, reason: v.reason });
-              }
-            } catch (e) {
-              console.warn("stage1 chunk:", e.message); stage1Error = e.message;
-              for (const p of chunk) if (!semanticVerdicts.has(p.movieId)) semanticVerdicts.set(p.movieId, { verdict: "unknown", reason: "LLM başarısız" });
-            }
+              for (const p of chunk) { const v = verdicts.get(String(p.movie.id)) || { verdict: "unknown", reason: "LLM yanıt vermedi" }; semanticVerdicts.set(p.movieId, v); if (v.verdict !== "unknown") newVerdicts.push({ movieId: p.movieId, verdict: v.verdict, reason: v.reason }); }
+            } catch (e) { console.warn("stage1 chunk:", e.message); stage1Error = e.message; for (const p of chunk) if (!semanticVerdicts.has(p.movieId)) semanticVerdicts.set(p.movieId, { verdict: "unknown", reason: "LLM başarısız" }); }
           }
         } catch (e) { console.warn("stage1 fail:", e.message); stage1Error = e.message; }
         if (newVerdicts.length) await putVerdictsBatch(env, newVerdicts, signature);
@@ -304,31 +272,15 @@ export async function handleResearchStream(env, body, controller, signal) {
       if (p.dirty || p.staleDeterministic.length) profileUpdates.push({ movieId: p.movieId, title: p.movie.title, year: yearOf(p.movie), data: p.profile });
       const movieLists = listsMap.get(p.movieId) || [];
       const locInfo = getLocationCount(p.profile, p.metatakeLocations, p.filmmap);
-      const result = {
-        id: p.movie.id, ...p.movie, ...p.profile,
-        filter_match: evalResult.match, filter_reasons: evalResult.reasons,
-        unknown: evalResult.unknown, conflicts: evalResult.conflicts,
-        semantic_used: useStage1, semantic_ok: useStage1 && !!verdict && verdict.verdict !== "unknown",
-        stage1_error: stage1Error, stage2b_used: useStage2b,
-        web_used: (useStage1 || useStage2b) && stage1UseSearch, web_ok: false,
-        ai_model_used: useStage1 || useStage2b ? "Gemini 3.x Flash / Groq GPT-OSS" : null,
-        location_count: locInfo.count, location_count_estimated: locInfo.estimated, location_count_source: locInfo.source,
-        related_films_detail: Array.isArray(p.profile.related_films_detail) ? p.profile.related_films_detail : (Array.isArray(p.profile.related_films) ? p.profile.related_films : []),
-        color_style: Array.isArray(p.profile.color_style) ? p.profile.color_style : null,
-        movie_lists: movieLists,
-        _fromCache: p.staleDeterministic.length === 0,
-        _source_errors: p.sourceErrors.length ? p.sourceErrors : null
-      };
+      const result = { id: p.movie.id, ...p.movie, ...p.profile, filter_match: evalResult.match, filter_reasons: evalResult.reasons, unknown: evalResult.unknown, conflicts: evalResult.conflicts, semantic_used: useStage1, semantic_ok: useStage1 && !!verdict && verdict.verdict !== "unknown", stage1_error: stage1Error, stage2b_used: useStage2b, web_used: (useStage1 || useStage2b) && stage1UseSearch, web_ok: false, ai_model_used: useStage1 || useStage2b ? "Gemini 3.x Flash / Groq GPT-OSS" : null, location_count: locInfo.count, location_count_estimated: locInfo.estimated, location_count_source: locInfo.source, related_films_detail: Array.isArray(p.profile.related_films_detail) ? p.profile.related_films_detail : (Array.isArray(p.profile.related_films) ? p.profile.related_films : []), color_style: Array.isArray(p.profile.color_style) ? p.profile.color_style : null, movie_lists: movieLists, _fromCache: p.staleDeterministic.length === 0, _source_errors: p.sourceErrors.length ? p.sourceErrors : null };
       for (const f of ["director","writers","cast","producers","actors"]) if (result[f] !== undefined) result[f] = sanitizePeopleField(result[f]);
       results.push(result);
       send({ type: "movie", index: results.length - 1, total, movie: result });
     }
     if (profileUpdates.length) await putProfileRowsBatch(env, profileUpdates, forceRefresh);
     send({ type: "done", movies: results });
-  } catch (err) {
-    console.error("handleResearchStream fatal:", err);
-    try { controller.enqueue(enc.encode(`data: ${JSON.stringify({ type: "error", message: String(err.message || err) })}\n\n`)); } catch {}
-  } finally { try { controller.close(); } catch {} }
+  } catch (err) { console.error("handleResearchStream fatal:", err); try { controller.enqueue(enc.encode(`data: ${JSON.stringify({ type: "error", message: String(err.message || err) })}\n\n`)); } catch {} }
+  finally { try { controller.close(); } catch {} }
 }
 
 export async function handleMovieDetails(env, body, signal) {
@@ -403,10 +355,8 @@ export async function handleMovieDetails(env, body, signal) {
     }
   }
   if (profile.dialogue_density_subtitle == null || forceAll) {
-    try {
-      const r = await fetchSubtitleDensity(env, movie, signal);
-      if (r && r.density != null) { profile.dialogue_density_subtitle = r.density; dirty = true; await putFieldRows(env, movieId, ["dialogue_density_subtitle"], { dialogue_density_subtitle: r.source || "subtitles" }); }
-    } catch (e) { console.warn("subtitle details fail:", e.message); }
+    try { const r = await fetchSubtitleDensity(env, movie, signal); if (r && r.density != null) { profile.dialogue_density_subtitle = r.density; dirty = true; await putFieldRows(env, movieId, ["dialogue_density_subtitle"], { dialogue_density_subtitle: r.source || "subtitles" }); } }
+    catch (e) { console.warn("subtitle details fail:", e.message); }
   }
   if (profile.imdbID && !profile.imdb_id) profile.imdb_id = profile.imdbID;
   if (movie.imdb_id && !profile.imdb_id) profile.imdb_id = movie.imdb_id;
@@ -422,4 +372,4 @@ export async function handleMovieDetails(env, body, signal) {
   merged.dialogue_density_subtitle = profile.dialogue_density_subtitle ?? null;
   if (sourceErrors.length) merged._source_errors = sourceErrors;
   return { movie: merged };
-    }
+  }

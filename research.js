@@ -1,5 +1,10 @@
-// research.js — Araştırma akışı, film detayları + imdb_id + kaynak hata raporlama.
-import { FIELD_DEFS, FIELD_RULES, SEMANTIC_FIELDS } from "./fields.config.js";
+// DOSYA: research.js
+// Değişiklikler:
+// - import'a LLM_FIELDS eklendi
+// - settings.useAI: forceAll ise true'ya zorlanır
+// - Aktif filtrelere göre stale field'lar zorla eklenir (production_companies_ids, director_ids, writers_ids, cast_ids, keywords_ids)
+// - stage2bFields: forceAll ise tüm LLM_FIELDS
+import { FIELD_DEFS, FIELD_RULES, SEMANTIC_FIELDS, LLM_FIELDS } from "./fields.config.js";
 import {
   getProfileRowsBatch, getFieldRowsBatch, getFieldRows, putFieldRowsBatch, putProfileRowsBatch,
   putFieldRows, putProfileRow, getProfileRow, findStaleFields, movieKey, yearOf,
@@ -15,7 +20,7 @@ function buildStage2Rules(fields) {
   const rules = [];
   for (const f of fields) {
     if (FIELD_RULES[f]) rules.push(FIELD_RULES[f]);
-    else if (f === "day_ratio") rules.push(`day_ratio: 0-100 tam sayı`);
+    else if (f === "day_ratio") rules.push(`day_ratio: 0-100 tam sayı — filmde gündüz geçen sahnelerin yüzdesi`);
     else if (f === "night_ratio") rules.push(`night_ratio: 0-100 tam sayı`);
     else if (f === "indoor_ratio") rules.push(`indoor_ratio: 0-100 tam sayı`);
     else if (f === "dialogue_density") rules.push(`dialogue_density: 0-100 tam sayı`);
@@ -23,7 +28,7 @@ function buildStage2Rules(fields) {
     else if (f === "story_period") rules.push(`story_period: string[]`);
     else if (f === "story_locations") rules.push(`story_locations: string[]`);
     else if (f === "aspect_ratio") rules.push(`aspect_ratio: string (ör. "2.39:1")`);
-    else if (f === "color_style") rules.push(`color_style: string[]`);
+    else if (f === "color_style") rules.push(`color_style: string[] (black_white, color, mostly_color, mostly_bw, blue_filter, yellow_filter, selective_color, colorized, limited_palette, sepia, mono_tint, bw_red_accent, mixed_bw_color)`);
     else if (f === "dialogue_density_subtitle") rules.push(`dialogue_density_subtitle: 0-100 tam sayı`);
     else if (f === "location_count") rules.push(`location_count: 1-100 tam sayı`);
     else rules.push(`${f}: uygun değer`);
@@ -92,7 +97,8 @@ export async function handleResearchStream(env, body, controller, signal) {
     const movies = Array.isArray(body.movies) ? body.movies.slice(0, effectiveBatch) : [];
     const total = movies.length;
     if (!total) { send({ type: "done", movies: [] }); return; }
-    const settings = { useAI: body.useAI === true, useWebResearch: body.useWebResearch === true };
+    // === YENİ: forceAll ise useAI zorla açılır ===
+    const settings = { useAI: body.useAI === true || body.forceAll === true, useWebResearch: body.useWebResearch === true };
     const forceRefresh = body.refresh === true || body.forceAll === true;
     const forceAll = body.forceAll === true;
     send({ type: "start", total });
@@ -142,6 +148,14 @@ export async function handleResearchStream(env, body, controller, signal) {
       let stale = findStaleFields(p.profile, p.fieldRows, forceRefresh);
       if (forceAll) stale = Object.keys(FIELD_DEFS);
       p.staleDeterministic = stale.filter(f => FIELD_DEFS[f]?.source !== "llm");
+      // === YENİ: Aktif filtreler için gerekli deterministic field'ları zorla çek ===
+      const forced = new Set(p.staleDeterministic);
+      if (filters.company && (!Array.isArray(p.profile.production_companies_ids) || p.profile.production_companies_ids.length === 0)) forced.add("production_companies_ids");
+      if (filters.director && (!Array.isArray(p.profile.director_ids) || p.profile.director_ids.length === 0)) forced.add("director_ids");
+      if (filters.writers && (!Array.isArray(p.profile.writers_ids) || p.profile.writers_ids.length === 0)) forced.add("writers_ids");
+      if (filters.cast && (!Array.isArray(p.profile.cast_ids) || p.profile.cast_ids.length === 0)) forced.add("cast_ids");
+      if (filters.keywords && (!Array.isArray(p.profile.keywords_ids) || p.profile.keywords_ids.length === 0)) forced.add("keywords_ids");
+      p.staleDeterministic = [...forced];
     }
     const ENRICH_CONCURRENCY = 4;
     const allCoveredFields = [];
@@ -207,6 +221,8 @@ export async function handleResearchStream(env, body, controller, signal) {
     }
     const afterLocal = prepared.filter(p => evaluateFilters(p.profile, filters, null, null, null).match);
     const stage2bFields = (() => {
+      // === YENİ: forceAll ise TÜM LLM alanları doldurulur ===
+      if (forceAll && settings.useAI) return LLM_FIELDS;
       const fields = new Set(ratioFieldsNeeded(filters));
       for (const f of locationFieldsNeeded(filters)) fields.add(f);
       if (filters.story_locations && (filters.story_locations.include?.length || filters.story_locations.exclude?.length)) if (afterLocal.some(p => !p.profile.story_locations || !p.profile.story_locations.length)) fields.add("story_locations");
@@ -224,7 +240,7 @@ export async function handleResearchStream(env, body, controller, signal) {
       const needMap = new Map();
       for (const p of afterLocal) {
         const stale = findStaleFields(p.profile, p.fieldRows || [], forceRefresh);
-        const need = stage2bFields.filter(f => !p.profile[f] || (Array.isArray(p.profile[f]) && p.profile[f].length === 0) || (FIELD_DEFS[f]?.source === "llm" && stale.includes(f)));
+        const need = stage2bFields.filter(f => forceAll || !p.profile[f] || (Array.isArray(p.profile[f]) && p.profile[f].length === 0) || (FIELD_DEFS[f]?.source === "llm" && stale.includes(f)));
         if (need.length) needMap.set(p.movieId, need);
       }
       if (needMap.size > 0 && !signal?.aborted) {
@@ -249,7 +265,7 @@ export async function handleResearchStream(env, body, controller, signal) {
       const cacheMisses = [];
       for (const p of afterLocal) {
         const cached = cachedVerdicts.get(p.movieId);
-        if (cached && cached.verdict !== "unknown") semanticVerdicts.set(p.movieId, cached);
+        if (cached && cached.verdict !== "unknown" && !forceRefresh) semanticVerdicts.set(p.movieId, cached);
         else cacheMisses.push(p);
       }
       if (cacheMisses.length) {
@@ -373,17 +389,20 @@ export async function handleMovieDetails(env, body, signal) {
     const combined = new Set([...pg.map(String), ...movie.genre_ids.map(String)]);
     profile.genres_ids = [...combined].map(x => { const n = Number(x); return Number.isFinite(n) ? n : x; });
   }
-  if (staleLLM.length) {
-    try {
-      const updates = await fillDetailsBatch(env, [movie], staleLLM, signal, { movie_id: movieId, maxAttempts: 2, timeoutMs: 20000 });
-      const u = updates.get(String(movie.id)) || {};
-      Object.assign(profile, u);
-      const covered = Object.keys(u).filter(f => profile[f] !== undefined && profile[f] !== null);
-      if (covered.length) dirty = true;
-      await putFieldRows(env, movieId, covered, Object.fromEntries(covered.map(f => [f, "llm"])));
-    } catch (e) { console.warn("stage2 details fail:", e.message); }
+  if (staleLLM.length || forceAll) {
+    const llmFieldsToFill = forceAll ? LLM_FIELDS : staleLLM;
+    if (llmFieldsToFill.length) {
+      try {
+        const updates = await fillDetailsBatch(env, [movie], llmFieldsToFill, signal, { movie_id: movieId, maxAttempts: 3, timeoutMs: 30000 });
+        const u = updates.get(String(movie.id)) || {};
+        Object.assign(profile, u);
+        const covered = Object.keys(u).filter(f => profile[f] !== undefined && profile[f] !== null);
+        if (covered.length) dirty = true;
+        await putFieldRows(env, movieId, covered, Object.fromEntries(covered.map(f => [f, "llm"])));
+      } catch (e) { console.warn("stage2 details fail:", e.message); }
+    }
   }
-  if (profile.dialogue_density_subtitle == null) {
+  if (profile.dialogue_density_subtitle == null || forceAll) {
     try {
       const r = await fetchSubtitleDensity(env, movie, signal);
       if (r && r.density != null) { profile.dialogue_density_subtitle = r.density; dirty = true; await putFieldRows(env, movieId, ["dialogue_density_subtitle"], { dialogue_density_subtitle: r.source || "subtitles" }); }
@@ -403,4 +422,4 @@ export async function handleMovieDetails(env, body, signal) {
   merged.dialogue_density_subtitle = profile.dialogue_density_subtitle ?? null;
   if (sourceErrors.length) merged._source_errors = sourceErrors;
   return { movie: merged };
-        }
+    }

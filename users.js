@@ -1,6 +1,10 @@
-// users.js — /lists/add artık imdb_id + movie_id birlikte siliyor (çift kart fix).
+// DOSYA: users.js
+// - CSV "Your Rating" parse + store + return + sort
+// - /csv-search: CSV cache'teki kartları filtreyle ara (arama kaynağı)
+// - getList: profile merge + user_rating
 import { getCurrentUserWithAdminBridge } from "./auth.js";
 import { handleMovieDetails } from "./research.js";
+import { evaluateFilters } from "./filters.js";
 
 const CORS = {
   "Access-Control-Allow-Origin": "*",
@@ -40,11 +44,21 @@ function parseCsv(text) {
     iRating = idx("Imdb Rating"), iVotes = idx("Num Votes"), iYear = idx("Year"),
     iGenres = idx("Genres"), iDirectors = idx("Directors");
   const iRuntime = (() => { for (const c of ["Runtime", "Runtime (mins)", "Duration", "Duration (mins)"]) { const i = idx(c); if (i >= 0) return i; } return -1; })();
+  // === YENİ: Your Rating / User Rating / My Rating desteği ===
+  const iUserRating = (() => { for (const c of ["Your Rating", "User Rating", "My Rating", "Rating"]) { const i = idx(c); if (i >= 0) return i; } return -1; })();
   const out = [];
   for (let li = 1; li < lines.length; li++) {
     const cols = parseRow(lines[li]);
     const imdbId = iConst >= 0 ? (cols[iConst] || "").trim() : "";
     if (!imdbId) continue;
+    let userRating = null;
+    if (iUserRating >= 0) {
+      const raw = String(cols[iUserRating] || "").trim().replace(",", ".");
+      if (raw && /^\d+(\.\d+)?$/.test(raw)) {
+        const n = parseFloat(raw);
+        if (Number.isFinite(n) && n >= 0 && n <= 10) userRating = n;
+      }
+    }
     out.push({
       imdbId,
       titleOriginal: iOrig >= 0 ? (cols[iOrig] || "").trim() : "",
@@ -55,7 +69,8 @@ function parseCsv(text) {
       imdbVotes: iVotes >= 0 ? parseInt(String(cols[iVotes] || "").replace(/[^\d]/g, "")) || null : null,
       runtime: iRuntime >= 0 ? (parseInt(String(cols[iRuntime] || "").replace(/[^\d]/g, "")) || null) : null,
       genres: iGenres >= 0 ? (cols[iGenres] || "").trim() : "",
-      directors: iDirectors >= 0 ? (cols[iDirectors] || "").trim() : ""
+      directors: iDirectors >= 0 ? (cols[iDirectors] || "").trim() : "",
+      userRating
     });
   }
   return out;
@@ -74,35 +89,36 @@ async function importCsv(env, userId, listType, items) {
     const conflicting = byImdb.get(it.imdbId);
     if (conflicting && [...conflicting].some(t => t !== listType)) { conflicts++; continue; }
     stmts.push(env.DB.prepare(
-      `INSERT INTO user_movies (user_id, list_type, movie_id, imdb_id, title_original, title_tr, url, year, imdb_rating, imdb_votes, runtime, genres, directors, source, source_meta_json, created_at, updated_at)
-       VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 'csv', NULL, ?, ?)
+      `INSERT INTO user_movies (user_id, list_type, movie_id, imdb_id, title_original, title_tr, url, year, imdb_rating, imdb_votes, runtime, genres, directors, user_rating, source, source_meta_json, created_at, updated_at)
+       VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 'csv', NULL, ?, ?)
        ON CONFLICT(user_id, list_type, movie_id) DO UPDATE SET
          title_original = excluded.title_original, title_tr = excluded.title_tr, url = excluded.url, year = excluded.year,
          imdb_rating = excluded.imdb_rating, imdb_votes = excluded.imdb_votes, runtime = excluded.runtime,
-         genres = excluded.genres, directors = excluded.directors, source = excluded.source, updated_at = excluded.updated_at`
-    ).bind(userId, listType, movieIdFromImdb(it.imdbId), it.imdbId, it.titleOriginal, it.titleTr, it.url || null, it.year, it.imdbRating, it.imdbVotes, it.runtime, it.genres, it.directors, now, now));
+         genres = excluded.genres, directors = excluded.directors, user_rating = COALESCE(excluded.user_rating, user_movies.user_rating),
+         source = excluded.source, updated_at = excluded.updated_at`
+    ).bind(userId, listType, movieIdFromImdb(it.imdbId), it.imdbId, it.titleOriginal, it.titleTr, it.url || null, it.year, it.imdbRating, it.imdbVotes, it.runtime, it.genres, it.directors, it.userRating ?? null, now, now));
     added++;
   }
   for (let i = 0; i < stmts.length; i += 40) await env.DB.batch(stmts.slice(i, i + 40));
   return { added, skipped, conflicts };
 }
-
 async function importCsvFile(env, userId, listType, csvText) {
   const items = parseCsv(csvText);
   if (!items.length) throw new Error("CSV'de geçerli film bulunamadı");
   const res = await importCsv(env, userId, listType, items);
   const hash = String(items.length) + "|" + (items[0]?.imdbId || "");
-  await env.DB.prepare(
-    `INSERT INTO csv_imports (user_id, list_type, filename, content_hash, row_count, conflicts, imported_at) VALUES (?, ?, NULL, ?, ?, ?, ?)`
-  ).bind(userId, listType, hash, items.length, res.conflicts, Math.floor(Date.now() / 1000)).run();
+  await env.DB.prepare(`INSERT INTO csv_imports (user_id, list_type, filename, content_hash, row_count, conflicts, imported_at) VALUES (?, ?, NULL, ?, ?, ?, ?)`)
+    .bind(userId, listType, hash, items.length, res.conflicts, Math.floor(Date.now() / 1000)).run();
   return { ...res, total: items.length };
 }
 
 async function getList(env, userId, listType, page = 1, pageSize = 10, sort = "year_desc") {
   const offset = (page - 1) * pageSize;
-  const orderBy = sort === "imdb_desc" ? "imdb_rating DESC, year DESC" : "year DESC, imdb_rating DESC";
+  let orderBy = "year DESC, imdb_rating DESC";
+  if (sort === "imdb_desc") orderBy = "imdb_rating DESC, year DESC";
+  else if (sort === "user_desc") orderBy = "user_rating DESC NULLS LAST, year DESC";
   const { results } = await env.DB.prepare(
-    `SELECT movie_id, imdb_id, tmdb_id, title_original, title_tr, url, year, imdb_rating, imdb_votes, runtime, genres, directors, source
+    `SELECT movie_id, imdb_id, tmdb_id, title_original, title_tr, url, year, imdb_rating, imdb_votes, runtime, genres, directors, user_rating, source
      FROM user_movies WHERE user_id = ? AND list_type = ? ORDER BY ${orderBy} LIMIT ? OFFSET ?`
   ).bind(userId, listType, pageSize, offset).all();
   const items = results || [];
@@ -115,9 +131,7 @@ async function getList(env, userId, listType, page = 1, pageSize = 10, sort = "y
   if (tmdbCandidates.size) {
     const arr = [...tmdbCandidates];
     const placeholders = arr.map(() => "?").join(",");
-    const { results: profiles } = await env.DB.prepare(
-      `SELECT movie_id, data_json FROM movie_profiles WHERE movie_id IN (${placeholders})`
-    ).bind(...arr).all();
+    const { results: profiles } = await env.DB.prepare(`SELECT movie_id, data_json FROM movie_profiles WHERE movie_id IN (${placeholders})`).bind(...arr).all();
     for (const p of profiles || []) { try { profileByTmdbId.set(String(p.movie_id), { ...JSON.parse(p.data_json), id: String(p.movie_id) }); } catch {} }
   }
   const needFallback = items.filter(it => {
@@ -130,9 +144,7 @@ async function getList(env, userId, listType, page = 1, pageSize = 10, sort = "y
     const imdbIds = needFallback.map(it => `tt${String(it.imdb_id).replace(/^tt/, "")}`);
     const placeholders = imdbIds.map(() => "?").join(",");
     try {
-      const { results: profilesByImdb } = await env.DB.prepare(
-        `SELECT movie_id, data_json FROM movie_profiles WHERE json_extract(data_json, '$.imdbID') IN (${placeholders}) OR json_extract(data_json, '$.imdb_id') IN (${placeholders})`
-      ).bind(...imdbIds, ...imdbIds).all();
+      const { results: profilesByImdb } = await env.DB.prepare(`SELECT movie_id, data_json FROM movie_profiles WHERE json_extract(data_json, '$.imdbID') IN (${placeholders}) OR json_extract(data_json, '$.imdb_id') IN (${placeholders})`).bind(...imdbIds, ...imdbIds).all();
       for (const p of profilesByImdb || []) { try { const data = JSON.parse(p.data_json); const pImdb = data.imdbID || data.imdb_id; if (pImdb) profileByImdb.set(pImdb, { ...data, id: String(p.movie_id) }); } catch {} }
     } catch (e) { console.warn("imdb fallback:", e.message); }
   }
@@ -142,8 +154,20 @@ async function getList(env, userId, listType, page = 1, pageSize = 10, sort = "y
     if (tmdbKey) profile = profileByTmdbId.get(tmdbKey) || null;
     if (!profile && it.imdb_id) { const imdbFull = `tt${String(it.imdb_id).replace(/^tt/, "")}`; profile = profileByImdb.get(imdbFull) || null; }
     if (profile) {
-      if (!profile.original_title && !profile.title) { profile.original_title = it.title_original || it.title_tr || `IMDb: ${it.imdb_id}` || it.movie_id; profile.title = it.title_tr || it.title_original || profile.original_title; }
+      // CSV'den eksik alanları profile merge et
+      if (!profile.original_title) profile.original_title = it.title_original || it.title_tr || profile.title || `IMDb: ${it.imdb_id}`;
+      if (!profile.title) profile.title = it.title_tr || it.title_original || profile.original_title;
+      if (!profile.release_date && it.year) profile.release_date = String(it.year);
+      if (!profile.runtime && it.runtime) profile.runtime = it.runtime;
+      if (!profile.imdbRating && it.imdb_rating) profile.imdbRating = it.imdb_rating;
+      if (!profile.imdbVotes && it.imdb_votes) profile.imdbVotes = String(it.imdb_votes);
+      if (!profile.genres && it.genres) profile.genres = String(it.genres).split(",").map(s => s.trim()).filter(Boolean);
+      if (!profile.director && it.directors) profile.director = String(it.directors).split(",").map(n => ({ name: n.trim(), profile_path: null })).filter(p => p.name);
       if (!profile.imdb_id && it.imdb_id) profile.imdb_id = `tt${String(it.imdb_id).replace(/^tt/, "")}`;
+      if (!profile.imdbID && it.imdb_id) profile.imdbID = `tt${String(it.imdb_id).replace(/^tt/, "")}`;
+      if (!profile.id && tmdbKey) profile.id = tmdbKey;
+      // user_rating her zaman CSV'den gelir
+      if (it.user_rating != null) profile.user_rating = it.user_rating;
     }
     return { ...it, profile: profile || null, needs_card: !profile };
   });
@@ -158,7 +182,6 @@ async function getMovieCounts(env, movieId) {
   for (const r of results || []) out[r.list_type] = r.c;
   return out;
 }
-
 async function refreshCardForImdb(env, imdbId, signal) {
   if (!env.TMDB_API_KEY) throw new Error("TMDB_API_KEY tanımlı değil");
   const cleanId = String(imdbId || "").replace(/^tt/, "");
@@ -174,9 +197,39 @@ async function refreshCardForImdb(env, imdbId, signal) {
   if (!tmdbMovie) throw new Error("Film TMDB'de bulunamadı");
   const result = await handleMovieDetails(env, {
     movie: { id: tmdbMovie.id, imdb_id: `tt${cleanId}`, title: tmdbMovie.title, original_title: tmdbMovie.original_title, release_date: tmdbMovie.release_date, overview: tmdbMovie.overview, poster_path: tmdbMovie.poster_path, vote_average: tmdbMovie.vote_average, vote_count: tmdbMovie.vote_count, genre_ids: tmdbMovie.genre_ids || [] },
-    forceAll: false
+    forceAll: true  // Tüm alanları zorla doldur
   }, signal);
   return { tmdbId: tmdbMovie.id, movie: result.movie };
+}
+
+// === CSV cache araması: filtrelerle user_movies + movie_profiles birleşik arama ===
+async function searchCsvCache(env, filters, limit, viewerId) {
+  if (!env.DB) return [];
+  // Aynı tmdb_id birden fazla kullanıcıda olabilir; her bir tekil filmi bir kez al
+  const { results } = await env.DB.prepare(
+    `SELECT um.tmdb_id, um.imdb_id, um.user_rating, mp.data_json
+     FROM user_movies um
+     INNER JOIN movie_profiles mp ON mp.movie_id = CAST(um.tmdb_id AS TEXT)
+     WHERE um.tmdb_id IS NOT NULL AND mp.data_json IS NOT NULL
+     GROUP BY um.tmdb_id
+     ORDER BY mp.updated_at DESC LIMIT 500`
+  ).all();
+  const matches = [];
+  for (const r of results || []) {
+    if (matches.length >= limit) break;
+    try {
+      const profile = JSON.parse(r.data_json);
+      profile.id = String(r.tmdb_id);
+      if (r.imdb_id && !profile.imdb_id) profile.imdb_id = `tt${String(r.imdb_id).replace(/^tt/, "")}`;
+      if (r.user_rating != null) profile.user_rating = r.user_rating;
+      // Sadece deterministik filtreleri uygula (semantic AI filtresi sonraki aşamada)
+      const evalResult = evaluateFilters(profile, filters, null, null, null);
+      if (evalResult.match) {
+        matches.push({ ...profile, _csv_cache: true });
+      }
+    } catch (e) { /* parse hatası, geç */ }
+  }
+  return matches;
 }
 
 export async function handleUser(request, env, ctx) {
@@ -193,7 +246,7 @@ export async function handleUser(request, env, ctx) {
     const imdbIdRaw = (url.searchParams.get("imdbId") || "").replace(/^tt/, "");
     const ids = []; if (tmdbId) ids.push(`tmdb:${tmdbId}`); if (imdbIdRaw) ids.push(`imdb:${imdbIdRaw}`);
     if (!ids.length) return jsonRes({ listType: null });
-    try { const placeholders = ids.map(() => "?").join(","); const { results } = await env.DB.prepare(`SELECT list_type FROM user_movies WHERE user_id = ? AND movie_id IN (${placeholders}) LIMIT 1`).bind(sess.user_id, ...ids).all(); return jsonRes({ listType: results?.[0]?.list_type || null }); } catch (e) { return jsonRes({ listType: null }); }
+    try { const placeholders = ids.map(() => "?").join(","); const { results } = await env.DB.prepare(`SELECT list_type, user_rating FROM user_movies WHERE user_id = ? AND movie_id IN (${placeholders}) LIMIT 1`).bind(sess.user_id, ...ids).all(); return jsonRes({ listType: results?.[0]?.list_type || null, userRating: results?.[0]?.user_rating ?? null }); } catch (e) { return jsonRes({ listType: null }); }
   }
   if (path.startsWith("/public/") && request.method === "GET") {
     const username = decodeURIComponent(path.replace("/public/", ""));
@@ -203,15 +256,21 @@ export async function handleUser(request, env, ctx) {
     if (user.is_suspended) return jsonErr("Bu profil gizli", 403);
     if (!user.is_public) return jsonErr("Bu profil gizli", 403);
     const lists = {};
-    for (const lt of ["watched", "want", "wont"]) { const { results } = await env.DB.prepare(`SELECT movie_id, title_original, title_tr, year, imdb_rating FROM user_movies WHERE user_id = ? AND list_type = ? ORDER BY updated_at DESC LIMIT 200`).bind(user.id, lt).all(); lists[lt] = results || []; }
+    for (const lt of ["watched", "want", "wont"]) { const { results } = await env.DB.prepare(`SELECT movie_id, title_original, title_tr, year, imdb_rating, user_rating FROM user_movies WHERE user_id = ? AND list_type = ? ORDER BY updated_at DESC LIMIT 200`).bind(user.id, lt).all(); lists[lt] = results || []; }
     return jsonRes({ user: { username: user.username, registerNumber: user.register_number, isPublic: true }, lists });
   }
   if (!isAuth) return jsonErr("Giriş gerekli", 401);
 
-  if (path === "/profile" && request.method === "GET") {
-    const { results: perms } = await env.DB.prepare("SELECT permission FROM user_permissions WHERE user_id = ?").bind(sess.user_id).all();
-    return jsonRes({ userId: sess.user_id, username: sess.username, registerNumber: sess.register_number, isAdmin: !!sess.is_admin, isPublic: !!sess.is_public, isApproved: !!sess.is_approved, isEmailVerified: !!sess.is_email_verified, permissions: (perms || []).map(p => p.permission) });
+  // === YENİ: CSV cache araması (giriş yapmış kullanıcı) ===
+  if (path === "/csv-search" && request.method === "POST") {
+    let body; try { body = await request.json(); } catch { return jsonErr("Geçersiz JSON", 400); }
+    const filters = body.filters && typeof body.filters === "object" ? body.filters : {};
+    const limit = Math.min(50, Math.max(1, parseInt(body.limit) || 10));
+    try { const movies = await searchCsvCache(env, filters, limit, sess.user_id); return jsonRes({ movies, total: movies.length }); }
+    catch (e) { return jsonErr(e.message, 500); }
   }
+
+  if (path === "/profile" && request.method === "GET") { const { results: perms } = await env.DB.prepare("SELECT permission FROM user_permissions WHERE user_id = ?").bind(sess.user_id).all(); return jsonRes({ userId: sess.user_id, username: sess.username, registerNumber: sess.register_number, isAdmin: !!sess.is_admin, isPublic: !!sess.is_public, isApproved: !!sess.is_approved, isEmailVerified: !!sess.is_email_verified, permissions: (perms || []).map(p => p.permission) }); }
   if (path === "/profile" && request.method === "PUT") { let body; try { body = await request.json(); } catch { return jsonErr("Geçersiz JSON", 400); } if (typeof body.isPublic === "boolean") { await env.DB.prepare("UPDATE users SET is_public = ?, updated_at = ? WHERE id = ?").bind(body.isPublic ? 1 : 0, Math.floor(Date.now() / 1000), sess.user_id).run(); } return jsonRes({ ok: true }); }
   if (path === "/csv-import" && request.method === "POST") {
     let body; try { body = await request.json(); } catch { return jsonErr("Geçersiz JSON", 400); }
@@ -224,11 +283,10 @@ export async function handleUser(request, env, ctx) {
     const lt = path.split("/")[2];
     if (!["watched", "want", "wont"].includes(lt)) return jsonErr("Geçersiz liste", 400);
     const page = Math.max(1, parseInt(url.searchParams.get("page") || "1"));
-    const sort = url.searchParams.get("sort") === "imdb" ? "imdb_desc" : "year_desc";
+    const sortParam = url.searchParams.get("sort");
+    const sort = sortParam === "imdb" ? "imdb_desc" : sortParam === "user" ? "user_desc" : "year_desc";
     try { return jsonRes(await getList(env, sess.user_id, lt, page, 10, sort)); } catch (e) { return jsonErr(e.message, 500); }
   }
-
-  // === /lists/add: imdb_id + movie_id birlikte silinir → çift kart imkansız ===
   if (path === "/lists/add" && request.method === "POST") {
     let body; try { body = await request.json(); } catch { return jsonErr("Geçersiz JSON", 400); }
     const lt = String(body.listType || "");
@@ -240,18 +298,30 @@ export async function handleUser(request, env, ctx) {
     if (movieId.startsWith("tmdb:")) { const n = parseInt(movieId.slice(5)); if (Number.isFinite(n)) tmdbId = n; }
     else if (body.tmdbId) { const n = parseInt(body.tmdbId); if (Number.isFinite(n)) tmdbId = n; }
     const now = Math.floor(Date.now() / 1000);
-    // Çift kart fix: aynı imdb_id VEYA movie_id varsa tüm listelerden sil
-    if (imdbId) {
-      await env.DB.prepare("DELETE FROM user_movies WHERE user_id = ? AND (imdb_id = ? OR movie_id = ?)").bind(sess.user_id, imdbId, movieId).run();
-    } else {
-      await env.DB.prepare("DELETE FROM user_movies WHERE user_id = ? AND movie_id = ?").bind(sess.user_id, movieId).run();
-    }
+    if (imdbId) { await env.DB.prepare("DELETE FROM user_movies WHERE user_id = ? AND (imdb_id = ? OR movie_id = ?)").bind(sess.user_id, imdbId, movieId).run(); }
+    else { await env.DB.prepare("DELETE FROM user_movies WHERE user_id = ? AND movie_id = ?").bind(sess.user_id, movieId).run(); }
+    const userRating = body.userRating != null && Number.isFinite(parseFloat(body.userRating)) ? parseFloat(body.userRating) : null;
     await env.DB.prepare(
-      `INSERT INTO user_movies (user_id, list_type, movie_id, imdb_id, tmdb_id, title_original, title_tr, url, year, imdb_rating, imdb_votes, runtime, genres, directors, source, created_at, updated_at)
-       VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 'manual', ?, ?)
-       ON CONFLICT(user_id, list_type, movie_id) DO UPDATE SET updated_at = excluded.updated_at, tmdb_id = COALESCE(excluded.tmdb_id, user_movies.tmdb_id)`
-    ).bind(sess.user_id, lt, movieId, imdbId || null, tmdbId, body.titleOriginal || null, body.titleTr || null, body.url || null, body.year || null, body.imdbRating || null, body.imdbVotes || null, body.runtime || null, body.genres || null, body.directors || null, now, now).run();
+      `INSERT INTO user_movies (user_id, list_type, movie_id, imdb_id, tmdb_id, title_original, title_tr, url, year, imdb_rating, imdb_votes, runtime, genres, directors, user_rating, source, created_at, updated_at)
+       VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 'manual', ?, ?)
+       ON CONFLICT(user_id, list_type, movie_id) DO UPDATE SET updated_at = excluded.updated_at, tmdb_id = COALESCE(excluded.tmdb_id, user_movies.tmdb_id), user_rating = COALESCE(excluded.user_rating, user_movies.user_rating)`
+    ).bind(sess.user_id, lt, movieId, imdbId || null, tmdbId, body.titleOriginal || null, body.titleTr || null, body.url || null, body.year || null, body.imdbRating || null, body.imdbVotes || null, body.runtime || null, body.genres || null, body.directors || null, userRating, now, now).run();
     return jsonRes({ ok: true });
+  }
+  // === YENİ: user_rating güncelleme (profilde film kartından) ===
+  if (path === "/rating" && request.method === "PUT") {
+    let body; try { body = await request.json(); } catch { return jsonErr("Geçersiz JSON", 400); }
+    const movieId = String(body.movieId || "");
+    const imdbId = String(body.imdbId || "").replace(/^tt/, "");
+    if (!movieId && !imdbId) return jsonErr("movieId veya imdbId gerekli", 400);
+    const raw = body.userRating;
+    const val = (raw === null || raw === undefined || raw === "") ? null : (Number.isFinite(parseFloat(raw)) && parseFloat(raw) >= 0 && parseFloat(raw) <= 10 ? parseFloat(raw) : null);
+    const now = Math.floor(Date.now() / 1000);
+    try {
+      if (imdbId) { await env.DB.prepare("UPDATE user_movies SET user_rating = ?, updated_at = ? WHERE user_id = ? AND imdb_id = ?").bind(val, now, sess.user_id, imdbId).run(); }
+      if (movieId) { await env.DB.prepare("UPDATE user_movies SET user_rating = ?, updated_at = ? WHERE user_id = ? AND movie_id = ?").bind(val, now, sess.user_id, movieId).run(); }
+      return jsonRes({ ok: true });
+    } catch (e) { return jsonErr(e.message, 500); }
   }
   if (path.startsWith("/lists/remove/") && request.method === "DELETE") {
     const parts = path.replace("/lists/remove/", "").split("/");
@@ -280,23 +350,8 @@ export async function handleUser(request, env, ctx) {
     } catch (e) { return jsonErr("İşlem başarısız: " + e.message, 500); }
   }
   if (path.startsWith("/votes/") && request.method === "GET") { const movieId = decodeURIComponent(path.replace("/votes/", "")); const { results } = await env.DB.prepare("SELECT field, value_json, updated_at FROM user_votes WHERE user_id = ? AND movie_id = ?").bind(sess.user_id, movieId).all(); const votes = {}; for (const r of results || []) votes[r.field] = safeJSON(r.value_json, null); return jsonRes({ movieId, votes }); }
-  if (path.startsWith("/votes/") && request.method === "PUT") {
-    const movieId = decodeURIComponent(path.replace("/votes/", "")); let body; try { body = await request.json(); } catch { return jsonErr("Geçersiz JSON", 400); }
-    const votes = body.votes && typeof body.votes === "object" ? body.votes : {};
-    const now = Math.floor(Date.now() / 1000); const stmts = [];
-    for (const [field, value] of Object.entries(votes)) { if (value === null || value === undefined) stmts.push(env.DB.prepare("DELETE FROM user_votes WHERE user_id = ? AND movie_id = ? AND field = ?").bind(sess.user_id, movieId, field)); else stmts.push(env.DB.prepare(`INSERT INTO user_votes (user_id, movie_id, field, value_json, updated_at) VALUES (?, ?, ?, ?, ?) ON CONFLICT(user_id, movie_id, field) DO UPDATE SET value_json = excluded.value_json, updated_at = excluded.updated_at`).bind(sess.user_id, movieId, field, JSON.stringify(value), now)); }
-    if (stmts.length) await env.DB.batch(stmts);
-    return jsonRes({ ok: true });
-  }
+  if (path.startsWith("/votes/") && request.method === "PUT") { const movieId = decodeURIComponent(path.replace("/votes/", "")); let body; try { body = await request.json(); } catch { return jsonErr("Geçersiz JSON", 400); } const votes = body.votes && typeof body.votes === "object" ? body.votes : {}; const now = Math.floor(Date.now() / 1000); const stmts = []; for (const [field, value] of Object.entries(votes)) { if (value === null || value === undefined) stmts.push(env.DB.prepare("DELETE FROM user_votes WHERE user_id = ? AND movie_id = ? AND field = ?").bind(sess.user_id, movieId, field)); else stmts.push(env.DB.prepare(`INSERT INTO user_votes (user_id, movie_id, field, value_json, updated_at) VALUES (?, ?, ?, ?, ?) ON CONFLICT(user_id, movie_id, field) DO UPDATE SET value_json = excluded.value_json, updated_at = excluded.updated_at`).bind(sess.user_id, movieId, field, JSON.stringify(value), now)); } if (stmts.length) await env.DB.batch(stmts); return jsonRes({ ok: true }); }
   if (path === "/votes" && request.method === "GET") { const { results } = await env.DB.prepare("SELECT movie_id, field, value_json, updated_at FROM user_votes WHERE user_id = ? ORDER BY updated_at DESC LIMIT 500").bind(sess.user_id).all(); return jsonRes({ votes: results || [] }); }
-  if (path.startsWith("/votes-aggregate/") && request.method === "GET") {
-    const movieId = decodeURIComponent(path.replace("/votes-aggregate/", ""));
-    const { results } = await env.DB.prepare("SELECT field, value_json FROM user_votes WHERE movie_id = ?").bind(movieId).all();
-    const fieldMap = {}; let totalVotes = 0;
-    for (const r of results || []) { const val = safeJSON(r.value_json, null); if (!fieldMap[r.field]) fieldMap[r.field] = new Map(); const key = JSON.stringify(val); fieldMap[r.field].set(key, (fieldMap[r.field].get(key) || 0) + 1); totalVotes++; }
-    const aggregated = {};
-    for (const [field, counts] of Object.entries(fieldMap)) { let bestKey = null, bestCount = 0; for (const [k, c] of counts) if (c > bestCount) { bestKey = k; bestCount = c; } aggregated[field] = { value: safeJSON(bestKey, null), count: bestCount, total: totalVotes }; }
-    return jsonRes({ movieId, aggregated });
-  }
+  if (path.startsWith("/votes-aggregate/") && request.method === "GET") { const movieId = decodeURIComponent(path.replace("/votes-aggregate/", "")); const { results } = await env.DB.prepare("SELECT field, value_json FROM user_votes WHERE movie_id = ?").bind(movieId).all(); const fieldMap = {}; let totalVotes = 0; for (const r of results || []) { const val = safeJSON(r.value_json, null); if (!fieldMap[r.field]) fieldMap[r.field] = new Map(); const key = JSON.stringify(val); fieldMap[r.field].set(key, (fieldMap[r.field].get(key) || 0) + 1); totalVotes++; } const aggregated = {}; for (const [field, counts] of Object.entries(fieldMap)) { let bestKey = null, bestCount = 0; for (const [k, c] of counts) if (c > bestCount) { bestKey = k; bestCount = c; } aggregated[field] = { value: safeJSON(bestKey, null), count: bestCount, total: totalVotes }; } return jsonRes({ movieId, aggregated }); }
   return jsonErr("Kullanıcı route bulunamadı", 404);
-                                             }
+    }

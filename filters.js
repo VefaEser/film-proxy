@@ -1,5 +1,7 @@
-// filters.js — passesLocalFilters artık unknown durumunda da eler.
-import { SEMANTIC_FIELDS, FIELD_DEFS } from "./fields.config.js";
+// DOSYA: filters.js
+// Değişiklikler: family_content filtresi unknown olduğunda ELE (hasFamilyFilters); passesLocalFilters'ta
+// director/writers/cast/company unknown da elenir.
+import { SEMANTIC_FIELDS, FIELD_DEFS, LLM_FIELDS } from "./fields.config.js";
 import { norm, yearOf, safeJSON } from "./db.js";
 
 const DEFAULT_MIN_IMDB_VOTES = 100;
@@ -100,6 +102,11 @@ export function semanticSignature(filters) {
   return JSON.stringify(sorted);
 }
 export function hasSemanticFilters(filters) { return semanticSignature(filters) !== "{}"; }
+// === YENİ: family_content filtresi var mı? (unknown → ele) ===
+export function hasFamilyFilters(filters) {
+  const f = filters || {};
+  return !!(f.family_content && Object.keys(f.family_content).length);
+}
 export function ratioFieldsNeeded(filters) {
   const f = filters || {};
   const fields = [];
@@ -186,7 +193,7 @@ function matchAwards(profileAwards, profileNominations, filterObj) {
   return { match: true, unknown: false, reasons: [] };
 }
 
-// === YENİ: director/writers/cast için unknown durumunda da ele ===
+// === YENİ: passesLocalFilters — director/writers/cast/company unknown da ELE (katı) ===
 function passesLocalFilters(profile, filters) {
   const imdb = Number(String(profile.imdbRating || "").replace(/[^\d.]/g, "")) || null;
   if (filters.imdbMin > 0 && imdb != null && imdb < filters.imdbMin) return false;
@@ -203,9 +210,11 @@ function passesLocalFilters(profile, filters) {
   if (filters.runtimeMin != null && runtime != null && runtime < filters.runtimeMin) return false;
   if (filters.runtimeMax != null && runtime != null && runtime > filters.runtimeMax) return false;
   if (filters.rated && !matchRated(profile.rated, filters.rated).match) return false;
-  if (filters.director) { const r = matchIdSet(profile.director_ids, filters.director); if (!r.match || r.unknown) return false; }
-  if (filters.writers) { const r = matchIdSet(profile.writers_ids, filters.writers); if (!r.match || r.unknown) return false; }
-  if (filters.cast) { const r = matchIdSet(profile.cast_ids, filters.cast); if (!r.match || r.unknown) return false; }
+  // director/writers/cast/company: bilinmiyorsa da ELE (kullanıcı belirli kişi/şirket seçtiyse bilinmeyen film geçmemeli)
+  if (filters.director) { const r = matchIdSet(profile.director_ids, filters.director); if (!r.match) return false; }
+  if (filters.writers) { const r = matchIdSet(profile.writers_ids, filters.writers); if (!r.match) return false; }
+  if (filters.cast) { const r = matchIdSet(profile.cast_ids, filters.cast); if (!r.match) return false; }
+  if (filters.company) { const r = matchIdSet(profile.production_companies_ids, filters.company); if (!r.match) return false; }
   return true;
 }
 function evalFilmingLocations(profile, f, metatakeLocations, filmmapLocations) {
@@ -323,7 +332,7 @@ export function evaluateFilters(profile, filters, semanticVerdict, metatakeLocat
     if (res.conflict) state.conflicts = true;
     for (const r of res.reasons) state.reasons.push(`${label} ${r}`);
   }
-  if (filters.company) { const res = matchIdSet(profile.production_companies_ids, filters.company); if (!res.match) state.match = false; if (res.unknown) state.unknown = true; }
+  // Company/keywords: passesLocalFilters'ta halledildi, burada sadece çakışma için
   if (filters.keywords) { const res = matchIdSet(profile.keywords_ids, filters.keywords); if (!res.match) state.match = false; if (res.unknown) state.unknown = true; }
   if (filters.award) { const res = matchAwards(profile.awards_ids, profile.nominated_ids, filters.award); if (!res.match) state.match = false; if (res.unknown) state.unknown = true; for (const r of res.reasons) state.reasons.push(r); }
   if (filters.filming_locations) { const res = evalFilmingLocations(profile, filters.filming_locations, metatakeLocations, filmmapLocations); if (!res.match) state.match = false; if (res.unknown) state.unknown = true; if (res.reason) state.reasons.push(res.reason); }
@@ -335,7 +344,16 @@ export function evaluateFilters(profile, filters, semanticVerdict, metatakeLocat
     evalRange(fc, "supporting_characters", c.supportMin, c.supportMax, "Yan karakter", state, false);
     evalRange(fc, "extras", c.extraMin, c.extraMax, "Figüran", state, false);
   }
+  // === YENİ: family_content filtresi varsa ve verdict "unknown" ise ELE (kullanıcı belirli içerik seçtiyse bilinmeyen film geçmemeli) ===
   if (semanticVerdict && semanticVerdict.verdict === "no") { state.match = false; state.reasons.push(semanticVerdict.reason || "Semantik filtre uyuşmadı"); }
-  else if (semanticVerdict && semanticVerdict.verdict === "unknown") { state.unknown = true; if (semanticVerdict.reason) state.reasons.push(semanticVerdict.reason); }
+  else if (semanticVerdict && semanticVerdict.verdict === "unknown") {
+    if (hasFamilyFilters(filters)) {
+      state.match = false;
+      state.reasons.push(semanticVerdict.reason || "Aile içeriği: bilinmiyor (elendi)");
+    } else {
+      state.unknown = true;
+      if (semanticVerdict.reason) state.reasons.push(semanticVerdict.reason);
+    }
+  }
   return state;
       }

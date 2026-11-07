@@ -1,4 +1,4 @@
-// filters.js — Semantik ve deterministik filtre değerlendirme.
+// filters.js — passesLocalFilters artık unknown durumunda da eler.
 import { SEMANTIC_FIELDS, FIELD_DEFS } from "./fields.config.js";
 import { norm, yearOf, safeJSON } from "./db.js";
 
@@ -185,6 +185,8 @@ function matchAwards(profileAwards, profileNominations, filterObj) {
   }
   return { match: true, unknown: false, reasons: [] };
 }
+
+// === YENİ: director/writers/cast için unknown durumunda da ele ===
 function passesLocalFilters(profile, filters) {
   const imdb = Number(String(profile.imdbRating || "").replace(/[^\d.]/g, "")) || null;
   if (filters.imdbMin > 0 && imdb != null && imdb < filters.imdbMin) return false;
@@ -201,9 +203,9 @@ function passesLocalFilters(profile, filters) {
   if (filters.runtimeMin != null && runtime != null && runtime < filters.runtimeMin) return false;
   if (filters.runtimeMax != null && runtime != null && runtime > filters.runtimeMax) return false;
   if (filters.rated && !matchRated(profile.rated, filters.rated).match) return false;
-  if (filters.director && !matchIdSet(profile.director_ids, filters.director).match) return false;
-  if (filters.writers && !matchIdSet(profile.writers_ids, filters.writers).match) return false;
-  if (filters.cast && !matchIdSet(profile.cast_ids, filters.cast).match) return false;
+  if (filters.director) { const r = matchIdSet(profile.director_ids, filters.director); if (!r.match || r.unknown) return false; }
+  if (filters.writers) { const r = matchIdSet(profile.writers_ids, filters.writers); if (!r.match || r.unknown) return false; }
+  if (filters.cast) { const r = matchIdSet(profile.cast_ids, filters.cast); if (!r.match || r.unknown) return false; }
   return true;
 }
 function evalFilmingLocations(profile, f, metatakeLocations, filmmapLocations) {
@@ -336,4 +338,4 @@ export function evaluateFilters(profile, filters, semanticVerdict, metatakeLocat
   if (semanticVerdict && semanticVerdict.verdict === "no") { state.match = false; state.reasons.push(semanticVerdict.reason || "Semantik filtre uyuşmadı"); }
   else if (semanticVerdict && semanticVerdict.verdict === "unknown") { state.unknown = true; if (semanticVerdict.reason) state.reasons.push(semanticVerdict.reason); }
   return state;
-    } 
+      }

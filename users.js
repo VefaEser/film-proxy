@@ -1,5 +1,4 @@
-// DOSYA: users.js
-// Kullanıcı profili, listeler, CSV import, oylar + CSV kartlarını movie_profiles ile eşleştirme.
+// users.js — Kullanıcı profili, listeler, CSV import, oylar + membership + title fallback.
 import { getCurrentUserWithAdminBridge } from "./auth.js";
 import { handleMovieDetails } from "./research.js";
 
@@ -111,14 +110,10 @@ async function getList(env, userId, listType, page = 1, pageSize = 10, sort = "y
   ).bind(userId, listType, pageSize, offset).all();
   const items = results || [];
 
-  // tmdb_id + movie_id prefix'inden profil eşleşmesi
   const tmdbCandidates = new Set();
   for (const it of items) {
     if (it.tmdb_id) tmdbCandidates.add(String(it.tmdb_id));
-    else if (it.movie_id && it.movie_id.startsWith("tmdb:")) {
-      const n = parseInt(it.movie_id.slice(5));
-      if (Number.isFinite(n)) tmdbCandidates.add(String(n));
-    }
+    else if (it.movie_id && it.movie_id.startsWith("tmdb:")) { const n = parseInt(it.movie_id.slice(5)); if (Number.isFinite(n)) tmdbCandidates.add(String(n)); }
   }
   const profileByTmdbId = new Map();
   if (tmdbCandidates.size) {
@@ -128,11 +123,12 @@ async function getList(env, userId, listType, page = 1, pageSize = 10, sort = "y
       `SELECT movie_id, data_json FROM movie_profiles WHERE movie_id IN (${placeholders})`
     ).bind(...arr).all();
     for (const p of profiles || []) {
-      try { profileByTmdbId.set(String(p.movie_id), { ...JSON.parse(p.data_json), id: String(p.movie_id) }); } catch {}
+      try {
+        const data = JSON.parse(p.data_json);
+        profileByTmdbId.set(String(p.movie_id), { ...data, id: String(p.movie_id) });
+      } catch {}
     }
   }
-
-  // tmdb_id olmayanlar için imdb_id ile fallback (data_json içindeki imdbID)
   const needFallback = items.filter(it => {
     const key = it.tmdb_id ? String(it.tmdb_id) : (it.movie_id?.startsWith("tmdb:") ? String(parseInt(it.movie_id.slice(5))) : null);
     if (key && profileByTmdbId.has(key)) return false;
@@ -144,8 +140,8 @@ async function getList(env, userId, listType, page = 1, pageSize = 10, sort = "y
     const placeholders = imdbIds.map(() => "?").join(",");
     try {
       const { results: profilesByImdb } = await env.DB.prepare(
-        `SELECT movie_id, data_json FROM movie_profiles WHERE json_extract(data_json, '$.imdbID') IN (${placeholders})`
-      ).bind(...imdbIds).all();
+        `SELECT movie_id, data_json FROM movie_profiles WHERE json_extract(data_json, '$.imdbID') IN (${placeholders}) OR json_extract(data_json, '$.imdb_id') IN (${placeholders})`
+      ).bind(...imdbIds, ...imdbIds).all();
       for (const p of profilesByImdb || []) {
         try {
           const data = JSON.parse(p.data_json);
@@ -163,6 +159,14 @@ async function getList(env, userId, listType, page = 1, pageSize = 10, sort = "y
     if (!profile && it.imdb_id) {
       const imdbFull = `tt${String(it.imdb_id).replace(/^tt/, "")}`;
       profile = profileByImdb.get(imdbFull) || null;
+    }
+    // "Bilinmeyen Film" fix: profile'da title yoksa CSV'den gelen title ile doldur
+    if (profile) {
+      if (!profile.original_title && !profile.title) {
+        profile.original_title = it.title_original || it.title_tr || `IMDb: ${it.imdb_id}` || it.movie_id;
+        profile.title = it.title_tr || it.title_original || profile.original_title;
+      }
+      if (!profile.imdb_id && it.imdb_id) profile.imdb_id = `tt${String(it.imdb_id).replace(/^tt/, "")}`;
     }
     return { ...it, profile: profile || null, needs_card: !profile };
   });
@@ -214,6 +218,23 @@ export async function handleUser(request, env, ctx) {
   if (path.startsWith("/movie-counts/") && request.method === "GET") {
     const movieId = decodeURIComponent(path.replace("/movie-counts/", ""));
     return jsonRes({ counts: await getMovieCounts(env, movieId) });
+  }
+
+  if (path === "/membership" && request.method === "GET") {
+    if (!isAuth) return jsonRes({ listType: null });
+    const tmdbId = url.searchParams.get("tmdbId") || "";
+    const imdbIdRaw = (url.searchParams.get("imdbId") || "").replace(/^tt/, "");
+    const ids = [];
+    if (tmdbId) ids.push(`tmdb:${tmdbId}`);
+    if (imdbIdRaw) ids.push(`imdb:${imdbIdRaw}`);
+    if (!ids.length) return jsonRes({ listType: null });
+    try {
+      const placeholders = ids.map(() => "?").join(",");
+      const { results } = await env.DB.prepare(
+        `SELECT list_type FROM user_movies WHERE user_id = ? AND movie_id IN (${placeholders}) LIMIT 1`
+      ).bind(sess.user_id, ...ids).all();
+      return jsonRes({ listType: results?.[0]?.list_type || null });
+    } catch (e) { return jsonRes({ listType: null }); }
   }
 
   if (path.startsWith("/public/") && request.method === "GET") {
@@ -303,7 +324,6 @@ export async function handleUser(request, env, ctx) {
     const { items } = await getList(env, sess.user_id, listType, page, 10, "year_desc");
     return jsonRes({ ok: true, items });
   }
-  // CSV'deki bir film için movie_profiles kartı oluştur veya yenile
   if (path.startsWith("/refresh-card/") && request.method === "POST") {
     const allowed = await userHasAnyPermission(env, sess, ["refresh_movie", "csv_import_cards"]);
     if (!allowed) return jsonErr("Bu işlem için yetkiniz yok", 403);
@@ -366,4 +386,4 @@ export async function handleUser(request, env, ctx) {
     return jsonRes({ movieId, aggregated });
   }
   return jsonErr("Kullanıcı route bulunamadı", 404);
-                                    }
+  }

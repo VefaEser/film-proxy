@@ -1,4 +1,5 @@
-// sources.js — TMDB, OMDb, Wikidata, FilmMap, Metatake, Commons ve altyazı kaynakları.
+// DOSYA: sources.js
+// Değişiklik: tmdbRoute fonksiyonundaki `allowed` listesine with_cast, with_crew, with_people eklendi.
 import { safeJSON, movieKey, yearOf, norm, getFilmmapCache, putFilmmapCache, getMetatakeExtendedCache, putMetatakeExtendedCache } from "./db.js";
 
 const TMDB_BASE = "https://api.themoviedb.org/3";
@@ -40,7 +41,6 @@ export async function omdb(env, params, outerSignal) {
   if (data.Response === "False") throw new Error(data.Error || "OMDb sonucu bulunamadı.");
   return data;
 }
-// Eski davranış: önce title+yıl dener, başarısız olursa imdb_id ile dener.
 export async function omdbBest(env, movie, outerSignal) {
   const title = movie.original_title || movie.title || "";
   const year = String(yearOf(movie) || "");
@@ -314,6 +314,7 @@ export async function handleImages(env, url, signal) {
   return { images: merged };
 }
 
+// === YENİ: allowed listesine with_cast, with_crew, with_people eklendi ===
 export async function tmdbRoute(env, url, signal) {
   const path = url.pathname.replace(/^\/tmdb/, "");
   if (path === "/genre/movie/list") return tmdb(env, path, { language: url.searchParams.get("language") || "tr-TR" }, signal);
@@ -325,10 +326,10 @@ export async function tmdbRoute(env, url, signal) {
   if (path === "/search/keyword") return tmdb(env, path, { query: url.searchParams.get("query") || "", page: url.searchParams.get("page") || 1 }, signal);
   if (path === "/person/popular") return tmdb(env, path, { language: url.searchParams.get("language") || "tr-TR", page: url.searchParams.get("page") || 1 }, signal);
   if (path === "/discover/movie") {
-    const allowed = ["language","sort_by","vote_average.gte","vote_average.lte","vote_count.gte","page","primary_release_date.gte","primary_release_date.lte","with_genres","without_genres","with_original_language","with_origin_country","with_runtime.gte","with_runtime.lte","with_text_query","with_companies","with_keywords","without_companies","without_keywords"];
+    const allowed = ["language","sort_by","vote_average.gte","vote_average.lte","vote_count.gte","page","primary_release_date.gte","primary_release_date.lte","with_genres","without_genres","with_original_language","with_origin_country","with_runtime.gte","with_runtime.lte","with_text_query","with_companies","with_keywords","without_companies","without_keywords","with_cast","with_crew","with_people","with_release_type","release_date.gte","release_date.lte","with_watch_providers","with_status"];
     const params = {};
     for (const k of allowed) if (url.searchParams.has(k)) params[k] = url.searchParams.get(k);
     return tmdb(env, path, params, signal);
   }
   throw Object.assign(new Error("Bilinmeyen TMDB uç noktası."), { status: 404 });
-  }
+      }

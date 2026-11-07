@@ -1,13 +1,13 @@
-// index.js — Ana giriş noktası. Modüler rotalar ve CORS sarmalayıcı.
+// index.js — Ana giriş noktası. Modüler rotalar + CORS + arama üyelik kontrolü.
 import { corsHeaders } from "./cors.js";
-import { handleAuth } from "./auth.js";
+import { handleAuth, getCurrentUserWithAdminBridge } from "./auth.js";
 import { handleUser } from "./users.js";
 import { handleSocial } from "./social.js";
 import { handleAdmin } from "./admin.js";
 import {
   GEMINI_MODEL_DEFAULT, GROQ_MODEL_DEFAULT,
   buildGeminiChain, buildGroqChain, isAdmin, response, jsonError,
-  tmdb, omdb, tmdbRoute, handleImages, handleMovieDetails, handleResearchStream,
+  omdb, tmdbRoute, handleImages, handleMovieDetails, handleResearchStream,
   getAllConfig, getLlmStats, getActiveDeadKeys, getFilterInfoAll, getAllStaticOptions,
   getMovieLists, metatakeExtended, filmmapLocations, deadKeysCache
 } from "./worker-core.js";
@@ -21,7 +21,6 @@ const CORS = {
 async function handleRequest(request, env, ctx) {
   if (request.method === "OPTIONS") return new Response(null, { status: 204, headers: CORS });
   const _u = new URL(request.url);
-
   if (_u.pathname.startsWith("/auth/")) return await handleAuth(request, env, ctx);
   if (_u.pathname.startsWith("/user/")) return await handleUser(request, env, ctx);
   if (_u.pathname.startsWith("/social/")) return await handleSocial(request, env, ctx);
@@ -30,7 +29,6 @@ async function handleRequest(request, env, ctx) {
       _u.pathname.startsWith("/admin/unlock") || _u.pathname.startsWith("/admin/messages")) {
     return await handleAdmin(request, env, ctx);
   }
-
   const url = _u;
   try {
     if (url.pathname === "/health") {
@@ -49,9 +47,7 @@ async function handleRequest(request, env, ctx) {
         d1: !!env.DB, defaultMinImdbVotes: 100
       });
     }
-    if (url.pathname === "/static/options" && request.method === "GET") {
-      return response({ options: await getAllStaticOptions(env) });
-    }
+    if (url.pathname === "/static/options" && request.method === "GET") return response({ options: await getAllStaticOptions(env) });
     if (url.pathname === "/metatake/locations" && request.method === "GET") {
       const movieId = url.searchParams.get("movie_id") || "";
       const title = url.searchParams.get("title") || "";
@@ -111,6 +107,9 @@ async function handleRequest(request, env, ctx) {
     }
     if (url.pathname === "/research" || url.pathname === "/llm-interactions") {
       if (request.method !== "POST") return jsonError("Bu uç nokta POST bekliyor.", 405);
+      // Üyelik kontrolü
+      const user = await getCurrentUserWithAdminBridge(env, request);
+      if (!user) return jsonError("Arama yapmak için giriş yapmalısınız.", 401);
       let body; try { body = await request.json(); } catch { return jsonError("Geçersiz JSON gövdesi.", 400); }
       const { readable, writable } = new TransformStream();
       const writer = writable.getWriter();

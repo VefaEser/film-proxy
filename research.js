@@ -1,5 +1,4 @@
-// DOSYA: research.js
-// OMDB source error net gösterilir; forceAll'da tüm alanlar doldurulur.
+// research.js — Per-movie hata koruması + batch devam
 import { FIELD_DEFS, FIELD_RULES, SEMANTIC_FIELDS, LLM_FIELDS } from "./fields.config.js";
 import { getProfileRowsBatch, getFieldRowsBatch, getFieldRows, putFieldRowsBatch, putProfileRowsBatch, putFieldRows, putProfileRow, getProfileRow, findStaleFields, movieKey, yearOf, getVerdictsBatch, putVerdictsBatch, getFilmmapCache, getMetatakeExtendedCache } from "./db.js";
 import { callLLMWithFallback, getPromptTemplate } from "./llm.js";
@@ -95,7 +94,47 @@ export async function handleResearchStream(env, body, controller, signal) {
     else if (useStage1 && afterLocal.length) { send({ type: "step", index: 0, total: afterLocal.length, title: "Semantik filtre uygulanıyor", stage: "sınıflandırılıyor", fields: [] }); const signature = semanticSignature(filters); const cachedVerdicts = await getVerdictsBatch(env, afterLocal.map(p => p.movieId), signature); const cacheMisses = []; for (const p of afterLocal) { const cached = cachedVerdicts.get(p.movieId); if (cached && cached.verdict !== "unknown" && !forceRefresh) semanticVerdicts.set(p.movieId, cached); else cacheMisses.push(p); } if (cacheMisses.length) { const newVerdicts = []; try { const configAll = await getAllConfig(env); const sentence = buildFilterSentence(filters); const context = buildFilterContext(filters, configAll); const batchSize = Math.min(5, cacheMisses.length); for (let start = 0; start < cacheMisses.length; start += batchSize) { if (signal?.aborted) break; const chunk = cacheMisses.slice(start, start + batchSize); try { const verdicts = await classifyBatch(env, chunk.map(p => p.movie), sentence, context, stage1UseSearch, signal, { movie_id: chunk[0].movieId }); for (const p of chunk) { const v = verdicts.get(String(p.movie.id)) || { verdict: "unknown", reason: "LLM yanıt vermedi" }; semanticVerdicts.set(p.movieId, v); if (v.verdict !== "unknown") newVerdicts.push({ movieId: p.movieId, verdict: v.verdict, reason: v.reason }); } } catch (e) { console.warn("stage1 chunk:", e.message); stage1Error = e.message; for (const p of chunk) if (!semanticVerdicts.has(p.movieId)) semanticVerdicts.set(p.movieId, { verdict: "unknown", reason: "LLM başarısız" }); } } } catch (e) { console.warn("stage1 fail:", e.message); stage1Error = e.message; } if (newVerdicts.length) await putVerdictsBatch(env, newVerdicts, signature); } }
     const movieIds = afterLocal.map(p => p.movieId); const listsMap = await getMovieLists(env, movieIds);
     const profileUpdates = []; const results = [];
-    for (const p of afterLocal) { const verdict = semanticVerdicts.get(p.movieId) || null; const evalResult = evaluateFilters(p.profile, filters, verdict, p.metatakeLocations, p.filmmap); if (p.dirty || p.staleDeterministic.length) profileUpdates.push({ movieId: p.movieId, title: p.movie.title, year: yearOf(p.movie), data: p.profile }); const movieLists = listsMap.get(p.movieId) || []; const locInfo = getLocationCount(p.profile, p.metatakeLocations, p.filmmap); const result = { id: p.movie.id, ...p.movie, ...p.profile, filter_match: evalResult.match, filter_reasons: evalResult.reasons, unknown: evalResult.unknown, conflicts: evalResult.conflicts, semantic_used: useStage1, semantic_ok: useStage1 && !!verdict && verdict.verdict !== "unknown", stage1_error: stage1Error, stage2b_used: useStage2b, web_used: (useStage1 || useStage2b) && stage1UseSearch, web_ok: false, ai_model_used: useStage1 || useStage2b ? "Gemini 3.x Flash / Groq GPT-OSS" : null, location_count: locInfo.count, location_count_estimated: locInfo.estimated, location_count_source: locInfo.source, related_films_detail: Array.isArray(p.profile.related_films_detail) ? p.profile.related_films_detail : (Array.isArray(p.profile.related_films) ? p.profile.related_films : []), color_style: Array.isArray(p.profile.color_style) ? p.profile.color_style : null, movie_lists: movieLists, _fromCache: p.staleDeterministic.length === 0, _source_errors: p.sourceErrors.length ? p.sourceErrors : null }; for (const f of ["director","writers","cast","producers","actors"]) if (result[f] !== undefined) result[f] = sanitizePeopleField(result[f]); results.push(result); send({ type: "movie", index: results.length - 1, total, movie: result }); }
+    for (const p of afterLocal) {
+      try {
+        const verdict = semanticVerdicts.get(p.movieId) || null;
+        const evalResult = evaluateFilters(p.profile, filters, verdict, p.metatakeLocations, p.filmmap);
+        if (p.dirty || p.staleDeterministic.length) profileUpdates.push({ movieId: p.movieId, title: p.movie.title || p.profile.title || p.profile.original_title, year: yearOf(p.movie), data: p.profile });
+        const movieLists = listsMap.get(p.movieId) || [];
+        const locInfo = getLocationCount(p.profile, p.metatakeLocations, p.filmmap);
+        const result = {
+          id: p.movie.id, ...p.movie, ...p.profile,
+          filter_match: evalResult.match,
+          filter_reasons: evalResult.reasons,
+          unknown: evalResult.unknown,
+          conflicts: evalResult.conflicts,
+          semantic_used: useStage1,
+          semantic_ok: useStage1 && !!verdict && verdict.verdict !== "unknown",
+          stage1_error: stage1Error,
+          stage2b_used: useStage2b,
+          web_used: (useStage1 || useStage2b) && stage1UseSearch,
+          web_ok: false,
+          ai_model_used: useStage1 || useStage2b ? "Gemini 3.x Flash / Groq GPT-OSS" : null,
+          location_count: locInfo.count,
+          location_count_estimated: locInfo.estimated,
+          location_count_source: locInfo.source,
+          related_films_detail: Array.isArray(p.profile.related_films_detail) ? p.profile.related_films_detail : (Array.isArray(p.profile.related_films) ? p.profile.related_films : []),
+          color_style: Array.isArray(p.profile.color_style) ? p.profile.color_style : null,
+          movie_lists: movieLists,
+          _fromCache: p.staleDeterministic.length === 0,
+          _source_errors: p.sourceErrors.length ? p.sourceErrors : null
+        };
+        for (const f of ["director","writers","cast","producers","actors"]) if (result[f] !== undefined) result[f] = sanitizePeopleField(result[f]);
+        results.push(result);
+        send({ type: "movie", index: results.length - 1, total, movie: result });
+      } catch (perMovieErr) {
+        console.error(`[research] per-movie fail (${p.movieId}):`, perMovieErr.stack || perMovieErr.message);
+        try {
+          const fallback = { id: p.movie.id, ...p.movie, ...p.profile, filter_match: false, filter_reasons: ["İşleme hatası: " + perMovieErr.message], unknown: true, conflicts: false, _source_errors: [{ source: "internal", error: String(perMovieErr.message) }] };
+          results.push(fallback);
+          send({ type: "movie", index: results.length - 1, total, movie: fallback });
+        } catch {}
+      }
+    }
     if (profileUpdates.length) await putProfileRowsBatch(env, profileUpdates, forceRefresh);
     send({ type: "done", movies: results });
   } catch (err) { console.error("handleResearchStream fatal:", err); try { controller.enqueue(enc.encode(`data: ${JSON.stringify({ type: "error", message: String(err.message || err) })}\n\n`)); } catch {} } finally { try { controller.close(); } catch {} }
@@ -128,7 +167,7 @@ export async function handleMovieDetails(env, body, signal) {
   if (profile.dialogue_density_subtitle == null || forceAll) { try { const r = await fetchSubtitleDensity(env, movie, signal); if (r && r.density != null) { profile.dialogue_density_subtitle = r.density; dirty = true; await putFieldRows(env, movieId, ["dialogue_density_subtitle"], { dialogue_density_subtitle: r.source || "subtitles" }); } } catch (e) { console.warn("subtitle details fail:", e.message); } }
   if (profile.imdbID && !profile.imdb_id) profile.imdb_id = profile.imdbID;
   if (movie.imdb_id && !profile.imdb_id) profile.imdb_id = movie.imdb_id;
-  if (dirty || forceAll) await putProfileRow(env, movieId, movie.title, yearOf(movie), profile, forceAll);
+  if (dirty || forceAll) await putProfileRow(env, movieId, movie.title || profile.title || profile.original_title, yearOf(movie), profile, forceAll);
   const merged = { ...movie, ...profile };
   for (const f of ["director","writers","cast","producers","actors"]) if (merged[f] !== undefined) merged[f] = sanitizePeopleField(merged[f]);
   const locInfo = getLocationCount(profile, metatakeLocations, filmmapLocationsList);
@@ -138,4 +177,4 @@ export async function handleMovieDetails(env, body, signal) {
   merged.dialogue_density_subtitle = profile.dialogue_density_subtitle ?? null;
   if (sourceErrors.length) merged._source_errors = sourceErrors;
   return { movie: merged };
-                                                                              }
+  }

@@ -4,7 +4,6 @@ import { FIELD_DEFS } from "./fields.config.js";
 export const VERDICT_TTL = 86400;
 export const deadKeysCache = { ts: 0, gemini: new Map(), groq: new Set() };
 
-// ----- Paylaşılan HTTP yardımcıları (index.js ve diğer modüller tarafından import edilir) -----
 export const CORS = {
   "Access-Control-Allow-Origin": "*",
   "Access-Control-Allow-Methods": "GET,POST,PUT,DELETE,OPTIONS",
@@ -26,7 +25,6 @@ export function isAdmin(request, env) {
   return timingSafeEqualStr(request.headers.get("Authorization") || "", `Bearer ${env.ADMIN_TOKEN}`);
 }
 
-// ----- Ortak yardımcılar -----
 export function safeJSON(text, fallback = null) { try { return JSON.parse(text); } catch { return fallback; } }
 export function norm(s) {
   return String(s || "").trim().toLowerCase()
@@ -54,13 +52,16 @@ export async function putProfileRow(env, movieId, title, year, data, refreshed =
   if (!env.DB) return;
   const now = Math.floor(Date.now() / 1000);
   const refreshedAt = refreshed ? now : null;
+  // title null ise data'dan türet
+  const safeTitle = title || data?.title || data?.original_title || data?.name || null;
+  const safeYear = year || yearOf(data) || null;
   try {
     await env.DB.prepare(
       `INSERT INTO movie_profiles (movie_id, title, year, data_json, created_at, updated_at, last_refreshed_at)
        VALUES (?, ?, ?, ?, ?, ?, ?)
-       ON CONFLICT(movie_id) DO UPDATE SET title = excluded.title, year = excluded.year, data_json = excluded.data_json,
+       ON CONFLICT(movie_id) DO UPDATE SET title = COALESCE(excluded.title, movie_profiles.title), year = COALESCE(excluded.year, movie_profiles.year), data_json = excluded.data_json,
          updated_at = excluded.updated_at, last_refreshed_at = COALESCE(excluded.last_refreshed_at, movie_profiles.last_refreshed_at)`
-    ).bind(movieId, title, year, JSON.stringify(data), now, now, refreshedAt).run();
+    ).bind(movieId, safeTitle, safeYear, JSON.stringify(data), now, now, refreshedAt).run();
   } catch (e) { console.error("profile write:", e.message); }
 }
 export async function getFieldRows(env, movieId) {
@@ -101,10 +102,7 @@ export async function getFieldRowsBatch(env, movieIds) {
       `SELECT movie_id, field, source, fetched_at FROM movie_profile_fields WHERE movie_id IN (${placeholders})`
     ).bind(...movieIds).all();
     const byId = new Map();
-    for (const r of results || []) {
-      if (!byId.has(r.movie_id)) byId.set(r.movie_id, []);
-      byId.get(r.movie_id).push(r);
-    }
+    for (const r of results || []) { if (!byId.has(r.movie_id)) byId.set(r.movie_id, []); byId.get(r.movie_id).push(r); }
     return byId;
   } catch (e) { console.error("fields batch read:", e.message); return new Map(); }
 }
@@ -113,12 +111,16 @@ export async function putProfileRowsBatch(env, entries, refreshed = false) {
   const now = Math.floor(Date.now() / 1000);
   const refreshedAt = refreshed ? now : null;
   try {
-    const stmts = entries.map(e => env.DB.prepare(
-      `INSERT INTO movie_profiles (movie_id, title, year, data_json, created_at, updated_at, last_refreshed_at)
-       VALUES (?, ?, ?, ?, ?, ?, ?)
-       ON CONFLICT(movie_id) DO UPDATE SET title = excluded.title, year = excluded.year, data_json = excluded.data_json,
-         updated_at = excluded.updated_at, last_refreshed_at = COALESCE(excluded.last_refreshed_at, movie_profiles.last_refreshed_at)`
-    ).bind(e.movieId, e.title, e.year, JSON.stringify(e.data), now, now, refreshedAt));
+    const stmts = entries.map(e => {
+      const safeTitle = e.title || e.data?.title || e.data?.original_title || null;
+      const safeYear = e.year || yearOf(e.data) || null;
+      return env.DB.prepare(
+        `INSERT INTO movie_profiles (movie_id, title, year, data_json, created_at, updated_at, last_refreshed_at)
+         VALUES (?, ?, ?, ?, ?, ?, ?)
+         ON CONFLICT(movie_id) DO UPDATE SET title = COALESCE(excluded.title, movie_profiles.title), year = COALESCE(excluded.year, movie_profiles.year), data_json = excluded.data_json,
+           updated_at = excluded.updated_at, last_refreshed_at = COALESCE(excluded.last_refreshed_at, movie_profiles.last_refreshed_at)`
+      ).bind(e.movieId, safeTitle, safeYear, JSON.stringify(e.data), now, now, refreshedAt);
+    });
     await env.DB.batch(stmts);
   } catch (e) { console.error("profile batch write:", e.message); }
 }
@@ -272,10 +274,8 @@ export async function loadDeadKeys(env) {
     const gemini = new Map();
     const groq = new Set();
     for (const r of results || []) {
-      if (r.provider === "gemini") {
-        if (!gemini.has(r.model)) gemini.set(r.model, new Set());
-        gemini.get(r.model).add(r.key_index);
-      } else if (r.provider === "groq") groq.add(r.key_index);
+      if (r.provider === "gemini") { if (!gemini.has(r.model)) gemini.set(r.model, new Set()); gemini.get(r.model).add(r.key_index); }
+      else if (r.provider === "groq") groq.add(r.key_index);
     }
     deadKeysCache.ts = now;
     deadKeysCache.gemini = gemini;
@@ -312,4 +312,4 @@ export async function getDailyModelCalls(env, provider, model) {
     const row = await env.DB.prepare("SELECT COUNT(*) AS c FROM llm_calls WHERE provider = ? AND model = ? AND ok = 1 AND ts > ?").bind(provider, model, since).first();
     return Number(row?.c || 0);
   } catch { return 0; }
-                      }
+}

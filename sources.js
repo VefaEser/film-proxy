@@ -1,10 +1,40 @@
-// DOSYA: sources.js
-// OMDB 401 → 1 saatlik in-memory devre dışı bırakma (omdbDeadUntil).
+// sources.js — TMDB / OMDb / Tavily çoklu anahtar rotasyonu + 401 devre dışı + Wikidata/Commons/Subtitles
 import { safeJSON, movieKey, yearOf, norm, getFilmmapCache, putFilmmapCache, getMetatakeExtendedCache, putMetatakeExtendedCache } from "./db.js";
 
 const TMDB_BASE = "https://api.themoviedb.org/3";
 const USER_AGENT = "FilmKesifMotoru/1.0 (https://github.com/VefaEser/film-proxy; contact: vefaeser@ornitonerenk.com)";
-let omdbDeadUntil = 0;
+
+const keyRot = {
+  omdb:   { keys: [], current: 0, deadUntil: {}, dead401: 0 },
+  tmdb:   { keys: [], current: 0, deadUntil: {} },
+  tavily: { keys: [], current: 0, deadUntil: {} }
+};
+let keyRotInited = false;
+function initKeys(env) {
+  if (keyRotInited) return;
+  keyRot.omdb.keys = [env.OMDB_API_KEY, env.OMDB_API_KEY_2, env.OMDB_API_KEY_3].filter(Boolean);
+  keyRot.tmdb.keys = [env.TMDB_API_KEY, env.TMDB_API_KEY_2, env.TMDB_API_KEY_3].filter(Boolean);
+  keyRot.tavily.keys = [env.TAVILY_API_KEY, env.TAVILY_API_KEY_2, env.TAVILY_API_KEY_3].filter(Boolean);
+  keyRotInited = true;
+}
+function pickKey(provider) {
+  const rot = keyRot[provider];
+  if (!rot.keys.length) return null;
+  const now = Date.now();
+  for (let i = 0; i < rot.keys.length; i++) {
+    const idx = (rot.current + i) % rot.keys.length;
+    if (now >= (rot.deadUntil[idx] || 0)) { rot.current = (idx + 1) % rot.keys.length; return { key: rot.keys[idx], index: idx }; }
+  }
+  return null;
+}
+function markKeyDead(provider, index, durationMs) { keyRot[provider].deadUntil[index] = Date.now() + durationMs; }
+export function getKeyHealth() {
+  return {
+    omdb:   { total: keyRot.omdb.keys.length, dead: Object.keys(keyRot.omdb.deadUntil).filter(i => keyRot.omdb.deadUntil[i] > Date.now()).length, dead401: keyRot.omdb.dead401 },
+    tmdb:   { total: keyRot.tmdb.keys.length, dead: Object.keys(keyRot.tmdb.deadUntil).filter(i => keyRot.tmdb.deadUntil[i] > Date.now()).length },
+    tavily: { total: keyRot.tavily.keys.length, dead: Object.keys(keyRot.tavily.deadUntil).filter(i => keyRot.tavily.deadUntil[i] > Date.now()).length }
+  };
+}
 
 async function fetchJSON(url, options = {}, label = "Uzak servis", timeoutMs = 18000, outerSignal) {
   const signals = [];
@@ -26,35 +56,59 @@ async function fetchJSON(url, options = {}, label = "Uzak servis", timeoutMs = 1
   if (!data) throw new Error(`${label}: JSON yanıtı alınamadı`);
   return data;
 }
+
 export async function tmdb(env, path, params = {}, outerSignal) {
-  if (!env.TMDB_API_KEY) throw new Error("TMDB_API_KEY tanımlı değil.");
-  const url = new URL(TMDB_BASE + path);
-  url.searchParams.set("api_key", env.TMDB_API_KEY);
-  for (const [k, v] of Object.entries(params)) if (v !== undefined && v !== null && v !== "") url.searchParams.set(k, String(v));
-  return fetchJSON(url.toString(), {}, "TMDB", 18000, outerSignal);
+  initKeys(env);
+  if (!keyRot.tmdb.keys.length) throw new Error("TMDB_API_KEY tanımlı değil.");
+  const tried = new Set(); let lastErr = null;
+  for (let attempt = 0; attempt < keyRot.tmdb.keys.length; attempt++) {
+    const picked = pickKey("tmdb");
+    if (!picked || tried.has(picked.index)) break;
+    tried.add(picked.index);
+    const url = new URL(TMDB_BASE + path);
+    url.searchParams.set("api_key", picked.key);
+    for (const [k, v] of Object.entries(params)) if (v !== undefined && v !== null && v !== "") url.searchParams.set(k, String(v));
+    try {
+      return await fetchJSON(url.toString(), {}, "TMDB", 18000, outerSignal);
+    } catch (e) {
+      lastErr = e;
+      if (e.status === 401) { markKeyDead("tmdb", picked.index, 86400000); console.warn(`[tmdb] key#${picked.index} 401 → 24 saat devre dışı`); continue; }
+      if (e.status === 429) { markKeyDead("tmdb", picked.index, e.retryAfterMs || 60000); console.warn(`[tmdb] key#${picked.index} 429 → bekletiliyor`); continue; }
+      throw e;
+    }
+  }
+  throw lastErr || new Error("TMDB: tüm anahtarlar tükendi");
 }
 
-// === OMDB 401 → 1 saat devre dışı ===
+const OMDb_DEAD_MS = 3600 * 1000;
 export async function omdb(env, params, outerSignal) {
-  if (!env.OMDB_API_KEY) throw new Error("OMDB_API_KEY tanımlı değil.");
-  if (Date.now() < omdbDeadUntil) {
-    const remainMin = Math.ceil((omdbDeadUntil - Date.now()) / 60000);
-    throw new Error(`OMDb: devre dışı (401 limit). ${remainMin} dk sonra tekrar dene.`);
+  initKeys(env);
+  if (!keyRot.omdb.keys.length) throw new Error("OMDB_API_KEY tanımlı değil.");
+  if (Date.now() < keyRot.omdb.dead401) {
+    const remainMin = Math.ceil((keyRot.omdb.dead401 - Date.now()) / 60000);
+    throw new Error(`OMDb: tüm anahtarlar devre dışı (401). ${remainMin} dk sonra tekrar dene.`);
   }
-  const url = new URL("https://www.omdbapi.com/");
-  url.searchParams.set("apikey", env.OMDB_API_KEY);
-  for (const [k, v] of Object.entries(params)) if (v) url.searchParams.set(k, v);
-  try {
-    const data = await fetchJSON(url.toString(), {}, "OMDb", 18000, outerSignal);
-    if (data.Response === "False") throw new Error(data.Error || "OMDb sonucu bulunamadı.");
-    return data;
-  } catch (e) {
-    if (e.status === 401) {
-      omdbDeadUntil = Date.now() + 3600 * 1000;
-      console.warn("[omdb] 401 limit — 1 saat devre dışı:", e.message);
+  const tried = new Set(); let lastErr = null; let all401 = true;
+  for (let attempt = 0; attempt < keyRot.omdb.keys.length; attempt++) {
+    const picked = pickKey("omdb");
+    if (!picked || tried.has(picked.index)) break;
+    tried.add(picked.index);
+    const url = new URL("https://www.omdbapi.com/");
+    url.searchParams.set("apikey", picked.key);
+    for (const [k, v] of Object.entries(params)) if (v) url.searchParams.set(k, v);
+    try {
+      const data = await fetchJSON(url.toString(), {}, "OMDb", 18000, outerSignal);
+      if (data.Response === "False") throw new Error(data.Error || "OMDb sonucu bulunamadı.");
+      return data;
+    } catch (e) {
+      lastErr = e;
+      if (e.status === 401) { markKeyDead("omdb", picked.index, OMDb_DEAD_MS); console.warn(`[omdb] key#${picked.index} 401 → 1 saat devre dışı`); continue; }
+      if (e.status === 429) { markKeyDead("omdb", picked.index, e.retryAfterMs || 60000); console.warn(`[omdb] key#${picked.index} 429 → bekletiliyor`); all401 = false; continue; }
+      all401 = false;
     }
-    throw e;
   }
+  if (all401 && tried.size > 0) { keyRot.omdb.dead401 = Date.now() + OMDb_DEAD_MS; console.error("[omdb] tüm anahtarlar 401 — 1 saat devre dışı"); }
+  throw lastErr || new Error("OMDb: tüm anahtarlar tükendi");
 }
 export async function omdbBest(env, movie, outerSignal) {
   const title = movie.original_title || movie.title || "";
@@ -63,6 +117,23 @@ export async function omdbBest(env, movie, outerSignal) {
   if (title) { try { return await omdb(env, { t: title, y: year }, outerSignal); } catch (e) { lastErr = e; if (e.status === 401) throw e; } }
   if (movie.imdb_id) { try { return await omdb(env, { i: movie.imdb_id }, outerSignal); } catch (e) { lastErr = e; if (e.status === 401) throw e; } }
   throw lastErr || new Error("OMDb: arama yapılamadı");
+}
+
+export async function tavilySearch(env, query, outerSignal) {
+  initKeys(env);
+  if (!keyRot.tavily.keys.length) return { results: [] };
+  const picked = pickKey("tavily");
+  if (!picked) throw new Error("Tavily: tüm anahtarlar tükendi");
+  try {
+    const data = await fetchJSON("https://api.tavily.com/search", {
+      method: "POST", headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ api_key: picked.key, query, search_depth: "basic", max_results: 5 })
+    }, "Tavily", 20000, outerSignal);
+    return data;
+  } catch (e) {
+    if (e.status === 401 || e.status === 429) markKeyDead("tavily", picked.index, e.status === 401 ? 3600000 : (e.retryAfterMs || 60000));
+    throw e;
+  }
 }
 
 export async function filmmapLocations(env, movie, outerSignal) {
@@ -130,21 +201,22 @@ export async function metatakeExtended(env, movie, outerSignal) {
   } catch (e) { console.warn("metatake extended:", e.message); return null; }
 }
 
-async function opensubtitlesDensity(env, movie, outerSignal) { /* değişmedi */ if (!env.OPENSUBTITLES_API_KEY) return null; const imdbId = String(movie.imdbID || movie.imdb_id || "").replace(/^tt/, ""); const runtime = Number(movie.runtime) || 0; if (!imdbId || !runtime) return null; try { const base = "https://api.opensubtitles.com/api/v1"; const headers = { "Api-Key": env.OPENSUBTITLES_API_KEY, "User-Agent": USER_AGENT, "Accept": "application/json" }; const search = await fetchJSON(`${base}/subtitles?imdb_id=${encodeURIComponent(imdbId)}&languages=en`, { headers }, "OpenSubtitles search", 15000, outerSignal); const items = Array.isArray(search?.data) ? search.data : []; if (!items.length) return null; items.sort((a, b) => Number((b.attributes?.download_count) || 0) - Number((a.attributes?.download_count) || 0)); const fileId = items[0]?.attributes?.files?.[0]?.file_id; if (!fileId) return null; if (!env.OPENSUBTITLES_USERNAME || !env.OPENSUBTITLES_PASSWORD) return null; const login = await fetchJSON(`${base}/login`, { method: "POST", headers: { ...headers, "Content-Type": "application/json" }, body: JSON.stringify({ username: env.OPENSUBTITLES_USERNAME, password: env.OPENSUBTITLES_PASSWORD }) }, "OpenSubtitles login", 10000, outerSignal); const token = login?.token; if (!token) return null; const dl = await fetchJSON(`${base}/download`, { method: "POST", headers: { ...headers, "Content-Type": "application/json", "Authorization": `Bearer ${token}` }, body: JSON.stringify({ file_id: fileId }) }, "OpenSubtitles download", 15000, outerSignal); const link = dl?.link; if (!link) return null; const subRes = await fetch(link, { signal: AbortSignal.any ? AbortSignal.any([outerSignal, AbortSignal.timeout(15000)].filter(Boolean)) : undefined }); if (!subRes.ok) return null; const text = await subRes.text(); const plain = text.replace(/<[^>]+>/g, "").replace(/\\N/g, " ").replace(/[{][^}]*[}]/g, "").trim(); const chars = plain.length; if (chars < 100) return null; const density = Math.max(0, Math.min(100, Math.round((chars / runtime) / 10))); return { density, chars, runtime, source: "opensubtitles" }; } catch (e) { console.warn("opensubtitles:", e.message); return null; } }
-async function subsourceDensity(env, movie, outerSignal) { /* değişmedi */ if (!env.SUBSOURCE_API_KEY) return null; const imdbId = String(movie.imdbID || movie.imdb_id || "").replace(/^tt/, ""); const runtime = Number(movie.runtime) || 0; if (!imdbId || !runtime) return null; try { const headers = { "X-API-Key": env.SUBSOURCE_API_KEY, "User-Agent": USER_AGENT, "Accept": "application/json" }; const search = await fetchJSON(`https://api.subsource.net/api/v1/search?imdb=${encodeURIComponent(imdbId)}&language=en`, { headers }, "SubSource search", 15000, outerSignal); const items = Array.isArray(search?.subtitles) ? search.subtitles : (Array.isArray(search?.data) ? search.data : []); if (!items.length) return null; const best = items[0]; const downloadUrl = best?.download_url || best?.url; if (!downloadUrl) return null; const subRes = await fetch(downloadUrl, { headers, signal: AbortSignal.any ? AbortSignal.any([outerSignal, AbortSignal.timeout(15000)].filter(Boolean)) : undefined }); if (!subRes.ok) return null; const text = await subRes.text(); const plain = text.replace(/<[^>]+>/g, "").replace(/\\N/g, " ").replace(/[{][^}]*[}]/g, "").trim(); const chars = plain.length; if (chars < 100) return null; const density = Math.max(0, Math.min(100, Math.round((chars / runtime) / 10))); return { density, chars, runtime, source: "subsource" }; } catch (e) { console.warn("subsource:", e.message); return null; } }
-async function subdlDensity(env, movie, outerSignal) { /* değişmedi */ if (!env.SUBDL_API_KEY) return null; const imdbId = String(movie.imdbID || movie.imdb_id || "").replace(/^tt/, ""); const runtime = Number(movie.runtime) || 0; if (!imdbId || !runtime) return null; try { const headers = { "api_key": env.SUBDL_API_KEY, "User-Agent": USER_AGENT, "Accept": "application/json" }; const search = await fetchJSON(`https://api.subdl.com/api/v1/subtitles?api_key=${encodeURIComponent(env.SUBDL_API_KEY)}&imdb_id=${encodeURIComponent(imdbId)}&languages=EN`, { headers }, "SubDL search", 15000, outerSignal); const items = Array.isArray(search?.subtitles) ? search.subtitles : (Array.isArray(search?.data) ? search.data : []); if (!items.length) return null; const best = items[0]; const link = best?.url || best?.download_url; if (!link) return null; const fullUrl = link.startsWith("http") ? link : `https://dl.subdl.com${link}`; const subRes = await fetch(fullUrl, { signal: AbortSignal.any ? AbortSignal.any([outerSignal, AbortSignal.timeout(15000)].filter(Boolean)) : undefined }); if (!subRes.ok) return null; const text = await subRes.text(); const plain = text.replace(/<[^>]+>/g, "").replace(/\\N/g, " ").replace(/[{][^}]*[}]/g, "").trim(); const chars = plain.length; if (chars < 100) return null; const density = Math.max(0, Math.min(100, Math.round((chars / runtime) / 10))); return { density, chars, runtime, source: "subdl" }; } catch (e) { console.warn("subdl:", e.message); return null; } }
+async function opensubtitlesDensity(env, movie, outerSignal) { if (!env.OPENSUBTITLES_API_KEY) return null; const imdbId = String(movie.imdbID || movie.imdb_id || "").replace(/^tt/, ""); const runtime = Number(movie.runtime) || 0; if (!imdbId || !runtime) return null; try { const base = "https://api.opensubtitles.com/api/v1"; const headers = { "Api-Key": env.OPENSUBTITLES_API_KEY, "User-Agent": USER_AGENT, "Accept": "application/json" }; const search = await fetchJSON(`${base}/subtitles?imdb_id=${encodeURIComponent(imdbId)}&languages=en`, { headers }, "OpenSubtitles search", 15000, outerSignal); const items = Array.isArray(search?.data) ? search.data : []; if (!items.length) return null; items.sort((a, b) => Number((b.attributes?.download_count) || 0) - Number((a.attributes?.download_count) || 0)); const fileId = items[0]?.attributes?.files?.[0]?.file_id; if (!fileId) return null; if (!env.OPENSUBTITLES_USERNAME || !env.OPENSUBTITLES_PASSWORD) return null; const login = await fetchJSON(`${base}/login`, { method: "POST", headers: { ...headers, "Content-Type": "application/json" }, body: JSON.stringify({ username: env.OPENSUBTITLES_USERNAME, password: env.OPENSUBTITLES_PASSWORD }) }, "OpenSubtitles login", 10000, outerSignal); const token = login?.token; if (!token) return null; const dl = await fetchJSON(`${base}/download`, { method: "POST", headers: { ...headers, "Content-Type": "application/json", "Authorization": `Bearer ${token}` }, body: JSON.stringify({ file_id: fileId }) }, "OpenSubtitles download", 15000, outerSignal); const link = dl?.link; if (!link) return null; const subRes = await fetch(link, { signal: AbortSignal.any ? AbortSignal.any([outerSignal, AbortSignal.timeout(15000)].filter(Boolean)) : undefined }); if (!subRes.ok) return null; const text = await subRes.text(); const plain = text.replace(/<[^>]+>/g, "").replace(/\\N/g, " ").replace(/[{][^}]*[}]/g, "").trim(); const chars = plain.length; if (chars < 100) return null; const density = Math.max(0, Math.min(100, Math.round((chars / runtime) / 10))); return { density, chars, runtime, source: "opensubtitles" }; } catch (e) { console.warn("opensubtitles:", e.message); return null; } }
+async function subsourceDensity(env, movie, outerSignal) { if (!env.SUBSOURCE_API_KEY) return null; const imdbId = String(movie.imdbID || movie.imdb_id || "").replace(/^tt/, ""); const runtime = Number(movie.runtime) || 0; if (!imdbId || !runtime) return null; try { const headers = { "X-API-Key": env.SUBSOURCE_API_KEY, "User-Agent": USER_AGENT, "Accept": "application/json" }; const search = await fetchJSON(`https://api.subsource.net/api/v1/search?imdb=${encodeURIComponent(imdbId)}&language=en`, { headers }, "SubSource search", 15000, outerSignal); const items = Array.isArray(search?.subtitles) ? search.subtitles : (Array.isArray(search?.data) ? search.data : []); if (!items.length) return null; const best = items[0]; const downloadUrl = best?.download_url || best?.url; if (!downloadUrl) return null; const subRes = await fetch(downloadUrl, { headers, signal: AbortSignal.any ? AbortSignal.any([outerSignal, AbortSignal.timeout(15000)].filter(Boolean)) : undefined }); if (!subRes.ok) return null; const text = await subRes.text(); const plain = text.replace(/<[^>]+>/g, "").replace(/\\N/g, " ").replace(/[{][^}]*[}]/g, "").trim(); const chars = plain.length; if (chars < 100) return null; const density = Math.max(0, Math.min(100, Math.round((chars / runtime) / 10))); return { density, chars, runtime, source: "subsource" }; } catch (e) { console.warn("subsource:", e.message); return null; } }
+async function subdlDensity(env, movie, outerSignal) { if (!env.SUBDL_API_KEY) return null; const imdbId = String(movie.imdbID || movie.imdb_id || "").replace(/^tt/, ""); const runtime = Number(movie.runtime) || 0; if (!imdbId || !runtime) return null; try { const headers = { "api_key": env.SUBDL_API_KEY, "User-Agent": USER_AGENT, "Accept": "application/json" }; const search = await fetchJSON(`https://api.subdl.com/api/v1/subtitles?api_key=${encodeURIComponent(env.SUBDL_API_KEY)}&imdb_id=${encodeURIComponent(imdbId)}&languages=EN`, { headers }, "SubDL search", 15000, outerSignal); const items = Array.isArray(search?.subtitles) ? search.subtitles : (Array.isArray(search?.data) ? search.data : []); if (!items.length) return null; const best = items[0]; const link = best?.url || best?.download_url; if (!link) return null; const fullUrl = link.startsWith("http") ? link : `https://dl.subdl.com${link}`; const subRes = await fetch(fullUrl, { signal: AbortSignal.any ? AbortSignal.any([outerSignal, AbortSignal.timeout(15000)].filter(Boolean)) : undefined }); if (!subRes.ok) return null; const text = await subRes.text(); const plain = text.replace(/<[^>]+>/g, "").replace(/\\N/g, " ").replace(/[{][^}]*[}]/g, "").trim(); const chars = plain.length; if (chars < 100) return null; const density = Math.max(0, Math.min(100, Math.round((chars / runtime) / 10))); return { density, chars, runtime, source: "subdl" }; } catch (e) { console.warn("subdl:", e.message); return null; } }
 export async function fetchSubtitleDensity(env, movie, outerSignal) { const chain = [subsourceDensity, subdlDensity, opensubtitlesDensity]; for (const fn of chain) { try { const r = await fn(env, movie, outerSignal); if (r && r.density != null) return r; } catch (e) { /* devam */ } } return null; }
 
-async function commonsScenes(env, movie, outerSignal) { /* değişmedi */ const title = movie.original_title || movie.title || ""; if (!title) return []; const url = new URL("https://commons.wikimedia.org/w/api.php"); url.searchParams.set("action", "query"); url.searchParams.set("format", "json"); url.searchParams.set("generator", "search"); url.searchParams.set("gsrsearch", `filetype:bitmap "${title}" film still OR scene`); url.searchParams.set("gsrnamespace", "6"); url.searchParams.set("gsrlimit", "20"); url.searchParams.set("prop", "imageinfo"); url.searchParams.set("iiprop", "url|extmetadata"); url.searchParams.set("iiurlwidth", "640"); const data = await fetchJSON(url.toString(), { headers: { "User-Agent": USER_AGENT } }, "Wikimedia Commons", 18000, outerSignal); const pages = Object.values(data.query?.pages || {}); return pages.map(p => { const i = p.imageinfo?.[0] || {}, meta = i.extmetadata || {}; return { source: "commons", title: p.title || "", url: i.thumburl || i.url || "", pageUrl: i.descriptionurl || "", description: meta.ImageDescription?.value || "", categories: meta.Categories?.value || "", license: meta.LicenseShortName?.value || "", vote_average: 0 }; }).filter(x => x.url && isLikelySceneImage(x)); }
-function isLikelySceneImage(img) { /* değişmedi */ const text = `${img.title || ""} ${img.description || ""} ${img.categories || ""}`.toLowerCase(); if (/(poster|portrait|headshot|actor|actress|cast|logo|cover|selfie|signature)/.test(text)) return false; return /(still|scene|screenshot|frame|film)/.test(text); }
-async function tmdbBackdrops(env, movie, outerSignal) { /* değişmedi */ if (!movie.id) return []; const data = await tmdb(env, `/movie/${movie.id}/images`, { include_image_language: "en,tr,null" }, outerSignal); const backdrops = Array.isArray(data.backdrops) ? data.backdrops : []; return backdrops.map(b => ({ source: "tmdb", title: movie.original_title || movie.title || "", url: `https://image.tmdb.org/t/p/w342${b.file_path}`, pageUrl: `https://www.themoviedb.org/movie/${movie.id}`, license: "TMDB", description: "", vote_average: b.vote_average || 0 })).filter(x => x.url); }
+async function commonsScenes(env, movie, outerSignal) { const title = movie.original_title || movie.title || ""; if (!title) return []; const url = new URL("https://commons.wikimedia.org/w/api.php"); url.searchParams.set("action", "query"); url.searchParams.set("format", "json"); url.searchParams.set("generator", "search"); url.searchParams.set("gsrsearch", `filetype:bitmap "${title}" film still OR scene`); url.searchParams.set("gsrnamespace", "6"); url.searchParams.set("gsrlimit", "20"); url.searchParams.set("prop", "imageinfo"); url.searchParams.set("iiprop", "url|extmetadata"); url.searchParams.set("iiurlwidth", "640"); const data = await fetchJSON(url.toString(), { headers: { "User-Agent": USER_AGENT } }, "Wikimedia Commons", 18000, outerSignal); const pages = Object.values(data.query?.pages || {}); return pages.map(p => { const i = p.imageinfo?.[0] || {}, meta = i.extmetadata || {}; return { source: "commons", title: p.title || "", url: i.thumburl || i.url || "", pageUrl: i.descriptionurl || "", description: meta.ImageDescription?.value || "", categories: meta.Categories?.value || "", license: meta.LicenseShortName?.value || "", vote_average: 0 }; }).filter(x => x.url && isLikelySceneImage(x)); }
+function isLikelySceneImage(img) { const text = `${img.title || ""} ${img.description || ""} ${img.categories || ""}`.toLowerCase(); if (/(poster|portrait|headshot|actor|actress|cast|logo|cover|selfie|signature)/.test(text)) return false; return /(still|scene|screenshot|frame|film)/.test(text); }
+async function tmdbBackdrops(env, movie, outerSignal) { if (!movie.id) return []; const data = await tmdb(env, `/movie/${movie.id}/images`, { include_image_language: "en,tr,null" }, outerSignal); const backdrops = Array.isArray(data.backdrops) ? data.backdrops : []; return backdrops.map(b => ({ source: "tmdb", title: movie.original_title || movie.title || "", url: `https://image.tmdb.org/t/p/w342${b.file_path}`, pageUrl: `https://www.themoviedb.org/movie/${movie.id}`, license: "TMDB", description: "", vote_average: b.vote_average || 0 })).filter(x => x.url); }
 
-async function wikidataBatchOnce(env, movies, timeoutMs, outerSignal) { /* değişmedi */ const results = new Map(); if (!movies.length) return results; const rows = movies.map(m => { const title = (m.original_title || m.title || "").replace(/\\/g, "\\\\").replace(/"/g, '\\"'); return `("${title}"@en ${m.id})`; }).join(" "); const query = `SELECT ?movieId ?item ?originalWorkLabel ?filmingLocationLabel ?filmingCountryLabel ?award ?awardLabel ?nominatedLabel WHERE { VALUES (?title ?movieId) { ${rows} } ?item rdfs:label ?title . ?item wdt:P31 wd:Q11424 . OPTIONAL { ?item wdt:P144 ?originalWork. } OPTIONAL { ?item wdt:P915 ?filmingLocation. } OPTIONAL { ?filmingLocation wdt:P17 ?filmingCountry. } OPTIONAL { ?item wdt:P166 ?award. } OPTIONAL { ?item wdt:P1411 ?nominated. } SERVICE wikibase:label { bd:serviceParam wikibase:language "en,tr". } } LIMIT 300`; const url = "https://query.wikidata.org/sparql?query=" + encodeURIComponent(query); const data = await fetchJSON(url, { headers: { "Accept": "application/sparql-results+json", "User-Agent": USER_AGENT } }, "Wikidata", timeoutMs, outerSignal); const bindings = data.results?.bindings || []; const byId = new Map(); for (const b of bindings) { const id = b.movieId?.value || ""; if (!byId.has(id)) byId.set(id, { originalWork: null, locations: new Set(), countries: new Set(), awards: new Set(), nominations: new Set() }); const rec = byId.get(id); if (b.originalWorkLabel?.value) rec.originalWork = b.originalWorkLabel.value; if (b.filmingLocationLabel?.value) rec.locations.add(b.filmingLocationLabel.value); if (b.filmingCountryLabel?.value) rec.countries.add(b.filmingCountryLabel.value); const aq = b.award?.value || ""; if (aq) { const q = aq.split("/").pop(); if (/^Q\d+$/.test(q)) rec.awards.add(q); } const nq = b.nominated?.value || ""; if (nq) { const q = nq.split("/").pop(); if (/^Q\d+$/.test(q)) rec.nominations.add(q); } } for (const [id, rec] of byId) results.set(id, { originalWork: rec.originalWork, filmingLocations: [...rec.locations], filmingCountries: [...rec.countries], awards: [...rec.awards], nominations: [...rec.nominations] }); return results; }
+async function wikidataBatchOnce(env, movies, timeoutMs, outerSignal) { const results = new Map(); if (!movies.length) return results; const rows = movies.map(m => { const title = (m.original_title || m.title || "").replace(/\\/g, "\\\\").replace(/"/g, '\\"'); return `("${title}"@en ${m.id})`; }).join(" "); const query = `SELECT ?movieId ?item ?originalWorkLabel ?filmingLocationLabel ?filmingCountryLabel ?award ?awardLabel ?nominatedLabel WHERE { VALUES (?title ?movieId) { ${rows} } ?item rdfs:label ?title . ?item wdt:P31 wd:Q11424 . OPTIONAL { ?item wdt:P144 ?originalWork. } OPTIONAL { ?item wdt:P915 ?filmingLocation. } OPTIONAL { ?filmingLocation wdt:P17 ?filmingCountry. } OPTIONAL { ?item wdt:P166 ?award. } OPTIONAL { ?item wdt:P1411 ?nominated. } SERVICE wikibase:label { bd:serviceParam wikibase:language "en,tr". } } LIMIT 300`; const url = "https://query.wikidata.org/sparql?query=" + encodeURIComponent(query); const data = await fetchJSON(url, { headers: { "Accept": "application/sparql-results+json", "User-Agent": USER_AGENT } }, "Wikidata", timeoutMs, outerSignal); const bindings = data.results?.bindings || []; const byId = new Map(); for (const b of bindings) { const id = b.movieId?.value || ""; if (!byId.has(id)) byId.set(id, { originalWork: null, locations: new Set(), countries: new Set(), awards: new Set(), nominations: new Set() }); const rec = byId.get(id); if (b.originalWorkLabel?.value) rec.originalWork = b.originalWorkLabel.value; if (b.filmingLocationLabel?.value) rec.locations.add(b.filmingLocationLabel.value); if (b.filmingCountryLabel?.value) rec.countries.add(b.filmingCountryLabel.value); const aq = b.award?.value || ""; if (aq) { const q = aq.split("/").pop(); if (/^Q\d+$/.test(q)) rec.awards.add(q); } const nq = b.nominated?.value || ""; if (nq) { const q = nq.split("/").pop(); if (/^Q\d+$/.test(q)) rec.nominations.add(q); } } for (const [id, rec] of byId) results.set(id, { originalWork: rec.originalWork, filmingLocations: [...rec.locations], filmingCountries: [...rec.countries], awards: [...rec.awards], nominations: [...rec.nominations] }); return results; }
 export async function wikidataBatch(env, movies, outerSignal) { try { return await wikidataBatchOnce(env, movies, 25000, outerSignal); } catch (e) { console.warn("wikidata batch:", e.message); return new Map(); } }
 
-export async function handleImages(env, url, signal) { /* değişmedi */ const id = url.searchParams.get("id"); const title = url.searchParams.get("title") || ""; const originalTitle = url.searchParams.get("original_title") || title; const movie = { id, title, original_title: originalTitle }; const [tmdbList, commonsList] = await Promise.all([tmdbBackdrops(env, movie, signal).catch(e => { console.warn("tmdb backdrops:", e.message); return []; }), commonsScenes(env, movie, signal).catch(e => { console.warn("commons scenes:", e.message); return []; })]); const tmdbSorted = [...tmdbList].sort((a, b) => (b.vote_average || 0) - (a.vote_average || 0)); const seen = new Set(); const merged = []; for (const img of [...tmdbSorted, ...commonsList]) { const key = String(img.url || "").split("/").pop().split("?")[0].toLowerCase(); if (!key || seen.has(key)) continue; seen.add(key); merged.push(img); if (merged.length >= 8) break; } return { images: merged }; }
+export async function handleImages(env, url, signal) { const id = url.searchParams.get("id"); const title = url.searchParams.get("title") || ""; const originalTitle = url.searchParams.get("original_title") || title; const movie = { id, title, original_title: originalTitle }; const [tmdbList, commonsList] = await Promise.all([tmdbBackdrops(env, movie, signal).catch(e => { console.warn("tmdb backdrops:", e.message); return []; }), commonsScenes(env, movie, signal).catch(e => { console.warn("commons scenes:", e.message); return []; })]); const tmdbSorted = [...tmdbList].sort((a, b) => (b.vote_average || 0) - (a.vote_average || 0)); const seen = new Set(); const merged = []; for (const img of [...tmdbSorted, ...commonsList]) { const key = String(img.url || "").split("/").pop().split("?")[0].toLowerCase(); if (!key || seen.has(key)) continue; seen.add(key); merged.push(img); if (merged.length >= 8) break; } return { images: merged }; }
 
 export async function tmdbRoute(env, url, signal) {
+  initKeys(env);
   const path = url.pathname.replace(/^\/tmdb/, "");
   if (path === "/genre/movie/list") return tmdb(env, path, { language: url.searchParams.get("language") || "tr-TR" }, signal);
   if (path === "/configuration/languages") return tmdb(env, path, {}, signal);
@@ -160,4 +232,4 @@ export async function tmdbRoute(env, url, signal) {
     return tmdb(env, path, params, signal);
   }
   throw Object.assign(new Error("Bilinmeyen TMDB uç noktası."), { status: 404 });
-    }
+  }

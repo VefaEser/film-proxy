@@ -84,4 +84,4 @@ export async function setConfig(env, key, value) {
     `INSERT INTO app_config (key, value, updated_at) VALUES (?, ?, ?)
      ON CONFLICT(key) DO UPDATE SET value = excluded.value, updated_at = excluded.updated_at`
   ).bind(key, value, Math.floor(Date.now() / 1000)).run();
-  }
+    }

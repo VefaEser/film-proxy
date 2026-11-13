@@ -1,6 +1,19 @@
-// fields.config.js — Filtre adları Türkçe etiketleriyle birebir uyumlu + production_process/story_dimensions güncel
+// fields.config.js — character_traits ve story_dimensions zorunlu slug listeleri
 const days = (n) => n * 86400;
-export const SCHEMA_VERSION = 8;
+export const SCHEMA_VERSION = 9;
+
+// Yeni: sabit slug listeleri — LLM'e ve filtrelere tek kaynak
+export const CHARACTER_TRAITS_LIST = [
+  "male_main", "female_main", "child_main", "lgbt_main",
+  "male_support", "female_support", "child_support", "lgbt_support",
+  "male_extra", "female_extra", "child_extra", "lgbt_extra",
+  "young_main", "middle_main", "old_main", "disabled_main", "animal"
+];
+export const STORY_DIMENSIONS_LIST = [
+  "has_sequel", "is_sequel", "series_sequel", "series_prequel", "series_spinoff",
+  "concept", "similar_script_version", "same_plot_diff_script", "same_plot_diff_angle"
+];
+
 export const FIELD_DEFS = {
   genres:                 { source: "tmdb", ttl: days(90), required: true },
   genres_ids:             { source: "tmdb", ttl: days(90), required: true },
@@ -31,11 +44,9 @@ export const FIELD_DEFS = {
   story_geography:    { source: "llm", ttl: days(90) },
   character_traits:   { source: "llm", ttl: days(90) },
   narrative_style:    { source: "llm", ttl: days(90) },
-  // "Filmin sanatsal veya sektörel konumu" filtresinin alanı (eski adı: Filmin çekim süreci)
   production_process: { source: "llm", ttl: days(90) },
   sound:              { source: "llm", ttl: days(90) },
   reality:            { source: "llm", ttl: days(90) },
-  // "Filmin diğer filmlerle ilgisi" filtresinin alanı (eski adı: Hikâye Boyutları)
   story_dimensions:   { source: "llm", ttl: days(90) },
   family_content:     { source: "llm", ttl: days(90) },
   night_ratio:        { source: "llm", ttl: days(90) },
@@ -70,7 +81,11 @@ export const FIELD_DEFS = {
 };
 export const LLM_FIELDS = Object.entries(FIELD_DEFS).filter(([, d]) => d.source === "llm").map(([k]) => k);
 export const VALID_SOURCES = [...new Set(Object.values(FIELD_DEFS).map(d => d.source))];
-// === Filtre adı ↔ alan tanımı: her filtre Türkçe adı ve seçenekleriyle eşleşir ===
+
+// === YENİ: character_traits ve story_dimensions için zorunlu slug listeleri ===
+const _CHAR_TRAITS_JSON = CHARACTER_TRAITS_LIST.map(x => `"${x}"`).join(",");
+const _STORY_DIMS_JSON = STORY_DIMENSIONS_LIST.map(x => `"${x}"`).join(",");
+
 export const FIELD_RULES = {
   season: 'season: "winter"|"summer"|"spring"|"autumn"',
   reality: 'reality: "true"|"mostly_true"|"inspired"|"realistic"|"fictional"|"utopic"',
@@ -78,8 +93,8 @@ export const FIELD_RULES = {
   production_process: 'production_process: "amateur"|"indie"|"art"|"big"|"bmovie"|"avant"|"studio"|"no_music"|"rare_music"|"handheld"|"propaganda"|"dogme"',
   sound: 'sound: "ambient"|"music"|"effects"|"voiceover_ext"|"voiceover_int"|"silent"|"dubbed"',
   story_geography: 'story_geography: "city"|"town"|"village"|"mountain"|"desert"|"steppe"|"forest"|"seaside"|"riverside"|"opensea"|"air"',
-  character_traits: 'character_traits: string[]',
-  story_dimensions: 'story_dimensions: string[]',
+  character_traits: `character_traits: string[] — YALNIZCA şu slug listesinden seç, serbest metin yazma: [${_CHAR_TRAITS_JSON}]`,
+  story_dimensions: `story_dimensions: string[] — YALNIZCA şu slug listesinden seç: [${_STORY_DIMS_JSON}]`,
   color_style: 'color_style: ["black_white","color","mostly_color","mostly_bw","blue_filter","yellow_filter","selective_color","colorized","limited_palette","sepia","mono_tint","bw_red_accent","mixed_bw_color"]',
   location_mode: 'location_mode: "single"|"mostly_single"|"few"|"many"'
 };

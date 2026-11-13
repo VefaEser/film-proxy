@@ -1,4 +1,4 @@
-// index.js — Admin movie-profiles CRUD + title fallback
+// index.js — Admin movie-profiles CRUD (düzenleme/silme için yetki kontrolü genişletildi) + çoklu API anahtarı + site puanı
 import { corsHeaders } from "./cors.js";
 import { handleAuth, getCurrentUserWithAdminBridge } from "./auth.js";
 import { handleUser } from "./users.js";
@@ -8,7 +8,8 @@ import {
   GEMINI_MODEL_DEFAULT, GROQ_MODEL_DEFAULT, buildGeminiChain, buildGroqChain,
   isAdmin, response, jsonError, omdb, tmdbRoute, handleImages, handleMovieDetails, handleResearchStream,
   getAllConfig, getLlmStats, getActiveDeadKeys, getFilterInfoAll, getAllStaticOptions,
-  getMovieLists, metatakeExtended, filmmapLocations, deadKeysCache, safeJSON, getKeyHealth
+  getMovieLists, metatakeExtended, filmmapLocations, deadKeysCache, safeJSON, getKeyHealth,
+  tmdb, getSiteRatingForMovie
 } from "./worker-core.js";
 
 const CORS = { "Access-Control-Allow-Origin": "*", "Access-Control-Allow-Methods": "GET,POST,PUT,DELETE,OPTIONS", "Access-Control-Allow-Headers": "Content-Type,Authorization" };
@@ -17,6 +18,20 @@ async function requireAdminEither(env, request) {
   if (isAdmin(request, env)) return { via: "bearer" };
   const user = await getCurrentUserWithAdminBridge(env, request);
   if (user && user.is_admin) return { via: "cookie", user };
+  return null;
+}
+
+// Arama sonuçlarındaki kartları düzenle/sil: admin VEYA refresh_movie/edit_suggestions_approve yetkisi olan kullanıcı
+async function requireCardEditor(env, request) {
+  const viaBearer = isAdmin(request, env);
+  if (viaBearer) return { via: "bearer" };
+  const user = await getCurrentUserWithAdminBridge(env, request);
+  if (!user) return null;
+  if (user.is_admin) return { via: "cookie", user };
+  try {
+    const { results } = await env.DB.prepare("SELECT permission FROM user_permissions WHERE user_id = ? AND permission IN ('refresh_movie','csv_import_cards','field_unlock') LIMIT 1").bind(user.user_id).all();
+    if ((results || []).length) return { via: "permission", user };
+  } catch {}
   return null;
 }
 
@@ -35,7 +50,20 @@ async function handleRequest(request, env, ctx) {
   try {
     if (url.pathname === "/health") {
       const keyHealth = (() => { try { return getKeyHealth(); } catch { return {}; } })();
-      return response({ ok: true, geminiModel: env.GEMINI_MODEL || GEMINI_MODEL_DEFAULT, geminiModels: buildGeminiChain(env), groqModel: env.GROQ_MODEL || GROQ_MODEL_DEFAULT, groqModels: buildGroqChain(env), tmdb: !!env.TMDB_API_KEY, omdb: !!env.OMDB_API_KEY, tavily: !!env.TAVILY_API_KEY, opensubtitles: !!env.OPENSUBTITLES_API_KEY, subsource: !!env.SUBSOURCE_API_KEY, subdl: !!env.SUBDL_API_KEY, turnstile: !!env.TURNSTILE_SECRET_KEY, groqKeys: [!!env.GROQ_API_KEY_1, !!env.GROQ_API_KEY_2, !!env.GROQ_API_KEY_3], geminiKeys: [!!env.GEMINI_API_KEY_1, !!env.GEMINI_API_KEY_2, !!env.GEMINI_API_KEY_3], adminToken: !!env.ADMIN_TOKEN, metatake: true, filmmap: true, staticOptions: true, d1: !!env.DB, defaultMinImdbVotes: 100, keyHealth });
+      return response({
+        ok: true,
+        geminiModel: env.GEMINI_MODEL || GEMINI_MODEL_DEFAULT, geminiModels: buildGeminiChain(env),
+        groqModel: env.GROQ_MODEL || GROQ_MODEL_DEFAULT, groqModels: buildGroqChain(env),
+        // === Çoklu anahtar durumu ===
+        tmdb: !!env.TMDB_API_KEY, tmdbKeys: [!!env.TMDB_API_KEY, !!env.TMDB_API_KEY_2, !!env.TMDB_API_KEY_3],
+        omdb: !!env.OMDB_API_KEY, omdbKeys: [!!env.OMDB_API_KEY, !!env.OMDB_API_KEY_2, !!env.OMDB_API_KEY_3],
+        tavily: !!env.TAVILY_API_KEY, tavilyKeys: [!!env.TAVILY_API_KEY, !!env.TAVILY_API_KEY_2, !!env.TAVILY_API_KEY_3],
+        opensubtitles: !!env.OPENSUBTITLES_API_KEY, subsource: !!env.SUBSOURCE_API_KEY, subdl: !!env.SUBDL_API_KEY,
+        turnstile: !!env.TURNSTILE_SECRET_KEY,
+        groqKeys: [!!env.GROQ_API_KEY_1, !!env.GROQ_API_KEY_2, !!env.GROQ_API_KEY_3],
+        geminiKeys: [!!env.GEMINI_API_KEY_1, !!env.GEMINI_API_KEY_2, !!env.GEMINI_API_KEY_3],
+        adminToken: !!env.ADMIN_TOKEN, metatake: true, filmmap: true, staticOptions: true, d1: !!env.DB, defaultMinImdbVotes: 100, keyHealth
+      });
     }
     if (url.pathname === "/static/options" && request.method === "GET") return response({ options: await getAllStaticOptions(env) });
     if (url.pathname === "/metatake/locations" && request.method === "GET") { const movieId = url.searchParams.get("movie_id") || ""; const title = url.searchParams.get("title") || ""; if (!movieId && !title) return jsonError("movie_id veya title gerekli.", 400); const mt = await metatakeExtended(env, { id: movieId, title, original_title: title }, request.signal); return response({ locations: mt?.locations || [], confidence: mt?.confidence ?? null }); }
@@ -49,7 +77,7 @@ async function handleRequest(request, env, ctx) {
     if (url.pathname === "/admin/stats" && request.method === "GET") { const auth = await requireAdminEither(env, request); if (!auth) return jsonError("Yetkisiz.", 401); return response({ stats: await getLlmStats(env), deadKeys: await getActiveDeadKeys(env), keyHealth: (() => { try { return getKeyHealth(); } catch { return {}; } })() }); }
     if (url.pathname === "/admin/dead_keys" && request.method === "DELETE") { const auth = await requireAdminEither(env, request); if (!auth) return jsonError("Yetkisiz.", 401); if (env.DB) await env.DB.prepare("DELETE FROM dead_keys").run(); deadKeysCache.ts = 0; return response({ ok: true }); }
 
-    // === D1 Kartları: liste ===
+    // === D1 Kartları: liste (title fallback: data_json'dan da türet) ===
     if (url.pathname === "/admin/movie-profiles" && request.method === "GET") {
       const auth = await requireAdminEither(env, request);
       if (!auth) return jsonError("Yetkisiz.", 401);
@@ -66,26 +94,22 @@ async function handleRequest(request, env, ctx) {
       const { results: countRows } = await env.DB.prepare("SELECT COUNT(*) AS c FROM movie_profiles").all();
       return response({ movies: results || [], total: countRows[0]?.c || 0, page, pageSize });
     }
-    // === D1 Kartları: manuel ekleme ===
+    // === D1 Kartları: manuel ekleme (çoklu TMDB anahtarı ile) ===
     if (url.pathname === "/admin/movie-profiles" && request.method === "POST") {
-      const auth = await requireAdminEither(env, request);
+      const auth = await requireCardEditor(env, request);
       if (!auth) return jsonError("Yetkisiz.", 401);
       let body; try { body = await request.json(); } catch { return jsonError("Geçersiz JSON.", 400); }
       const imdbId = String(body.imdbId || "").replace(/^tt/, "").trim();
       let tmdbId = body.tmdbId != null && !isNaN(parseInt(body.tmdbId)) ? parseInt(body.tmdbId) : null;
       if (!imdbId && !tmdbId) return jsonError("imdbId veya tmdbId gerekli.", 400);
       if (!tmdbId && imdbId) {
-        if (!env.TMDB_API_KEY) return jsonError("TMDB_API_KEY tanımlı değil.", 500);
-        const findUrl = new URL(`https://api.themoviedb.org/3/find/tt${imdbId}`);
-        findUrl.searchParams.set("api_key", env.TMDB_API_KEY);
-        findUrl.searchParams.set("external_source", "imdb_id");
-        findUrl.searchParams.set("language", "tr-TR");
-        const findRes = await fetch(findUrl.toString(), { signal: request.signal });
-        if (!findRes.ok) return jsonError(`TMDB find HTTP ${findRes.status}`, 500);
-        const findData = await findRes.json();
-        const m = (findData.movie_results || [])[0];
-        if (!m) return jsonError("Film TMDB'de bulunamadı", 404);
-        tmdbId = m.id;
+        // tmdb() fonksiyonu çoklu anahtar rotasyonunu otomatik yapar
+        try {
+          const findData = await tmdb(env, `/find/tt${imdbId}`, { external_source: "imdb_id", language: "tr-TR" }, request.signal);
+          const m = (findData.movie_results || [])[0];
+          if (!m) return jsonError("Film TMDB'de bulunamadı", 404);
+          tmdbId = m.id;
+        } catch (e) { return jsonError(`TMDB find hatası: ${e.message}`, 500); }
       }
       try {
         const result = await handleMovieDetails(env, { movie: { id: tmdbId, imdb_id: imdbId ? `tt${imdbId}` : undefined }, forceAll: true }, request.signal);
@@ -95,9 +119,9 @@ async function handleRequest(request, env, ctx) {
         return response({ ok: true, tmdbId, movie: result.movie });
       } catch (e) { return jsonError("Kart oluşturulamadı: " + (e.message || e), 500); }
     }
-    // === D1 Kartları: düzenleme ===
+    // === D1 Kartları: düzenleme (admin veya yetkili kullanıcı) ===
     if (url.pathname.match(/^\/admin\/movie-profiles\/\d+$/) && request.method === "PUT") {
-      const auth = await requireAdminEither(env, request);
+      const auth = await requireCardEditor(env, request);
       if (!auth) return jsonError("Yetkisiz.", 401);
       const movieId = url.pathname.split("/").pop();
       let body; try { body = await request.json(); } catch { return jsonError("Geçersiz JSON.", 400); }
@@ -111,7 +135,6 @@ async function handleRequest(request, env, ctx) {
       await env.DB.prepare("UPDATE movie_profiles SET title = COALESCE(?, title), year = COALESCE(?, year), data_json = ?, updated_at = ? WHERE movie_id = ?").bind(newTitle, newYear, JSON.stringify(profile), Math.floor(Date.now() / 1000), movieId).run();
       return response({ ok: true, movie: profile });
     }
-    // === D1 Kartları: tekil okuma ===
     if (url.pathname.match(/^\/admin\/movie-profiles\/\d+$/) && request.method === "GET") {
       const auth = await requireAdminEither(env, request);
       if (!auth) return jsonError("Yetkisiz.", 401);
@@ -120,9 +143,9 @@ async function handleRequest(request, env, ctx) {
       if (!row) return jsonError("Bulunamadı.", 404);
       return response({ movie: safeJSON(row.data_json, {}) || {} });
     }
-    // === D1 Kartları: silme ===
+    // === D1 Kartları: silme (admin veya yetkili kullanıcı) ===
     if (url.pathname.match(/^\/admin\/movie-profiles\/\d+$/) && request.method === "DELETE") {
-      const auth = await requireAdminEither(env, request);
+      const auth = await requireCardEditor(env, request);
       if (!auth) return jsonError("Yetkisiz.", 401);
       const movieId = url.pathname.split("/").pop();
       await env.DB.prepare("DELETE FROM movie_profiles WHERE movie_id = ?").bind(movieId).run();
@@ -158,8 +181,7 @@ async function handleRequest(request, env, ctx) {
       const heartbeatTimer = setInterval(() => { try { writer.write(enc.encode(": ping\n\n")); } catch { clearInterval(heartbeatTimer); } }, 15000);
       const task = handleResearchStream(env, body, controller, request.signal)
         .catch(err => { console.error("[research-stream]", err.stack || err); try { controller.enqueue(enc.encode(`data: ${JSON.stringify({ type: "error", message: String(err.message || err) })}\n\n`)); } catch {} try { controller.close(); } catch {} })
-        .finally(() => clearInterval(hbTimerRef.value));
-      const hbTimerRef = { value: heartbeatTimer };
+        .finally(() => clearInterval(heartbeatTimer));
       if (ctx?.waitUntil) ctx.waitUntil(task);
       return new Response(readable, { headers: { ...CORS, "Content-Type": "text/event-stream; charset=utf-8", "Cache-Control": "no-cache, no-transform", "X-Accel-Buffering": "no" } });
     }

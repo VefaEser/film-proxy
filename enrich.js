@@ -1,4 +1,4 @@
-// enrich.js — TMDB/OMDb zenginleştirme + original_language + imdb_id + hata raporlama.
+// enrich.js — clean(): "" de null olsun; imdb_id her zaman tt önekiyle OMDb'ye gitsin
 import { tmdb, omdbBest } from "./sources.js";
 
 export async function enrichClassic(env, movie, staleFields, outerSignal) {
@@ -6,7 +6,7 @@ export async function enrichClassic(env, movie, staleFields, outerSignal) {
   const errors = [];
   if (movie.id) {
     try {
-      const detail = await tmdb(env, `/movie/${movie.id}`, { language: "tr-TR", append_to_response: "credits,images,keywords" }, outerSignal);
+      const detail = await tmdb(env, `/movie/${movie.id}`, { language: "tr-TR", append_to_response: "credits,images,keywords,external_ids" }, outerSignal);
       const genres = Array.isArray(detail.genres) ? detail.genres : [];
       if (need.has("genres") && genres.length) { updates.genres = genres.map(g => g.name); covered.add("genres"); }
       if (need.has("genres_ids") && genres.length) { updates.genres_ids = genres.map(g => g.id); covered.add("genres_ids"); }
@@ -57,13 +57,19 @@ export async function enrichClassic(env, movie, staleFields, outerSignal) {
         if (need.has("cast")) { updates.cast = (credits.cast || []).slice(0, 8).map(sanitizePerson).filter(Boolean); covered.add("cast"); }
         if (need.has("cast_ids")) { updates.cast_ids = (credits.cast || []).slice(0, 20).map(c => c.id); covered.add("cast_ids"); }
       }
+      // imdb_id her zaman tt önekiyle set edilsin
       if (!movie.imdb_id && detail.imdb_id) movie.imdb_id = detail.imdb_id;
+      if (!movie.imdb_id && detail.external_ids?.imdb_id) movie.imdb_id = detail.external_ids.imdb_id;
+      if (!movie.imdb_id && detail.imdb_id) movie.imdb_id = detail.imdb_id;
+      // Son çare: external_ids
+      if (!movie.imdb_id && detail.external_ids?.imdb_id) movie.imdb_id = detail.external_ids.imdb_id;
     } catch (e) { console.warn("tmdb detail enrich:", e.message); errors.push({ source: "tmdb", error: String(e.message || e) }); }
   }
   if (["imdbRating","imdbVotes","imdbID","omdb_directors","actors","rated","awards","metascore","boxOffice","omdb_poster"].some(f => need.has(f))) {
     try {
       const data = await omdbBest(env, movie, outerSignal);
-      const clean = (v) => (v === "N/A" || v === undefined ? null : v);
+      // === YENİ: "" de null olsun ===
+      const clean = (v) => (v === "N/A" || v === "" || v === undefined || v === null ? null : v);
       if (need.has("imdbRating")) { updates.imdbRating = clean(data.imdbRating); covered.add("imdbRating"); }
       if (need.has("imdbVotes")) { updates.imdbVotes = clean(data.imdbVotes); covered.add("imdbVotes"); }
       if (need.has("imdbID")) {

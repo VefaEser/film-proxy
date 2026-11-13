@@ -236,4 +236,4 @@ export async function handleMovieDetails(env, body, signal) {
   try { const sr = await getSiteRatingForMovie(env, { movieId, tmdbId: movie.id, imdbId: merged.imdbID || merged.imdb_id }); merged.site_rating = sr.avg; merged.site_rating_count = sr.count; } catch {}
   if (sourceErrors.length) merged._source_errors = sourceErrors;
   return { movie: merged };
-                                                  }
+  }

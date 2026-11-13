@@ -232,4 +232,4 @@ export async function tmdbRoute(env, url, signal) {
     return tmdb(env, path, params, signal);
   }
   throw Object.assign(new Error("Bilinmeyen TMDB uç noktası."), { status: 404 });
-  }
+                                                                                                  }

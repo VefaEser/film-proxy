@@ -1,6 +1,5 @@
-// DOSYA: filters.js
-// passesLocalFilters: rated, award, director, writers, cast, company için unknown da ELE (katı).
-// evaluateFilters: family_content filtresi varsa verdict "unknown" iken ELE.
+// filters.js — Dil filtresi hem original_language hem spoken_languages (languageOnlyOriginal bayrağına saygılı),
+// passesLocalFilters unknown da ELE (rated, award, director, writers, cast, company), family_content unknown da ELE.
 import { SEMANTIC_FIELDS, FIELD_DEFS, LLM_FIELDS } from "./fields.config.js";
 import { norm, yearOf, safeJSON } from "./db.js";
 
@@ -21,37 +20,30 @@ const TRAIT_TR = {
   disturbing: "ürkütücü, rahatsız edici, mide bulandırıcı veya travmatik sahneler",
   racism: "ırkçılık, ayrımcılık, dini değerlere hakaret, nefret söylemi ve nefret suçu"
 };
-const DEFAULT_FILTER_INFO = {
-  "filter_info.season": "[YZ bağlamı]\n- winter: Hikâye kışın geçiyor.\n- summer: Hikâye yazın geçiyor.\n- spring: Hikâye ilkbaharda geçiyor.\n- autumn: Hikâye sonbaharda geçiyor.",
-  "filter_info.reality": "[YZ bağlamı]\n- true: Gerçek olaylara birebir sadık.\n- mostly_true: Gerçek olaylara dayalı, sanatsal özgürlük var.\n- inspired: Gerçek olaylardan esinlenmiş.\n- realistic: Kurgusal ama gerçekçi.\n- fictional: Tamamen kurgusal.\n- utopic: Ütopik/distopik gelecek.",
-  "filter_info.production_process": "[YZ bağlamı]\n- amateur: Çok düşük bütçe.\n- indie: Stüdyo dışı bağımsız.\n- art: Deneysel anlatım.\n- big: 100M$+ bütçe.\n- bmovie: Düşük bütçeli tür sineması.\n- avant: Avangart.\n- studio: Klasik Hollywood.\n- no_music: Müzik yok.\n- rare_music: Az müzik.\n- handheld: El kamerası.\n- propaganda: İdeolojik mesaj.\n- dogme: Dogme 95.",
-  "filter_info.narrative_style": "[YZ bağlamı]\n- multi: Bağımsız hikâyeler.\n- reverse: Sondan başa.\n- linear: Düz.\n- flashback: Geri dönüşlü.\n- end_first: Sonu önce.\n- mid_first: Orta önce.\n- fast: Hızlı tempolu.\n- slow: Durgun.\n- no_end: Açık uçlu.\n- alt_end: Alternatif son.\n- alt_narr: Alternatif anlatım.",
-  "filter_info.sound": "[YZ bağlamı]\n- ambient: Doğal ortam sesi.\n- music: Yoğun müzik.\n- effects: Yoğun efekt.\n- voiceover_ext: Dış ses.\n- voiceover_int: İç ses.\n- silent: Sessiz film.\n- dubbed: Dublaj.",
-  "filter_info.story_geography": "[YZ bağlamı]\n- city: Şehir.\n- town: Kasaba.\n- village: Köy.\n- mountain: Dağlık.\n- desert: Çöl.\n- steppe: Bozkır.\n- forest: Orman.\n- seaside: Deniz kenarı.\n- riverside: Nehir kenarı.\n- opensea: Açık deniz.\n- air: Havada.",
-  "filter_info.character_traits": "[YZ bağlamı]\nKarakter ana/yan/figüran + cinsiyet/yaş/engel kombinasyonu.",
-  "filter_info.story_dimensions": "[YZ bağlamı]\n- has_sequel: Devam filmi var.\n- is_sequel: Devam filmi.\n- series_sequel: Bir dizideki hikayenin devamı.\n- series_prequel: Bir dizideki hikayenin öncesi.\n- series_spinoff: Bir dizideki karakterlerin farklı bir hikayesi.\n- concept: Konsept filmi.\n- similar_script_version: Aynı hikayeyi benzer bir senaryoyla anlatan başka bir film var.\n- same_plot_diff_script: Aynı hikayeyi farklı bir senaryoyla anlatan başka bir film var.\n- same_plot_diff_angle: Aynı hikayenin farklı bir yönünü anlatan başka bir film var.",
-  "filter_info.story_period": "[YZ bağlamı]\nHikâyenin geçtiği tarihsel dönem. Kodlar: bc; c1..c19; d1900..d2020; future.",
-  "filter_info.story_locations": "[YZ bağlamı]\n- city: Şehir.\n- town: Kasaba.\n- village: Köy.\n- mountain: Dağlık.\n- desert: Çöl.\n- steppe: Bozkır.\n- forest: Orman.\n- seaside: Deniz kenarı.\n- riverside: Nehir kenarı.\n- opensea: Açık deniz.\n- air: Havada.",
-  "filter_info.family_content": "[YZ bağlamı]\nintensity: none=hiç yok, few=birkaç sahne, side=yan konu, main=ana konu. approach: bad=kötü, neutral=tarafsız, legit=meşrulaştırıyor.",
-  "filter_info.color": "[YZ bağlamı]\n- black_white: Tamamen siyah beyaz.\n- color: Tamamen renkli.\n- mostly_color: Çoğunlukla renkli.\n- mostly_bw: Çoğunlukla siyah beyaz.\n- blue_filter: Baskın mavi tonlu.\n- yellow_filter: Baskın sarı tonlu.\n- selective_color: Seçici renk.\n- colorized: Sonradan renklendirilmiş.\n- limited_palette: Sınırlı renk paleti.\n- sepia: Sepya tonu.\n- mono_tint: Tek renk monokrom.\n- bw_red_accent: Siyah beyaz + kırmızı vurgu.\n- mixed_bw_color: Renkli ve siyah beyaz karışık.",
-  "filter_info.dialogue_density_subtitle": "Diyalog yoğunluğu altyazı metninden hesaplanır."
-};
 
 export function buildFilterSentence(filters) {
   const f = filters || {}; const parts = [];
   if (f.genres?.include?.length) { const n = f.genres.include.map(x => x.label || x).filter(Boolean); if (n.length) parts.push(`türü ${n.join(" veya ")} olan`); }
   if (f.genres?.exclude?.length) { const n = f.genres.exclude.map(x => x.label || x).filter(Boolean); if (n.length) parts.push(`${n.join(", ")} türünde olmamalı`); }
+  // === Dil filtresi: original_language ve (languageOnlyOriginal değilse) spoken_languages ===
+  if (f.original_language?.include?.length) {
+    const labels = f.original_language.include.map(x => x.label || x).filter(Boolean);
+    const onlyOrig = f.languageOnlyOriginal === true;
+    if (labels.length) parts.push(`${onlyOrig ? "filmin ana dili" : "ana dili veya konuşulan dilleri"} şunlardan biri olan: ${labels.join(", ")}`);
+  }
   const setInclude = (field, prefix) => { const v = f[field]; if (!v?.include?.length) return; const n = v.include.map(x => x.label || x).filter(Boolean); if (n.length) parts.push(`${prefix}: ${n.join(" veya ")}`); };
   const setExclude = (field, suffix) => { const v = f[field]; if (!v?.exclude?.length) return; const n = v.exclude.map(x => x.label || x).filter(Boolean); if (n.length) parts.push(`${suffix} ${n.join(", ")} olmamalı`); };
   setInclude("season", "hikâyesi şu mevsimde geçen"); setExclude("season", "hikâyesi şu mevsimlerde geçmemeli:");
   setInclude("reality", "gerçeklik"); setExclude("reality", "gerçeklik açısından:");
-  setInclude("production_process", "yapım süreci"); setExclude("production_process", "yapım süreci şunlardan olmamalı:");
+  // === Filtre adıyla birebir: "Filmin sanatsal veya sektörel konumu" ===
+  setInclude("production_process", "filmin sanatsal veya sektörel konumu"); setExclude("production_process", "filmin sanatsal veya sektörel konumu şunlardan olmamalı:");
   setInclude("narrative_style", "anlatım tarzı"); setExclude("narrative_style", "anlatım tarzı şunlardan olmamalı:");
   setInclude("sound", "ses özelliği"); setExclude("sound", "ses özelliği şunlardan olmamalı:");
   setInclude("story_geography", "coğrafya"); setExclude("story_geography", "coğrafya şunlardan olmamalı:");
   setInclude("story_period", "dönem"); setExclude("story_period", "dönem şunlardan olmamalı:");
   setInclude("character_traits", "karakter özellikleri"); setExclude("character_traits", "karakter özellikleri şunlardan olmamalı:");
-  setInclude("story_dimensions", "hikâye boyutları"); setExclude("story_dimensions", "hikâye boyutları şunlardan olmamalı:");
+  // === Filtre adıyla birebir: "Filmin diğer filmlerle ilgisi" ===
+  setInclude("story_dimensions", "filmin diğer filmlerle ilgisi"); setExclude("story_dimensions", "filmin diğer filmlerle ilgisi şunlardan olmamalı:");
   setInclude("aspect_ratio", "en-boy oranı"); setExclude("aspect_ratio", "en-boy oranı şunlardan olmamalı:");
   setInclude("color", "görsel renk stili"); setExclude("color", "görsel renk stili şunlardan olmamalı:");
   if (f.family_content) for (const [key, val] of Object.entries(f.family_content)) {
@@ -94,6 +86,7 @@ export function semanticSignature(filters) {
   for (const field of SEMANTIC_FIELDS) if (f[field] && (f[field].include?.length || f[field].exclude?.length)) active[field] = f[field];
   if (f.family_content && Object.keys(f.family_content).length) active.family_content = f.family_content;
   if (f.characterDensity) active.characterDensity = f.characterDensity;
+  if (f.languageOnlyOriginal) active.languageOnlyOriginal = true;
   const sorted = Object.keys(active).sort().reduce((o, k) => { o[k] = active[k]; return o; }, {});
   return JSON.stringify(sorted);
 }
@@ -123,7 +116,35 @@ function matchIdSet(profileIds, filterObj) {
 function matchRated(profileRated, filterObj) { if (!filterObj) return { match: true, unknown: false, reasons: [] }; const have = profileRated ? norm(profileRated) : ""; if (!have) return { match: true, unknown: true, reasons: ["Yaş sınırı bilinmiyor"] }; if (filterObj.include?.length) { const labels = filterObj.include.map(x => norm(x.label || x)); if (!labels.includes(have)) return { match: false, unknown: false, reasons: [`Yaş sınırı ${profileRated} uygun değil`] }; } if (filterObj.exclude?.length) { const labels = filterObj.exclude.map(x => norm(x.label || x)); if (labels.includes(have)) return { match: false, unknown: false, reasons: [`Yaş sınırı ${profileRated} hariç tutuldu`] }; } return { match: true, unknown: false, reasons: [] }; }
 function matchAwards(profileAwards, profileNominations, filterObj) { if (!filterObj) return { match: true, unknown: false, reasons: [] }; const awards = (profileAwards || []).map(x => String(x).trim()); const noms = (profileNominations || []).map(x => String(x).trim()); const all = new Set([...awards, ...noms]); if (!all.size) return { match: true, unknown: true, reasons: ["Ödül bilgisi bilinmiyor"] }; if (filterObj.include?.length) { const matched = filterObj.include.filter(x => x.id != null && all.has(String(x.id))); if (matched.length === 0) return { match: false, unknown: false, reasons: [`Ödül eksik: ${filterObj.include.map(x => x.label || x.id).join(", ")}`] }; } return { match: true, unknown: false, reasons: [] }; }
 
-// === passesLocalFilters: unknown da ELE (rated, award, director, writers, cast, company) ===
+// === Dil filtresi: hem original_language hem spoken_languages (languageOnlyOriginal değilse) ===
+function matchLanguage(profile, filterObj, languageOnlyOriginal) {
+  if (!filterObj) return { match: true, unknown: false, reasons: [] };
+  const orig = profile.original_language ? norm(profile.original_language) : "";
+  const spoken = Array.isArray(profile.spoken_languages_ids) ? profile.spoken_languages_ids.map(norm) : (Array.isArray(profile.spoken_languages) ? profile.spoken_languages.map(norm) : []);
+  const allLangs = new Set([orig, ...spoken].filter(Boolean));
+  if (filterObj.include?.length) {
+    const matched = filterObj.include.filter(x => {
+      const v = norm(x.id || x.label);
+      if (languageOnlyOriginal) return orig === v;
+      return allLangs.has(v) || [...allLangs].some(h => h.includes(v) || v.includes(h));
+    });
+    if (matched.length === 0) {
+      if (!allLangs.size) return { match: true, unknown: true, reasons: ["Dil bilgisi bilinmiyor"] };
+      return { match: false, unknown: false, reasons: [`Dil eksik: ${filterObj.include.map(x => x.label || x.id).join(", ")}`] };
+    }
+  }
+  if (filterObj.exclude?.length) {
+    const hit = filterObj.exclude.filter(x => {
+      const v = norm(x.id || x.label);
+      if (languageOnlyOriginal) return orig === v;
+      return allLangs.has(v);
+    });
+    if (hit.length) return { match: false, unknown: false, reasons: [`Dil hariç: ${hit.map(x => x.label || x.id).join(", ")}`] };
+  }
+  return { match: true, unknown: false, reasons: [] };
+}
+
+// === passesLocalFilters: unknown da ELE (rated, award, director, writers, cast, company, dil) ===
 function passesLocalFilters(profile, filters) {
   const imdb = Number(String(profile.imdbRating || "").replace(/[^\d.]/g, "")) || null;
   if (filters.imdbMin > 0 && imdb != null && imdb < filters.imdbMin) return false;
@@ -142,6 +163,7 @@ function passesLocalFilters(profile, filters) {
   if (filters.writers) { const r = matchIdSet(profile.writers_ids, filters.writers); if (!r.match || r.unknown) return false; }
   if (filters.cast) { const r = matchIdSet(profile.cast_ids, filters.cast); if (!r.match || r.unknown) return false; }
   if (filters.company) { const r = matchIdSet(profile.production_companies_ids, filters.company); if (!r.match || r.unknown) return false; }
+  if (filters.original_language) { const r = matchLanguage(profile, filters.original_language, filters.languageOnlyOriginal === true); if (!r.match || r.unknown) return false; }
   return true;
 }
 function evalFilmingLocations(profile, f, metatakeLocations, filmmapLocations) {
@@ -175,13 +197,13 @@ export function evaluateFilters(profile, filters, semanticVerdict, metatakeLocat
   const state = { match: true, reasons: [], unknown: false, conflicts: false };
   if (!passesLocalFilters(profile, filters)) { state.match = false; state.reasons.push("Kesin filtre uyuşmadı"); return state; }
   const setChecks = [
-    ["genres_ids", "genres", "Tür", "genres"], ["spoken_languages_ids", "original_language", "Dil", "spoken_languages"],
+    ["genres_ids", "genres", "Tür", "genres"],
     ["production_countries_ids", "production_countries", "Ülke", "production_countries"],
     ["story_locations", "story_locations", "Hikâye yeri", null], ["story_period", "story_period", "Dönem", null],
     ["story_geography", "story_geography", "Coğrafya", null], ["season", "season", "Mevsim", null],
     ["character_traits", "character_traits", "Karakter niteliği", null], ["aspect_ratio", "aspect_ratio", "En-boy oranı", null],
-    ["narrative_style", "narrative_style", "Anlatım tarzı", null], ["production_process", "production_process", "Çekim süreci", null],
-    ["sound", "sound", "Ses", null], ["reality", "reality", "Gerçeklik", null], ["story_dimensions", "story_dimensions", "Hikâye boyutları", null],
+    ["narrative_style", "narrative_style", "Anlatım tarzı", null], ["production_process", "production_process", "Filmin sanatsal veya sektörel konumu", null],
+    ["sound", "sound", "Ses", null], ["reality", "reality", "Gerçeklik", null], ["story_dimensions", "story_dimensions", "Filmin diğer filmlerle ilgisi", null],
     ["color_style", "color", "Görsel renk stili", null]
   ];
   for (const [pf, ff, label, altField] of setChecks) {

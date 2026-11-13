@@ -1,6 +1,6 @@
-// research.js — Per-movie hata koruması + batch devam
+// research.js — Per-movie hata koruması + site puanı ortalaması + originalLanguageOnly desteği
 import { FIELD_DEFS, FIELD_RULES, SEMANTIC_FIELDS, LLM_FIELDS } from "./fields.config.js";
-import { getProfileRowsBatch, getFieldRowsBatch, getFieldRows, putFieldRowsBatch, putProfileRowsBatch, putFieldRows, putProfileRow, getProfileRow, findStaleFields, movieKey, yearOf, getVerdictsBatch, putVerdictsBatch, getFilmmapCache, getMetatakeExtendedCache } from "./db.js";
+import { getProfileRowsBatch, getFieldRowsBatch, getFieldRows, putFieldRowsBatch, putProfileRowsBatch, putFieldRows, putProfileRow, getProfileRow, findStaleFields, movieKey, yearOf, getVerdictsBatch, putVerdictsBatch, getFilmmapCache, getMetatakeExtendedCache, getSiteRatingForMovie } from "./db.js";
 import { callLLMWithFallback, getPromptTemplate } from "./llm.js";
 import { enrichClassic, sanitizePeopleField } from "./enrich.js";
 import { filmmapLocations, metatakeExtended, wikidataBatch, fetchSubtitleDensity } from "./sources.js";
@@ -101,6 +101,9 @@ export async function handleResearchStream(env, body, controller, signal) {
         if (p.dirty || p.staleDeterministic.length) profileUpdates.push({ movieId: p.movieId, title: p.movie.title || p.profile.title || p.profile.original_title, year: yearOf(p.movie), data: p.profile });
         const movieLists = listsMap.get(p.movieId) || [];
         const locInfo = getLocationCount(p.profile, p.metatakeLocations, p.filmmap);
+        // === Site puanı ortalaması ===
+        let siteRating = { avg: null, count: 0 };
+        try { siteRating = await getSiteRatingForMovie(env, { movieId: p.movieId, tmdbId: p.movie.id, imdbId: p.profile.imdbID || p.profile.imdb_id }); } catch {}
         const result = {
           id: p.movie.id, ...p.movie, ...p.profile,
           filter_match: evalResult.match,
@@ -120,6 +123,8 @@ export async function handleResearchStream(env, body, controller, signal) {
           related_films_detail: Array.isArray(p.profile.related_films_detail) ? p.profile.related_films_detail : (Array.isArray(p.profile.related_films) ? p.profile.related_films : []),
           color_style: Array.isArray(p.profile.color_style) ? p.profile.color_style : null,
           movie_lists: movieLists,
+          site_rating: siteRating.avg,
+          site_rating_count: siteRating.count,
           _fromCache: p.staleDeterministic.length === 0,
           _source_errors: p.sourceErrors.length ? p.sourceErrors : null
         };
@@ -175,6 +180,8 @@ export async function handleMovieDetails(env, body, signal) {
   merged.related_films_detail = Array.isArray(profile.related_films_detail) ? profile.related_films_detail : (Array.isArray(profile.related_films) ? profile.related_films : []);
   merged.color_style = Array.isArray(profile.color_style) ? profile.color_style : null;
   merged.dialogue_density_subtitle = profile.dialogue_density_subtitle ?? null;
+  // === Site puanı ortalaması ===
+  try { const sr = await getSiteRatingForMovie(env, { movieId, tmdbId: movie.id, imdbId: merged.imdbID || merged.imdb_id }); merged.site_rating = sr.avg; merged.site_rating_count = sr.count; } catch {}
   if (sourceErrors.length) merged._source_errors = sourceErrors;
   return { movie: merged };
   }

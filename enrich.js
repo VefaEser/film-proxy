@@ -122,4 +122,4 @@ export function sanitizePeopleField(val) {
     }
   }
   return out;
-        }
+                                }

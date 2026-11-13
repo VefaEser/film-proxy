@@ -1,4 +1,4 @@
-// db.js — D1 yardımcıları, önbellek katmanları, dead_keys + site puanı sorgusu + paylaşılan HTTP yardımcıları.
+// db.js — findStaleFields: boş string ve null/undefined her zaman stale sayılır
 import { FIELD_DEFS } from "./fields.config.js";
 
 export const VERDICT_TTL = 86400;
@@ -49,7 +49,6 @@ export async function getProfileRow(env, movieId) {
   } catch (e) { console.error("profile read:", e.message); return null; }
 }
 
-// === Site puanı: kullanıcıların verdiği puanların ortalaması ===
 export async function getSiteRatingForMovie(env, { movieId, tmdbId, imdbId }) {
   if (!env.DB) return { avg: null, count: 0 };
   try {
@@ -267,6 +266,8 @@ export function isBadDetailArray(val) {
     return true;
   });
 }
+
+// === YENİ: boş string ve null/undefined her zaman stale sayılır ===
 export function findStaleFields(profile, fieldRows, forceRefresh) {
   const now = Math.floor(Date.now() / 1000);
   const fetched = new Map(fieldRows.map(r => [r.field, Number(r.fetched_at)]));
@@ -284,7 +285,8 @@ export function findStaleFields(profile, fieldRows, forceRefresh) {
   for (const [field, def] of Object.entries(FIELD_DEFS)) {
     const raw = profile[field];
     const isEmptyArray = Array.isArray(raw) && raw.length === 0;
-    const hasValue = raw !== undefined && raw !== null && !isEmptyArray;
+    const isEmptyString = typeof raw === "string" && raw.trim() === "";
+    const hasValue = raw !== undefined && raw !== null && !isEmptyArray && !isEmptyString;
     const badData = hasValue && detailFields.has(field) && isBadDetailArray(raw);
     if (!hasValue || badData) { stale.push(field); continue; }
     if (arrayFields.has(field) && !Array.isArray(raw)) { stale.push(field); continue; }

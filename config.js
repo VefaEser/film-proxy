@@ -1,5 +1,4 @@
-// config.js — Uygulama konfigürasyonu, LLM istatistikleri, statik seçenekler, film listeleri.
-// Filtre adları Türkçe etiketleriyle birebir; production_process ve story_dimensions güncel başlıklarla.
+// config.js — Büyük ödüller listesi genişletildi + filtre info güncel
 import { safeJSON } from "./db.js";
 import { invalidatePromptCache } from "./llm.js";
 
@@ -19,7 +18,7 @@ const DEFAULT_FILTER_INFO = {
   "filter_info.aspect_ratio": "[YZ bağlamı]\nFilmin en-boy oranı. Örnekler: 1:1, 4:3, 16:9, 18:9, 21:9.",
   "filter_info.original_language": "[YZ bağlamı]\nFİLTRE ADI: Film dili. Kullanıcı 'Sadece ana dili dikkate al' seçeneğini işaretlerse yalnızca original_language dikkate alınır; aksi halde spoken_languages da eşleştirilir.",
   "filter_info.dialogue_density_subtitle": "Diyalog yoğunluğu altyazı metninden hesaplanır: karakter sayısı / süre_dk / 10 = yüzde.",
-  "filter_info.award": "Büyük ödüller (Wikidata P166 kazanılan, P1411 aday gösterilen). Seçenekler: Oscar (En İyi Film), Cannes Palme d'Or, BAFTA, Altın Küre, Berlin Altın Ayı, Venedik Altın Aslan, Sundance Büyük Jüri Ödülü, Toronto People's Choice, Cannes Grand Prix, Cannes En İyi Yönetmen, Cannes En İyi Kadın Oyuncu, Cannes En İyi Erkek Oyuncu, Berlin Gümüş Ayı, Venedik Gümüş Aslan, Avrupa Film Ödülü, César, Goya, David di Donatello, Altın Portakal, Siyad, Tokyo, Locarno Altın Leopar, Karlovy Vary Kristal Küre, San Sebastián Altın Kabuk."
+  "filter_info.award": "Büyük ödüller (Wikidata P166 kazanılan, P1411 aday gösterilen). Seçenekler: Oscar (En İyi Film), Cannes Palme d'Or, BAFTA, Altın Küre, Berlin Altın Ayı, Venedik Altın Aslan, Sundance Büyük Jüri Ödülü, Toronto People's Choice, Cannes Grand Prix, Cannes En İyi Yönetmen, Cannes En İyi Kadın Oyuncu, Cannes En İyi Erkek Oyuncu, Berlin Gümüş Ayı, Venedik Gümüş Aslan, Avrupa Film Ödülü, César, Goya, David di Donatello, Altın Portakal, Siyad, Tokyo, Locarno Altın Leopar, Karlovy Vary Kristal Küre, San Sebastián Altın Kabuk, Saturn Ödülü, Empire Ödülü, MTV Film Ödülü, People's Choice Ödülü, Genie Ödülü, Robert Ödülü, Bodil Ödülü, Guldbagge Ödülü, Ariel Ödülü, Nastro d'Argento, Şanghay Altın Kadeh, Moskova Altın George, Mar del Plata Altın Condor, Cairo Altın Piramit, Edinburgh Chaplin Ödülü, Melbourne Altın Ödül, Sydney Altın Ödül, Sitges En İyi Film, Fantasia En İyi Film, Rotterdam VPRO Büyük Ödül."
 };
 
 export async function getAllConfig(env) {
@@ -85,4 +84,4 @@ export async function setConfig(env, key, value) {
     `INSERT INTO app_config (key, value, updated_at) VALUES (?, ?, ?)
      ON CONFLICT(key) DO UPDATE SET value = excluded.value, updated_at = excluded.updated_at`
   ).bind(key, value, Math.floor(Date.now() / 1000)).run();
-    }
+  }

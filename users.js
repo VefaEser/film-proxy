@@ -1,4 +1,4 @@
-// users.js — /user/list-settings endpoint eklendi (liste başına public/private) + tüm önceki iyileştirmeler
+// users.js — CSV Your Rating 0-10 algılama, kendi puanıma göre sıralama, user_rating dönüşü
 import { getCurrentUserWithAdminBridge } from "./auth.js";
 import { handleMovieDetails } from "./research.js";
 import { evaluateFilters } from "./filters.js";
@@ -27,7 +27,7 @@ function parseCsv(text) {
     const imdbId = iConst >= 0 ? (cols[iConst] || "").trim() : "";
     if (!imdbId) continue;
     let userRating = null;
-    if (iUserRating >= 0) { const raw = String(cols[iUserRating] || "").trim().replace(",", "."); if (raw && /^\d+(\.\d+)?$/.test(raw)) { const n = parseFloat(raw); if (Number.isFinite(n) && n >= 1 && n <= 10) userRating = n; } }
+    if (iUserRating >= 0) { const raw = String(cols[iUserRating] || "").trim().replace(",", "."); if (raw && /^\d+(\.\d+)?$/.test(raw)) { const n = parseFloat(raw); if (Number.isFinite(n) && n >= 0 && n <= 10) userRating = n; } }
     out.push({ imdbId, titleOriginal: iOrig >= 0 ? (cols[iOrig] || "").trim() : "", titleTr: iTitle >= 0 ? (cols[iTitle] || "").trim() : "", url: iUrl >= 0 ? (cols[iUrl] || "").trim() : "", year: iYear >= 0 ? parseInt(cols[iYear]) || null : null, imdbRating: iRating >= 0 ? parseFloat(cols[iRating]) || null : null, imdbVotes: iVotes >= 0 ? parseInt(String(cols[iVotes] || "").replace(/[^\d]/g, "")) || null : null, runtime: iRuntime >= 0 ? (parseInt(String(cols[iRuntime] || "").replace(/[^\d]/g, "")) || null) : null, genres: iGenres >= 0 ? (cols[iGenres] || "").trim() : "", directors: iDirectors >= 0 ? (cols[iDirectors] || "").trim() : "", userRating });
   }
   return out;
@@ -79,7 +79,6 @@ async function getList(env, userId, listType, page = 1, pageSize = 10, sort = "y
       for (const p of profilesByImdb || []) { try { const data = JSON.parse(p.data_json); const pImdb = data.imdbID || data.imdb_id; if (pImdb) profileByImdb.set(pImdb, { ...data, id: String(p.movie_id) }); } catch {} }
     } catch (e) { console.warn("imdb fallback:", e.message); }
   }
-  // Site puanı batch
   const siteRatingMap = new Map();
   if (items.length) {
     try {
@@ -87,8 +86,7 @@ async function getList(env, userId, listType, page = 1, pageSize = 10, sort = "y
       const imdbIds = items.map(it => it.imdb_id ? String(it.imdb_id).replace(/^tt/, "") : null).filter(Boolean);
       const tmdbPlace = tmdbIds.length ? tmdbIds.map(() => "?").join(",") : null;
       const imdbPlace = imdbIds.length ? imdbIds.map(() => "?").join(",") : null;
-      const clauses = [];
-      const params = [];
+      const clauses = []; const params = [];
       if (tmdbPlace) { clauses.push(`tmdb_id IN (${tmdbPlace})`); params.push(...tmdbIds); }
       if (imdbPlace) { clauses.push(`imdb_id IN (${imdbPlace})`); params.push(...imdbIds); }
       if (clauses.length) {
@@ -190,7 +188,6 @@ export async function handleUser(request, env, ctx) {
     const user = await env.DB.prepare("SELECT id, username, register_number, is_public, is_suspended, created_at FROM users WHERE username = ? COLLATE NOCASE AND deleted_at IS NULL").bind(username).first();
     if (!user) return jsonErr("Kullanıcı bulunamadı", 404);
     if (user.is_suspended) return jsonErr("Bu profil gizli", 403);
-    // Liste bazlı görünürlük: user_list_settings'te is_public=1 olanlar gösterilir, yoksa default private
     const lists = {};
     for (const lt of ["watched", "want", "wont"]) {
       const setting = await env.DB.prepare("SELECT is_public FROM user_list_settings WHERE user_id = ? AND list_type = ?").bind(user.id, lt).first().catch(() => null);
@@ -203,7 +200,6 @@ export async function handleUser(request, env, ctx) {
   }
   if (!isAuth) return jsonErr("Giriş gerekli", 401);
 
-  // === Liste başına public/private ayarları ===
   if (path === "/list-settings" && request.method === "GET") {
     try {
       const { results } = await env.DB.prepare("SELECT list_type, is_public FROM user_list_settings WHERE user_id = ?").bind(sess.user_id).all();
@@ -227,7 +223,6 @@ export async function handleUser(request, env, ctx) {
     } catch (e) { return jsonErr(e.message, 500); }
   }
 
-  // === Hesaptaki CSV listelerinden dışlanacak film IMDb'leri ===
   if (path === "/excluded-imdbs" && request.method === "GET") {
     const lt = (url.searchParams.get("listType") || "").split(",").map(x => x.trim()).filter(Boolean);
     if (!lt.length) return jsonRes({ imdbs: [], tmdbIds: [] });
@@ -268,7 +263,7 @@ export async function handleUser(request, env, ctx) {
     const now = Math.floor(Date.now() / 1000);
     if (imdbId) await env.DB.prepare("DELETE FROM user_movies WHERE user_id = ? AND (imdb_id = ? OR movie_id = ?)").bind(sess.user_id, imdbId, movieId).run();
     else await env.DB.prepare("DELETE FROM user_movies WHERE user_id = ? AND movie_id = ?").bind(sess.user_id, movieId).run();
-    const userRating = body.userRating != null && Number.isFinite(parseFloat(body.userRating)) && parseFloat(body.userRating) >= 1 && parseFloat(body.userRating) <= 10 ? parseFloat(body.userRating) : null;
+    const userRating = body.userRating != null && Number.isFinite(parseFloat(body.userRating)) && parseFloat(body.userRating) >= 0 && parseFloat(body.userRating) <= 10 ? parseFloat(body.userRating) : null;
     await env.DB.prepare(`INSERT INTO user_movies (user_id, list_type, movie_id, imdb_id, tmdb_id, title_original, title_tr, url, year, imdb_rating, imdb_votes, runtime, genres, directors, user_rating, source, created_at, updated_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 'manual', ?, ?) ON CONFLICT(user_id, list_type, movie_id) DO UPDATE SET updated_at = excluded.updated_at, tmdb_id = COALESCE(excluded.tmdb_id, user_movies.tmdb_id), user_rating = COALESCE(excluded.user_rating, user_movies.user_rating)`).bind(sess.user_id, lt, movieId, imdbId || null, tmdbId, body.titleOriginal || null, body.titleTr || null, body.url || null, body.year || null, body.imdbRating || null, body.imdbVotes || null, body.runtime || null, body.genres || null, body.directors || null, userRating, now, now).run();
     return jsonRes({ ok: true });
   }
@@ -277,7 +272,7 @@ export async function handleUser(request, env, ctx) {
     const movieId = String(body.movieId || ""); const imdbId = String(body.imdbId || "").replace(/^tt/, "");
     if (!movieId && !imdbId) return jsonErr("movieId veya imdbId gerekli", 400);
     const raw = body.userRating;
-    const val = (raw === null || raw === undefined || raw === "") ? null : (Number.isFinite(parseFloat(raw)) && parseFloat(raw) >= 1 && parseFloat(raw) <= 10 ? parseFloat(raw) : null);
+    const val = (raw === null || raw === undefined || raw === "") ? null : (Number.isFinite(parseFloat(raw)) && parseFloat(raw) >= 0 && parseFloat(raw) <= 10 ? parseFloat(raw) : null);
     const now = Math.floor(Date.now() / 1000);
     try {
       if (imdbId) await env.DB.prepare("UPDATE user_movies SET user_rating = ?, updated_at = ? WHERE user_id = ? AND imdb_id = ?").bind(val, now, sess.user_id, imdbId).run();
@@ -304,4 +299,4 @@ export async function handleUser(request, env, ctx) {
   if (path === "/votes" && request.method === "GET") { const { results } = await env.DB.prepare("SELECT movie_id, field, value_json, updated_at FROM user_votes WHERE user_id = ? ORDER BY updated_at DESC LIMIT 500").bind(sess.user_id).all(); return jsonRes({ votes: results || [] }); }
   if (path.startsWith("/votes-aggregate/") && request.method === "GET") { const movieId = decodeURIComponent(path.replace("/votes-aggregate/", "")); const { results } = await env.DB.prepare("SELECT field, value_json FROM user_votes WHERE movie_id = ?").bind(movieId).all(); const fieldMap = {}; let totalVotes = 0; for (const r of results || []) { const val = safeJSON(r.value_json, null); if (!fieldMap[r.field]) fieldMap[r.field] = new Map(); const key = JSON.stringify(val); fieldMap[r.field].set(key, (fieldMap[r.field].get(key) || 0) + 1); totalVotes++; } const aggregated = {}; for (const [field, counts] of Object.entries(fieldMap)) { let bestKey = null, bestCount = 0; for (const [k, c] of counts) if (c > bestCount) { bestKey = k; bestCount = c; } aggregated[field] = { value: safeJSON(bestKey, null), count: bestCount, total: totalVotes }; } return jsonRes({ movieId, aggregated }); }
   return jsonErr("Kullanıcı route bulunamadı", 404);
-}
+                                     }

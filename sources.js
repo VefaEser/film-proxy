@@ -1,4 +1,4 @@
-// sources.js — TMDB / OMDb / Tavily çoklu anahtar rotasyonu + 401 devre dışı + Wikidata/Commons/Subtitles
+// sources.js — OMDb: önce imdb_id (daha güvenilir), sonra başlık ile dene
 import { safeJSON, movieKey, yearOf, norm, getFilmmapCache, putFilmmapCache, getMetatakeExtendedCache, putMetatakeExtendedCache } from "./db.js";
 
 const TMDB_BASE = "https://api.themoviedb.org/3";
@@ -110,12 +110,27 @@ export async function omdb(env, params, outerSignal) {
   if (all401 && tried.size > 0) { keyRot.omdb.dead401 = Date.now() + OMDb_DEAD_MS; console.error("[omdb] tüm anahtarlar 401 — 1 saat devre dışı"); }
   throw lastErr || new Error("OMDb: tüm anahtarlar tükendi");
 }
+
+// === YENİ: önce imdb_id, sonra başlık ===
 export async function omdbBest(env, movie, outerSignal) {
   const title = movie.original_title || movie.title || "";
   const year = String(yearOf(movie) || "");
   let lastErr = null;
-  if (title) { try { return await omdb(env, { t: title, y: year }, outerSignal); } catch (e) { lastErr = e; if (e.status === 401) throw e; } }
-  if (movie.imdb_id) { try { return await omdb(env, { i: movie.imdb_id }, outerSignal); } catch (e) { lastErr = e; if (e.status === 401) throw e; } }
+  // 1) imdb_id varsa doğrudan dene (Se7en → Seven gibi başlık farkı sorununu atlar)
+  if (movie.imdb_id) {
+    try { return await omdb(env, { i: movie.imdb_id }, outerSignal); }
+    catch (e) { lastErr = e; if (e.status === 401) throw e; }
+  }
+  // 2) Başlık + yıl ile dene
+  if (title) {
+    try { return await omdb(env, { t: title, y: year }, outerSignal); }
+    catch (e) { lastErr = e; if (e.status === 401) throw e; }
+  }
+  // 3) Son çare: sadece başlık (yıl olmadan)
+  if (title) {
+    try { return await omdb(env, { t: title }, outerSignal); }
+    catch (e) { lastErr = e; if (e.status === 401) throw e; }
+  }
   throw lastErr || new Error("OMDb: arama yapılamadı");
 }
 
@@ -232,4 +247,4 @@ export async function tmdbRoute(env, url, signal) {
     return tmdb(env, path, params, signal);
   }
   throw Object.assign(new Error("Bilinmeyen TMDB uç noktası."), { status: 404 });
-             }
+                                                                                              }

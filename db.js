@@ -1,4 +1,4 @@
-// db.js — D1 yardımcıları, önbellek katmanları, dead_keys + paylaşılan HTTP yardımcıları.
+// db.js — D1 yardımcıları, önbellek katmanları, dead_keys + site puanı sorgusu + paylaşılan HTTP yardımcıları.
 import { FIELD_DEFS } from "./fields.config.js";
 
 export const VERDICT_TTL = 86400;
@@ -48,11 +48,41 @@ export async function getProfileRow(env, movieId) {
     return { data: safeJSON(row.data_json, {}) || {}, updatedAt: row.updated_at, lastRefreshedAt: row.last_refreshed_at };
   } catch (e) { console.error("profile read:", e.message); return null; }
 }
+
+// === Site puanı: kullanıcıların verdiği puanların ortalaması ===
+export async function getSiteRatingForMovie(env, { movieId, tmdbId, imdbId }) {
+  if (!env.DB) return { avg: null, count: 0 };
+  try {
+    const rawImdb = String(imdbId || "").replace(/^tt/, "");
+    const tmdbIdStr = tmdbId != null ? String(tmdbId) : (movieId && /^\d+$/.test(String(movieId)) ? String(movieId) : null);
+    const clauses = [];
+    const params = [];
+    if (tmdbIdStr) { clauses.push("tmdb_id = ?"); params.push(parseInt(tmdbIdStr) || tmdbIdStr); }
+    if (rawImdb) { clauses.push("imdb_id = ?"); params.push(rawImdb); }
+    if (movieId) { clauses.push("movie_id = ?"); params.push(String(movieId)); }
+    if (!clauses.length) return { avg: null, count: 0 };
+    const sql = `SELECT COUNT(*) AS c, AVG(user_rating) AS avg FROM user_movies WHERE user_rating IS NOT NULL AND (${clauses.join(" OR ")})`;
+    const row = await env.DB.prepare(sql).bind(...params).first();
+    const count = Number(row?.c || 0);
+    const avg = row?.avg != null ? Math.round(Number(row.avg) * 10) / 10 : null;
+    return { avg, count };
+  } catch (e) { console.warn("site rating:", e.message); return { avg: null, count: 0 }; }
+}
+
+export async function getSiteRatingsBatch(env, movies) {
+  if (!env.DB || !movies.length) return new Map();
+  const results = new Map();
+  await Promise.all(movies.map(async (m) => {
+    const r = await getSiteRatingForMovie(env, { movieId: m.id, tmdbId: m.id, imdbId: m.imdbID || m.imdb_id });
+    results.set(String(m.id || m.movieId), r);
+  }));
+  return results;
+}
+
 export async function putProfileRow(env, movieId, title, year, data, refreshed = false) {
   if (!env.DB) return;
   const now = Math.floor(Date.now() / 1000);
   const refreshedAt = refreshed ? now : null;
-  // title null ise data'dan türet
   const safeTitle = title || data?.title || data?.original_title || data?.name || null;
   const safeYear = year || yearOf(data) || null;
   try {

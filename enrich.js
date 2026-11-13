@@ -1,4 +1,4 @@
-// enrich.js — clean(): "" de null olsun; imdb_id her zaman tt önekiyle OMDb'ye gitsin
+// enrich.js — OMDb'den dönen imdbID doğrulaması: TMDB'nin yanlış ID'sini ezer
 import { tmdb, omdbBest } from "./sources.js";
 
 export async function enrichClassic(env, movie, staleFields, outerSignal) {
@@ -57,18 +57,14 @@ export async function enrichClassic(env, movie, staleFields, outerSignal) {
         if (need.has("cast")) { updates.cast = (credits.cast || []).slice(0, 8).map(sanitizePerson).filter(Boolean); covered.add("cast"); }
         if (need.has("cast_ids")) { updates.cast_ids = (credits.cast || []).slice(0, 20).map(c => c.id); covered.add("cast_ids"); }
       }
-      // imdb_id her zaman tt önekiyle set edilsin
+      // TMDB imdb_id'sini geçici olarak movie'ye koy (OMDb fallback için)
       if (!movie.imdb_id && detail.imdb_id) movie.imdb_id = detail.imdb_id;
-      if (!movie.imdb_id && detail.external_ids?.imdb_id) movie.imdb_id = detail.external_ids.imdb_id;
-      if (!movie.imdb_id && detail.imdb_id) movie.imdb_id = detail.imdb_id;
-      // Son çare: external_ids
       if (!movie.imdb_id && detail.external_ids?.imdb_id) movie.imdb_id = detail.external_ids.imdb_id;
     } catch (e) { console.warn("tmdb detail enrich:", e.message); errors.push({ source: "tmdb", error: String(e.message || e) }); }
   }
   if (["imdbRating","imdbVotes","imdbID","omdb_directors","actors","rated","awards","metascore","boxOffice","omdb_poster"].some(f => need.has(f))) {
     try {
       const data = await omdbBest(env, movie, outerSignal);
-      // === YENİ: "" de null olsun ===
       const clean = (v) => (v === "N/A" || v === "" || v === undefined || v === null ? null : v);
       if (need.has("imdbRating")) { updates.imdbRating = clean(data.imdbRating); covered.add("imdbRating"); }
       if (need.has("imdbVotes")) { updates.imdbVotes = clean(data.imdbVotes); covered.add("imdbVotes"); }
@@ -86,6 +82,20 @@ export async function enrichClassic(env, movie, staleFields, outerSignal) {
       if (need.has("metascore")) { updates.metascore = clean(data.Metascore); covered.add("metascore"); }
       if (need.has("boxOffice")) { updates.boxOffice = clean(data.BoxOffice); covered.add("boxOffice"); }
       if (need.has("omdb_poster")) { updates.omdb_poster = clean(data.Poster); covered.add("omdb_poster"); }
+      // === KRİTİK DÜZELTME: TMDB'nin yanlış imdb_id'sini OMDb'nin doğru ID'siyle ez ===
+      if (data.imdbID && /^tt\d+$/i.test(String(data.imdbID).trim())) {
+        const omdbId = String(data.imdbID).trim();
+        // movie objesini de güncelle ki sonraki adımlarda (handleResearchStream) doğru ID kullanılsın
+        if (movie.imdb_id !== omdbId) {
+          console.warn(`[enrich] TMDB imdb_id (${movie.imdb_id || "yok"}) → OMDb doğru ID (${omdbId}) olarak düzeltildi (movie ${movie.id})`);
+          movie.imdb_id = omdbId;
+        }
+        // Profildeki imdb_id/IMDbID her durumda doğru ID olsun
+        updates.imdb_id = omdbId;
+        updates.imdbID = omdbId;
+        covered.add("imdb_id");
+        covered.add("imdbID");
+      }
     } catch (e) { console.warn("omdb enrich:", e.message); errors.push({ source: "omdb", error: String(e.message || e) }); }
   }
   return { updates, covered, errors };
@@ -122,4 +132,4 @@ export function sanitizePeopleField(val) {
     }
   }
   return out;
-                                }
+    }

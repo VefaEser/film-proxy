@@ -1,17 +1,17 @@
 // users.js — searchCsvCache: user_rating SQL'den çıkarıldı (gizlilik sızıntısı düzeltmesi)
-// + /public/:username is_public kontrolü (madde B)
-// + /movie/rating-stats/ 60sn in-memory cache (madde C)
+// + /public/:username is_public kontrolü
+// + /movie/rating-stats/ 60sn in-memory cache
+// Faz 3: CORS temizlendi
+// Faz 4: /user/visual-profile GET + POST eklendi (girişsiz de erişilebilir)
 import { getCurrentUserWithAdminBridge } from "./auth.js";
 import { handleMovieDetails } from "./research.js";
 import { evaluateFilters } from "./filters.js";
 
-const CORS = { "Access-Control-Allow-Origin": "*", "Access-Control-Allow-Methods": "GET,POST,PUT,DELETE,OPTIONS", "Access-Control-Allow-Headers": "Content-Type,Authorization", "Access-Control-Allow-Credentials": "true" };
+const CORS = { "Access-Control-Allow-Methods": "GET,POST,PUT,DELETE,OPTIONS", "Access-Control-Allow-Headers": "Content-Type,Authorization" };
 function jsonRes(data, status = 200) { return new Response(JSON.stringify(data), { status, headers: { ...CORS, "Content-Type": "application/json; charset=utf-8" } }); }
 function jsonErr(msg, status = 500) { return jsonRes({ error: String(msg) }, status); }
 function safeJSON(t, fb = null) { try { return JSON.parse(t); } catch { return fb; } }
 
-// === YENİ: Site puanı istatistikleri için 60 saniyelik in-memory cache ===
-// Worker isolate içinde paylaşılır. Isolate yeniden başlarsa cache sıfırlanır (kabul edilebilir).
 const RATING_STATS_CACHE_TTL_MS = 60 * 1000;
 const ratingStatsCache = new Map();
 function ratingStatsCacheGet(key) { const e = ratingStatsCache.get(key); if (!e) return null; if (Date.now() - e.ts > RATING_STATS_CACHE_TTL_MS) { ratingStatsCache.delete(key); return null; } return e.data; }
@@ -175,7 +175,6 @@ async function refreshCardForImdb(env, imdbId, signal) {
   return { tmdbId: tmdbMovie.id, movie: result.movie };
 }
 
-// === GİZLİLİK DÜZELTMESİ: user_rating SQL'den çıkarıldı — başka kullanıcıların puanları artık sızmıyor ===
 async function searchCsvCache(env, filters, limit, viewerId, query) {
   if (!env.DB) return [];
   const { results } = await env.DB.prepare(
@@ -194,7 +193,6 @@ async function searchCsvCache(env, filters, limit, viewerId, query) {
       profile.id = String(r.tmdb_id);
       if (r.imdb_id && !profile.imdb_id) profile.imdb_id = `tt${cleanImdb(r.imdb_id)}`;
       if (!profile.imdbID && r.imdb_id) profile.imdbID = `tt${cleanImdb(r.imdb_id)}`;
-      // NOT: user_rating artık burada gösterilmez; decorateCard mem.userRating ile kendi puanını çeker.
       if (!profile.original_title) profile.original_title = r.title_original || r.title_tr || null;
       if (!profile.title) profile.title = r.title_tr || r.title_original || null;
       if (!profile.release_date && r.year) profile.release_date = String(r.year);
@@ -218,13 +216,41 @@ export async function handleUser(request, env, ctx) {
   const sess = await getCurrentUserWithAdminBridge(env, request);
   const isAuth = !!sess && !sess.is_suspended;
 
+  // === YENİ (Faz 4): /user/visual-profile — GET herkese açık, POST herkese açık (görsel profil poster bazlı deterministik, auth gerektirmez) ===
+  if (path === "/visual-profile" && request.method === "GET") {
+    const movieId = String(url.searchParams.get("movieId") || "").trim();
+    if (!movieId) return jsonErr("movieId gerekli", 400);
+    try {
+      const { getVisualProfile } = await import("./db.js");
+      const vp = await getVisualProfile(env, movieId);
+      return jsonRes({ ok: true, visualProfile: vp });
+    } catch (e) { return jsonErr(e.message, 500); }
+  }
+  if (path === "/visual-profile" && request.method === "POST") {
+    let body; try { body = await request.json(); } catch { return jsonErr("Geçersiz JSON", 400); }
+    const movieId = String(body.movieId || "").trim();
+    if (!movieId) return jsonErr("movieId gerekli", 400);
+    const fields = body.fields && typeof body.fields === "object" ? body.fields : null;
+    if (!fields || !Object.keys(fields).length) return jsonErr("fields gerekli", 400);
+    if (Object.keys(fields).length > 20) return jsonErr("Çok fazla alan (max 20)", 400);
+    // Basit boyut limiti: her field value_json 10KB'yi geçmesin
+    for (const [k, v] of Object.entries(fields)) {
+      if (!v || typeof v !== "object") return jsonErr(`Geçersiz alan: ${k}`, 400);
+      try { if (JSON.stringify(v.value).length > 10240) return jsonErr(`Alan çok büyük: ${k}`, 400); } catch { return jsonErr(`Alan serileştirilemiyor: ${k}`, 400); }
+    }
+    try {
+      const { putVisualProfile } = await import("./db.js");
+      await putVisualProfile(env, movieId, fields, { status: "complete", schemaVersion: 1 });
+      return jsonRes({ ok: true });
+    } catch (e) { return jsonErr(e.message, 500); }
+  }
+
   if (path.startsWith("/movie/rating-stats/") && request.method === "GET") {
     const rawId = decodeURIComponent(path.replace("/movie/rating-stats/", ""));
     let tmdbId = null, imdbId = null, movieIdParam = null;
     if (/^\d+$/.test(rawId)) tmdbId = parseInt(rawId, 10);
     else if (/^tt\d+$/i.test(rawId)) imdbId = cleanImdb(rawId);
     else movieIdParam = rawId;
-    // === YENİ: 60 saniyelik in-memory cache ===
     const cacheKey = tmdbId ? `tmdb:${tmdbId}` : (imdbId ? `imdb:${imdbId}` : `mid:${movieIdParam}`);
     const cached = ratingStatsCacheGet(cacheKey);
     if (cached) return jsonRes(cached);
@@ -317,7 +343,6 @@ export async function handleUser(request, env, ctx) {
     const user = await env.DB.prepare("SELECT id, username, register_number, is_public, is_suspended, created_at, rating_visibility FROM users WHERE username = ? COLLATE NOCASE AND deleted_at IS NULL").bind(username).first();
     if (!user) return jsonErr("Kullanıcı bulunamadı", 404);
     if (user.is_suspended) return jsonErr("Bu profil gizli", 403);
-    // === YENİ: is_public kontrolü (madde B) ===
     if (!user.is_public) return jsonErr("Bu profil gizli", 403);
     const ratingVisible = user.rating_visibility === "public";
     const lists = {};
@@ -465,4 +490,4 @@ export async function handleUser(request, env, ctx) {
     return jsonRes({ movieId, aggregated });
   }
   return jsonErr("Kullanıcı route bulunamadı", 404);
-      }
+                                                      } 

@@ -441,4 +441,4 @@ export async function handleUser(request, env, ctx) {
     return jsonRes({ movieId, aggregated });
   }
   return jsonErr("Kullanıcı route bulunamadı", 404);
-                                      }
+  }

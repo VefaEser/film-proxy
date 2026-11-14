@@ -1,16 +1,17 @@
-// DOSYA: auth.js
+// auth.js
 // Kayıt/giriş/şifre sıfırlama + güvenlik + permissions döndürme.
+// Faz 3: CORS temizlendi (index.js son katmanı doğru origin ekler), askıya alınmış kullanıcı oturumu engellendi.
 const PBKDF2_ITER = 100000;
 const SESSION_TTL = 30 * 86400;
 const RECOVER_TTL = 900;
 const MAX_FAILED_ATTEMPTS = 5;
 const LOCK_DURATION_SEC = 900;
 
+// === CORS: sadece method + header. Origin ve Credentials index.js son katmanı tarafından
+// corsHeaders(request) ile eklenir. Yerel "*" + "true" kombinasyonu geçersizdir (tarayıcı reddeder). ===
 const CORS = {
-  "Access-Control-Allow-Origin": "*",
   "Access-Control-Allow-Methods": "GET,POST,PUT,DELETE,OPTIONS",
-  "Access-Control-Allow-Headers": "Content-Type,Authorization",
-  "Access-Control-Allow-Credentials": "true"
+  "Access-Control-Allow-Headers": "Content-Type,Authorization"
 };
 
 function jsonRes(data, status = 200, extraHeaders = {}) {
@@ -274,6 +275,8 @@ export async function handleAuth(request, env, ctx) {
     const token = getCookie(request, "sid");
     const sess = await getSession(env, token);
     if (sess) {
+      // === YENİ: askıya alınmış kullanıcı oturumu geçersiz ===
+      if (sess.is_suspended) return jsonRes({ ok: false, user: null, permissions: [] });
       const permissions = await fetchPermissions(env, sess.user_id);
       return jsonRes({
         ok: true, userId: sess.user_id, username: sess.username, registerNumber: sess.register_number,
@@ -347,6 +350,7 @@ export async function handleAuth(request, env, ctx) {
   if (path === "/change-password" && request.method === "POST") {
     const sess = await getSession(env, getCookie(request, "sid"));
     if (!sess) return jsonErr("Giriş gerekli", 401);
+    if (sess.is_suspended) return jsonErr("Hesap askıya alınmış", 403);
     let body; try { body = await request.json(); } catch { return jsonErr("Geçersiz JSON", 400); }
     const oldPw = String(body.oldPassword || "");
     const newPw = String(body.newPassword || "");
@@ -365,6 +369,7 @@ export async function handleAuth(request, env, ctx) {
   if (path === "/rename" && request.method === "POST") {
     const sess = await getSession(env, getCookie(request, "sid"));
     if (!sess) return jsonErr("Giriş gerekli", 401);
+    if (sess.is_suspended) return jsonErr("Hesap askıya alınmış", 403);
     let body; try { body = await request.json(); } catch { return jsonErr("Geçersiz JSON", 400); }
     const newName = String(body.username || "").trim();
     if (!/^[A-Za-z0-9_.-]{3,32}$/.test(newName)) return jsonErr("Geçersiz kullanıcı adı", 400);
@@ -383,6 +388,8 @@ export async function getCurrentUser(env, request) {
 }
 export async function getCurrentUserWithAdminBridge(env, request) {
   const sess = await getCurrentUser(env, request);
+  // === YENİ: askıya alınmış kullanıcı oturumu geçersiz sayılır ===
+  if (sess && sess.is_suspended) return null;
   if (sess) return sess;
   const auth = request.headers.get("Authorization") || "";
   if (env.ADMIN_TOKEN && auth === `Bearer ${env.ADMIN_TOKEN}`) {
@@ -390,4 +397,4 @@ export async function getCurrentUserWithAdminBridge(env, request) {
     if (admin) return { user_id: admin.id, username: admin.username, is_admin: 1, is_public: admin.is_public, register_number: admin.register_number, is_approved: 1, is_email_verified: 1 };
   }
   return null;
-    }
+                                } 

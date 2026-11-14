@@ -1,8 +1,9 @@
 // sources.js — omdbBest: prefixsiz ID'ye sadece "tt" ekle, sıfırları temizleme (Se7en tt0114369 kritik düzeltme)
+// Faz 3: omdb() in-memory cache (5dk TTL, max 100 entry) — OMDb kotasını 2x korur
 import { safeJSON, movieKey, yearOf, norm, getFilmmapCache, putFilmmapCache, getMetatakeExtendedCache, putMetatakeExtendedCache } from "./db.js";
 
 const TMDB_BASE = "https://api.themoviedb.org/3";
-const USER_AGENT = "FilmKesifMotoru/1.0 (https://github.com/VefaEser/film-proxy; contact: vefaeser@ornitonerenk.com)";
+const USER_AGENT = "FilmKesifMotoru/1.0 (https://github.com/VefaEser/film-proxy; contact:vefaeser@ornitonerenk.com)";
 
 const keyRot = {
   omdb:   { keys: [], current: 0, deadUntil: {}, dead401: 0 },
@@ -80,6 +81,36 @@ export async function tmdb(env, path, params = {}, outerSignal) {
   throw lastErr || new Error("TMDB: tüm anahtarlar tükendi");
 }
 
+// === YENİ: OMDb in-memory cache (5dk TTL, max 100 entry) ===
+const OMDB_CACHE_TTL_MS = 5 * 60 * 1000;
+const OMDB_CACHE_MAX = 100;
+const omdbCache = new Map();
+function omdbCacheKey(params) {
+  // Deterministik key: parametreleri alfabetik sırala, sadece i/t/y/type kullan (apikey hariç)
+  const relevant = {};
+  for (const k of ["i", "t", "y", "type", "plot", "r"]) if (params[k]) relevant[k] = String(params[k]).trim();
+  const sorted = Object.keys(relevant).sort().map(k => `${k}=${relevant[k]}`).join("&");
+  return sorted;
+}
+function omdbCacheGet(key) {
+  if (!key) return null;
+  const entry = omdbCache.get(key);
+  if (!entry) return null;
+  if (Date.now() - entry.ts > OMDB_CACHE_TTL_MS) { omdbCache.delete(key); return null; }
+  return entry.data;
+}
+function omdbCacheSet(key, data) {
+  if (!key || !data) return;
+  // LRU benzeri temizlik: max aşılırsa en eski 20 entry'yi sil
+  if (omdbCache.size >= OMDB_CACHE_MAX) {
+    const toDelete = [];
+    let count = 0;
+    for (const k of omdbCache.keys()) { if (count >= 20) break; toDelete.push(k); count++; }
+    for (const k of toDelete) omdbCache.delete(k);
+  }
+  omdbCache.set(key, { ts: Date.now(), data });
+}
+
 const OMDb_DEAD_MS = 3600 * 1000;
 export async function omdb(env, params, outerSignal) {
   initKeys(env);
@@ -88,6 +119,11 @@ export async function omdb(env, params, outerSignal) {
     const remainMin = Math.ceil((keyRot.omdb.dead401 - Date.now()) / 60000);
     throw new Error(`OMDb: tüm anahtarlar devre dışı (401). ${remainMin} dk sonra tekrar dene.`);
   }
+  // === YENİ: cache kontrolü ===
+  const cacheKey = omdbCacheKey(params);
+  const cached = omdbCacheGet(cacheKey);
+  if (cached) return cached;
+
   const tried = new Set(); let lastErr = null; let all401 = true;
   for (let attempt = 0; attempt < keyRot.omdb.keys.length; attempt++) {
     const picked = pickKey("omdb");
@@ -99,6 +135,8 @@ export async function omdb(env, params, outerSignal) {
     try {
       const data = await fetchJSON(url.toString(), {}, "OMDb", 18000, outerSignal);
       if (data.Response === "False") throw new Error(data.Error || "OMDb sonucu bulunamadı.");
+      // === YENİ: başarılı yanıtı cache'e at ===
+      omdbCacheSet(cacheKey, data);
       return data;
     } catch (e) {
       lastErr = e;
@@ -246,4 +284,4 @@ export async function tmdbRoute(env, url, signal) {
     return tmdb(env, path, params, signal);
   }
   throw Object.assign(new Error("Bilinmeyen TMDB uç noktası."), { status: 404 });
-             }
+    } 

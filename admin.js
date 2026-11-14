@@ -1,7 +1,9 @@
 // admin.js — /admin/users listesinde rating_visibility döndürüldü
+// Faz 3: CORS temizlendi (yerel "*" + credentials çelişkisi giderildi; index.js corsHeaders(request) ekler)
 import { getCurrentUserWithAdminBridge } from "./auth.js";
 
-const CORS = { "Access-Control-Allow-Origin": "*", "Access-Control-Allow-Methods": "GET,POST,PUT,DELETE,OPTIONS", "Access-Control-Allow-Headers": "Content-Type,Authorization", "Access-Control-Allow-Credentials": "true" };
+// === CORS: sadece method + header. Origin ve Credentials index.js son katmanı tarafından eklenir. ===
+const CORS = { "Access-Control-Allow-Methods": "GET,POST,PUT,DELETE,OPTIONS", "Access-Control-Allow-Headers": "Content-Type,Authorization" };
 function jsonRes(data, status = 200) { return new Response(JSON.stringify(data), { status, headers: { ...CORS, "Content-Type": "application/json; charset=utf-8" } }); }
 function jsonErr(msg, status = 500) { return jsonRes({ error: String(msg) }, status); }
 function safeJSON(t, fb = null) { try { return JSON.parse(t); } catch { return fb; } }
@@ -27,7 +29,6 @@ export async function handleAdmin(request, env, ctx) {
       const page = Math.max(1, parseInt(url.searchParams.get("page") || "1"));
       const pageSize = 25;
       const offset = (page - 1) * pageSize;
-      // === YENİ: rating_visibility eklendi ===
       const { results } = await env.DB.prepare(
         `SELECT id, register_number, username, email, is_admin, is_approved, is_public, is_suspended, rating_visibility, created_at, suspended_at
          FROM users WHERE deleted_at IS NULL ORDER BY id ASC LIMIT ? OFFSET ?`
@@ -102,4 +103,4 @@ export async function handleAdmin(request, env, ctx) {
     }
     return jsonErr("Admin route bulunamadı", 404);
   } catch (e) { return jsonErr(e.message, e.status || 500); }
-}
+        } 

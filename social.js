@@ -1,15 +1,16 @@
 // social.js — Yorumlar, mesajlar, öneriler + girişsiz admin iletişim formu.
+// Faz 3: CORS temizlendi + /contact-admin IP bazlı rate limit (1 saatte max 5 mesaj)
 import { getCurrentUserWithAdminBridge } from "./auth.js";
 
-const CORS = {
-  "Access-Control-Allow-Origin": "*",
-  "Access-Control-Allow-Methods": "GET,POST,PUT,DELETE,OPTIONS",
-  "Access-Control-Allow-Headers": "Content-Type,Authorization",
-  "Access-Control-Allow-Credentials": "true"
-};
+// === CORS: sadece method + header. Origin ve Credentials index.js son katmanı tarafından eklenir. ===
+const CORS = { "Access-Control-Allow-Methods": "GET,POST,PUT,DELETE,OPTIONS", "Access-Control-Allow-Headers": "Content-Type,Authorization" };
 function jsonRes(data, status = 200) { return new Response(JSON.stringify(data), { status, headers: { ...CORS, "Content-Type": "application/json; charset=utf-8" } }); }
 function jsonErr(msg, status = 500) { return jsonRes({ error: String(msg) }, status); }
 function safeJSON(t, fb = null) { try { return JSON.parse(t); } catch { return fb; } }
+
+// === YENİ: Contact-admin rate limit sabitleri ===
+const CONTACT_ADMIN_WINDOW_SEC = 3600;   // 1 saat pencere
+const CONTACT_ADMIN_MAX_PER_WINDOW = 5;  // aynı IP'den max 5 mesaj
 
 export async function handleSocial(request, env, ctx) {
   if (request.method === "OPTIONS") return new Response(null, { status: 204, headers: CORS });
@@ -20,13 +21,23 @@ export async function handleSocial(request, env, ctx) {
 
   // Girişsiz admin iletişim formu
   if (path === "/contact-admin" && request.method === "POST") {
+    const ip = request.headers.get("CF-Connecting-IP") || "";
+    // === YENİ: IP bazlı rate limit (son 1 saatte 5+ mesaj) ===
+    if (ip && env.DB) {
+      try {
+        const since = now() - CONTACT_ADMIN_WINDOW_SEC;
+        const row = await env.DB.prepare("SELECT COUNT(*) AS c FROM admin_messages WHERE ip = ? AND created_at > ?").bind(ip, since).first();
+        if (Number(row?.c || 0) >= CONTACT_ADMIN_MAX_PER_WINDOW) {
+          return jsonErr("Çok fazla mesaj gönderdiniz. Lütfen 1 saat sonra tekrar deneyin.", 429);
+        }
+      } catch (e) { console.warn("contact-admin rate limit check:", e.message); }
+    }
     let body; try { body = await request.json(); } catch { return jsonErr("Geçersiz JSON", 400); }
     const email = String(body.email || "").trim();
     const subject = String(body.subject || "").trim().slice(0, 200);
     const content = String(body.content || "").trim();
     if (!content || content.length < 5) return jsonErr("Mesaj en az 5 karakter olmalı", 400);
     if (content.length > 2000) return jsonErr("Mesaj çok uzun", 400);
-    const ip = request.headers.get("CF-Connecting-IP") || "";
     try {
       await env.DB.prepare(
         `INSERT INTO admin_messages (email, subject, content, ip, created_at) VALUES (?, ?, ?, ?, ?)`
@@ -116,4 +127,4 @@ export async function handleSocial(request, env, ctx) {
     return jsonRes({ movieId, suggestions: map });
   }
   return jsonErr("Social route bulunamadı", 404);
-      }
+    }

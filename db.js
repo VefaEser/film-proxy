@@ -1,4 +1,4 @@
-// db.js — findStaleFields: boş string ve null/undefined her zaman stale sayılır
+// db.js — getSiteRatingForMovie: prefixli/prefixsiz imdb_id + tmdb_id + movie_id çoklu format araması
 import { FIELD_DEFS } from "./fields.config.js";
 
 export const VERDICT_TTL = 86400;
@@ -49,16 +49,26 @@ export async function getProfileRow(env, movieId) {
   } catch (e) { console.error("profile read:", e.message); return null; }
 }
 
+// === YENİ: site puanı çoklu format araması ===
 export async function getSiteRatingForMovie(env, { movieId, tmdbId, imdbId }) {
   if (!env.DB) return { avg: null, count: 0 };
   try {
-    const rawImdb = String(imdbId || "").replace(/^tt/, "");
+    const rawImdb = String(imdbId || "").trim().replace(/^tt/, "");
     const tmdbIdStr = tmdbId != null ? String(tmdbId) : (movieId && /^\d+$/.test(String(movieId)) ? String(movieId) : null);
     const clauses = [];
     const params = [];
-    if (tmdbIdStr) { clauses.push("tmdb_id = ?"); params.push(parseInt(tmdbIdStr) || tmdbIdStr); }
-    if (rawImdb) { clauses.push("imdb_id = ?"); params.push(rawImdb); }
-    if (movieId) { clauses.push("movie_id = ?"); params.push(String(movieId)); }
+    if (tmdbIdStr) {
+      clauses.push("(tmdb_id = ? OR movie_id = ?)");
+      params.push(parseInt(tmdbIdStr) || tmdbIdStr, `tmdb:${tmdbIdStr}`);
+    }
+    if (rawImdb) {
+      clauses.push("(imdb_id = ? OR imdb_id = ? OR movie_id = ?)");
+      params.push(rawImdb, `tt${rawImdb}`, `imdb:${rawImdb}`);
+    }
+    if (movieId && !tmdbIdStr) {
+      clauses.push("movie_id = ?");
+      params.push(String(movieId));
+    }
     if (!clauses.length) return { avg: null, count: 0 };
     const sql = `SELECT COUNT(*) AS c, AVG(user_rating) AS avg FROM user_movies WHERE user_rating IS NOT NULL AND (${clauses.join(" OR ")})`;
     const row = await env.DB.prepare(sql).bind(...params).first();
@@ -267,7 +277,6 @@ export function isBadDetailArray(val) {
   });
 }
 
-// === YENİ: boş string ve null/undefined her zaman stale sayılır ===
 export function findStaleFields(profile, fieldRows, forceRefresh) {
   const now = Math.floor(Date.now() / 1000);
   const fetched = new Map(fieldRows.map(r => [r.field, Number(r.fetched_at)]));
@@ -344,4 +353,4 @@ export async function getDailyModelCalls(env, provider, model) {
     const row = await env.DB.prepare("SELECT COUNT(*) AS c FROM llm_calls WHERE provider = ? AND model = ? AND ok = 1 AND ts > ?").bind(provider, model, since).first();
     return Number(row?.c || 0);
   } catch { return 0; }
-}
+      }

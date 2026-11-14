@@ -1,5 +1,6 @@
 // filters.js — Dil filtresi hem original_language hem spoken_languages (languageOnlyOriginal bayrağına saygılı),
 // passesLocalFilters unknown da ELE (rated, award, director, writers, cast, company), family_content unknown da ELE.
+// semanticSignature: story_locations, filming_locations, oranlar, mekan sayısı da imzaya dahil (madde A).
 import { SEMANTIC_FIELDS, FIELD_DEFS, LLM_FIELDS } from "./fields.config.js";
 import { norm, yearOf, safeJSON } from "./db.js";
 
@@ -81,12 +82,23 @@ export function buildFilterContext(filters, configAll) {
   }
   return lines.join("\n\n");
 }
+// === GÜNCELLENDİ: story_locations, filming_locations, oranlar ve mekan sayısı da imzaya dahil (madde A) ===
 export function semanticSignature(filters) {
   const f = filters || {}; const active = {};
   for (const field of SEMANTIC_FIELDS) if (f[field] && (f[field].include?.length || f[field].exclude?.length)) active[field] = f[field];
+  // filming_locations SEMANTIC_FIELDS'te değil (ayrı evaluate edilir) ama imza için dahil edilmeli
+  if (f.filming_locations && (f.filming_locations.include?.length || f.filming_locations.exclude?.length)) active.filming_locations = f.filming_locations;
+  // story_locations SEMANTIC_FIELDS'te zaten var, aşağıdaki kontroller garanti
+  if (f.story_locations && (f.story_locations.include?.length || f.story_locations.exclude?.length)) active.story_locations = f.story_locations;
   if (f.family_content && Object.keys(f.family_content).length) active.family_content = f.family_content;
   if (f.characterDensity) active.characterDensity = f.characterDensity;
   if (f.languageOnlyOriginal) active.languageOnlyOriginal = true;
+  // === YENİ: oran ve mekan sayısı filtreleri de semantik sonucu etkiler ===
+  if (f.dayRatioMin != null) active.dayRatioMin = f.dayRatioMin;
+  if (f.outdoorRatioMin != null) active.outdoorRatioMin = f.outdoorRatioMin;
+  if (f.dialogueDensityMin != null) active.dialogueDensityMin = f.dialogueDensityMin;
+  if (f.locationMin != null) active.locationMin = f.locationMin;
+  if (f.locationMax != null) active.locationMax = f.locationMax;
   const sorted = Object.keys(active).sort().reduce((o, k) => { o[k] = active[k]; return o; }, {});
   return JSON.stringify(sorted);
 }
@@ -96,11 +108,17 @@ export function ratioFieldsNeeded(filters) { const f = filters || {}; const fiel
 export function locationFieldsNeeded(filters) { const f = filters || {}; return (f.locationMin != null || f.locationMax != null) ? ["location_count"] : []; }
 
 function toNum(v) { if (v === null || v === undefined || v === "") return null; if (typeof v === "string" && /^n\/?a$/i.test(v.trim())) return null; const n = Number(String(v).replace(/[^\d.-]/g, "")); return Number.isFinite(n) ? n : null; }
+
+// === matchSet: hibrit eşleşme (slug ↔ slug, label ↔ label, substring) ===
+// 12 slug'lı story_dimensions ve iki aşamalı LLM alanları otomatik desteklenir.
 function matchSet(profileField, filterObj, altProfileField) {
   if (!filterObj) return { match: true, unknown: false, conflict: false, reasons: [] };
   const raw = Array.isArray(profileField) ? profileField.map(norm) : (profileField ? [norm(profileField)] : []);
   const altRaw = Array.isArray(altProfileField) ? altProfileField.map(norm) : (altProfileField ? [norm(altProfileField)] : []);
   const allRaw = [...raw, ...altRaw]; const empty = allRaw.length === 0; const reasons = []; let match = true, unknown = false, conflict = false;
+  // 1) Slug match: x.id profile'da varsa
+  // 2) Label match: x.label profile'da (norm) varsa
+  // 3) Substring match: profile stringlerinde x'in herhangi bir token'ı geçiyorsa (serbest açıklama için)
   const matches = (x) => { const v = norm(x.label || x); if (allRaw.includes(v)) return true; if (x.id != null && x.id !== "" && allRaw.includes(norm(x.id))) return true; return allRaw.some(h => h.includes(v) || v.includes(h)); };
   if (filterObj.include?.length) { const matched = filterObj.include.filter(x => matches(x)); if (matched.length === 0) { if (empty) { unknown = true; reasons.push(`bilinmiyor: ${filterObj.include.map(x => x.label || x).join(", ")}`); } else { match = false; reasons.push(`eksik: ${filterObj.include.map(x => x.label || x).join(", ")}`); } } }
   if (filterObj.exclude?.length) { const hit = filterObj.exclude.filter(x => matches(x)); if (hit.length) { match = false; conflict = true; reasons.push(`hariç: ${hit.map(x => x.label || x).join(", ")}`); } }

@@ -1,4 +1,6 @@
 // users.js — searchCsvCache: user_rating SQL'den çıkarıldı (gizlilik sızıntısı düzeltmesi)
+// + /public/:username is_public kontrolü (madde B)
+// + /movie/rating-stats/ 60sn in-memory cache (madde C)
 import { getCurrentUserWithAdminBridge } from "./auth.js";
 import { handleMovieDetails } from "./research.js";
 import { evaluateFilters } from "./filters.js";
@@ -7,6 +9,18 @@ const CORS = { "Access-Control-Allow-Origin": "*", "Access-Control-Allow-Methods
 function jsonRes(data, status = 200) { return new Response(JSON.stringify(data), { status, headers: { ...CORS, "Content-Type": "application/json; charset=utf-8" } }); }
 function jsonErr(msg, status = 500) { return jsonRes({ error: String(msg) }, status); }
 function safeJSON(t, fb = null) { try { return JSON.parse(t); } catch { return fb; } }
+
+// === YENİ: Site puanı istatistikleri için 60 saniyelik in-memory cache ===
+// Worker isolate içinde paylaşılır. Isolate yeniden başlarsa cache sıfırlanır (kabul edilebilir).
+const RATING_STATS_CACHE_TTL_MS = 60 * 1000;
+const ratingStatsCache = new Map();
+function ratingStatsCacheGet(key) { const e = ratingStatsCache.get(key); if (!e) return null; if (Date.now() - e.ts > RATING_STATS_CACHE_TTL_MS) { ratingStatsCache.delete(key); return null; } return e.data; }
+function ratingStatsCacheSet(key, data) { ratingStatsCache.set(key, { ts: Date.now(), data }); }
+function invalidateRatingStatsCache({ tmdbId, imdbId, movieId }) {
+  if (tmdbId != null) ratingStatsCache.delete(`tmdb:${tmdbId}`);
+  if (imdbId) ratingStatsCache.delete(`imdb:${cleanImdb(imdbId)}`);
+  if (movieId) ratingStatsCache.delete(`mid:${movieId}`);
+}
 
 async function userHasAnyPermission(env, sess, perms) { if (sess.is_admin) return true; try { const placeholders = perms.map(() => "?").join(","); const row = await env.DB.prepare(`SELECT 1 FROM user_permissions WHERE user_id = ? AND permission IN (${placeholders}) LIMIT 1`).bind(sess.user_id, ...perms).first(); return !!row; } catch { return false; } }
 
@@ -210,6 +224,10 @@ export async function handleUser(request, env, ctx) {
     if (/^\d+$/.test(rawId)) tmdbId = parseInt(rawId, 10);
     else if (/^tt\d+$/i.test(rawId)) imdbId = cleanImdb(rawId);
     else movieIdParam = rawId;
+    // === YENİ: 60 saniyelik in-memory cache ===
+    const cacheKey = tmdbId ? `tmdb:${tmdbId}` : (imdbId ? `imdb:${imdbId}` : `mid:${movieIdParam}`);
+    const cached = ratingStatsCacheGet(cacheKey);
+    if (cached) return jsonRes(cached);
     const clauses = []; const params = [];
     if (tmdbId) { clauses.push("(tmdb_id = ? OR movie_id = ?)"); params.push(tmdbId, `tmdb:${tmdbId}`); }
     if (imdbId) { clauses.push("(imdb_id = ? OR imdb_id = ? OR movie_id = ?)"); params.push(imdbId, `tt${imdbId}`, `imdb:${imdbId}`); }
@@ -223,7 +241,9 @@ export async function handleUser(request, env, ctx) {
       if (rt >= 1 && rt <= 10) { distribution[rt] = Number(r.c); totalVotes += Number(r.c); sum += rt * Number(r.c); }
     }
     const avg = totalVotes > 0 ? Math.round((sum / totalVotes) * 10) / 10 : null;
-    return jsonRes({ distribution, totalVotes, avg });
+    const result = { distribution, totalVotes, avg };
+    ratingStatsCacheSet(cacheKey, result);
+    return jsonRes(result);
   }
 
   if (path.startsWith("/movie/rating-users/") && request.method === "GET") {
@@ -297,6 +317,8 @@ export async function handleUser(request, env, ctx) {
     const user = await env.DB.prepare("SELECT id, username, register_number, is_public, is_suspended, created_at, rating_visibility FROM users WHERE username = ? COLLATE NOCASE AND deleted_at IS NULL").bind(username).first();
     if (!user) return jsonErr("Kullanıcı bulunamadı", 404);
     if (user.is_suspended) return jsonErr("Bu profil gizli", 403);
+    // === YENİ: is_public kontrolü (madde B) ===
+    if (!user.is_public) return jsonErr("Bu profil gizli", 403);
     const ratingVisible = user.rating_visibility === "public";
     const lists = {};
     for (const lt of ["watched", "want", "wont"]) {
@@ -372,6 +394,7 @@ export async function handleUser(request, env, ctx) {
     else await env.DB.prepare("DELETE FROM user_movies WHERE user_id = ? AND movie_id = ?").bind(sess.user_id, movieId).run();
     const userRating = normalizeRatingValue(body.userRating);
     await env.DB.prepare(`INSERT INTO user_movies (user_id, list_type, movie_id, imdb_id, tmdb_id, title_original, title_tr, url, year, imdb_rating, imdb_votes, runtime, genres, directors, user_rating, source, created_at, updated_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 'manual', ?, ?) ON CONFLICT(user_id, list_type, movie_id) DO UPDATE SET updated_at = excluded.updated_at, tmdb_id = COALESCE(excluded.tmdb_id, user_movies.tmdb_id), user_rating = COALESCE(excluded.user_rating, user_movies.user_rating)`).bind(sess.user_id, lt, movieId, imdbId || null, tmdbId, body.titleOriginal || null, body.titleTr || null, body.url || null, body.year || null, body.imdbRating || null, body.imdbVotes || null, body.runtime || null, body.genres || null, body.directors || null, userRating, now, now).run();
+    invalidateRatingStatsCache({ tmdbId, imdbId, movieId });
     return jsonRes({ ok: true });
   }
   if (path === "/rating" && request.method === "PUT") {
@@ -397,10 +420,11 @@ export async function handleUser(request, env, ctx) {
       } else if (val != null) {
         await env.DB.prepare(`INSERT INTO user_movies (user_id, list_type, movie_id, imdb_id, tmdb_id, title_original, title_tr, year, imdb_rating, user_rating, source, created_at, updated_at) VALUES (?, 'watched', ?, ?, ?, ?, ?, ?, ?, ?, 'manual', ?, ?) ON CONFLICT(user_id, list_type, movie_id) DO UPDATE SET user_rating = excluded.user_rating, updated_at = excluded.updated_at`).bind(sess.user_id, effMovieId, imdbId || null, tmdbId, body.titleOriginal || null, body.titleTr || null, body.year || null, body.imdbRating || null, val, now, now).run();
       }
+      invalidateRatingStatsCache({ tmdbId, imdbId, movieId: effMovieId });
       return jsonRes({ ok: true });
     } catch (e) { return jsonErr(e.message, 500); }
   }
-  if (path.startsWith("/lists/remove/") && request.method === "DELETE") { const parts = path.replace("/lists/remove/", "").split("/"); const lt = parts[0], movieId = decodeURIComponent(parts.slice(1).join("/")); if (!["watched", "want", "wont"].includes(lt)) return jsonErr("Geçersiz liste", 400); await env.DB.prepare("DELETE FROM user_movies WHERE user_id = ? AND list_type = ? AND movie_id = ?").bind(sess.user_id, lt, movieId).run(); return jsonRes({ ok: true }); }
+  if (path.startsWith("/lists/remove/") && request.method === "DELETE") { const parts = path.replace("/lists/remove/", "").split("/"); const lt = parts[0], movieId = decodeURIComponent(parts.slice(1).join("/")); if (!["watched", "want", "wont"].includes(lt)) return jsonErr("Geçersiz liste", 400); await env.DB.prepare("DELETE FROM user_movies WHERE user_id = ? AND list_type = ? AND movie_id = ?").bind(sess.user_id, lt, movieId).run(); invalidateRatingStatsCache({ movieId }); return jsonRes({ ok: true }); }
   if (path === "/lists/refresh" && request.method === "POST") { let body; try { body = await request.json(); } catch { return jsonErr("Geçersiz JSON", 400); } const listType = String(body.listType || ""); const page = Math.max(1, parseInt(body.page || "1")); if (!["watched", "want", "wont"].includes(listType)) return jsonErr("Geçersiz liste", 400); const { items } = await getList(env, sess.user_id, listType, page, 10, "year_desc"); return jsonRes({ ok: true, items }); }
   if (path.startsWith("/refresh-card/") && request.method === "POST") {
     const allowed = await userHasAnyPermission(env, sess, ["refresh_movie", "csv_import_cards"]);
@@ -441,4 +465,4 @@ export async function handleUser(request, env, ctx) {
     return jsonRes({ movieId, aggregated });
   }
   return jsonErr("Kullanıcı route bulunamadı", 404);
-  }
+      }

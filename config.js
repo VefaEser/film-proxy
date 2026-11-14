@@ -1,9 +1,9 @@
 // config.js — Tüm semantik alanlar iki aşamalı: slug listesi + serbest açıklama
 // story_dimensions 12 slug (reboot, film_franchise, remake eklendi)
+// Faz 4: filter_info.color → filter_info.color_style (rename)
 import { safeJSON } from "./db.js";
 import { invalidatePromptCache } from "./llm.js";
 
-// Tüm semantik alanlar için ortak iki aşamalı yapı notu
 const TWO_STAGE_NOTE = "İKİ AŞAMALI: (1) ÖNCE slug listesinden en az birini seç — filtre eşleşmesi bunlarla yapılır. (2) SONRA istediğin kadar serbest açıklama ekleyebilirsin — bunlar filtrelenmez, kartta bilgi olarak gösterilir.";
 
 const DEFAULT_FILTER_INFO = {
@@ -125,7 +125,8 @@ Aile rehberi. Her içerik türü için intensity ve approach.
 - intensity: none=hiç yok, few=birkaç sahne, side=yan konu, main=ana konu.
 - approach: bad=kötü gösteriyor, neutral=tarafsız kalıyor, legit=meşrulaştırıyor.`,
 
-  "filter_info.color": `[YZ bağlamı]
+  // === FAZ 4 RENAME: filter_info.color → filter_info.color_style ===
+  "filter_info.color_style": `[YZ bağlamı]
 Filmin görsel renk stili.
 - black_white: Tamamen siyah beyaz.
 - color: Tamamen renkli.
@@ -218,4 +219,4 @@ export async function setConfig(env, key, value) {
     `INSERT INTO app_config (key, value, updated_at) VALUES (?, ?, ?)
      ON CONFLICT(key) DO UPDATE SET value = excluded.value, updated_at = excluded.updated_at`
   ).bind(key, value, Math.floor(Date.now() / 1000)).run();
-  }
+} 

@@ -1,4 +1,6 @@
 // enrich.js — TMDB/OMDb zenginleştirme + OMDb Country/Language çapraz doğrulama + imdbID override.
+// Faz 3: OMDb Language original_language'ı EZMEZ (TMDB korunur, sadece TMDB boşsa OMDb kullanılır).
+//         OMDb Country TMDB'yi EZMEZ (union yapılır, bilgi kaybı yok).
 import { tmdb, omdbBest } from "./sources.js";
 
 export async function enrichClassic(env, movie, staleFields, outerSignal) {
@@ -15,39 +17,50 @@ export async function enrichClassic(env, movie, staleFields, outerSignal) {
       if (need.has("spoken_languages_ids")) { updates.spoken_languages_ids = langs.map(l => l.iso_639_1); covered.add("spoken_languages_ids"); }
       const originalLang = detail.original_language || "";
       const countries = Array.isArray(detail.production_countries) ? detail.production_countries : [];
-      // === YENİ: OMDb Country/Language çapraz doğrulaması ===
+      // === OMDb Country/Language çapraz doğrulaması ===
       let omdbCountry = null, omdbLanguage = null;
       try {
         const omdbData = await omdbBest(env, movie, outerSignal);
         omdbCountry = omdbData.Country && omdbData.Country !== "N/A" ? omdbData.Country : null;
         omdbLanguage = omdbData.Language && omdbData.Language !== "N/A" ? omdbData.Language : null;
       } catch (e) { /* OMDb hatası çapraz kontrolü engellemesin */ }
-      // production_countries: TMDB boşsa veya OMDb daha fazla ülke döndürdüyse OMDb'yi kullan
+
+      // === DÜZELTME: OMDb Country TMDB'yi EZMEZ, sadece UNION yapılır ===
       if (need.has("production_countries") || !countries.length) {
-        let finalCountries = countries.map(c => c.name || c.iso_3166_1);
-        if (omdbCountry) {
-          const omdbCountries = omdbCountry.split(",").map(s => s.trim()).filter(Boolean);
-          if (!finalCountries.length || omdbCountries.length > finalCountries.length) {
-            finalCountries = omdbCountries;
-          }
-        }
+        const tmdbCountries = countries.map(c => c.name || c.iso_3166_1).filter(Boolean);
+        const omdbCountries = omdbCountry ? omdbCountry.split(",").map(s => s.trim()).filter(Boolean) : [];
+        const finalSet = new Set(tmdbCountries);
+        for (const c of omdbCountries) finalSet.add(c);
+        const finalCountries = [...finalSet];
         if (finalCountries.length) { updates.production_countries = finalCountries; covered.add("production_countries"); }
+        if (tmdbCountries.length && omdbCountries.length) {
+          const onlyOmdb = omdbCountries.filter(c => !tmdbCountries.some(t => t.toLowerCase() === c.toLowerCase()));
+          if (onlyOmdb.length) console.log(`[enrich] production_countries birleştirildi (movie ${movie.id}): TMDB=[${tmdbCountries}] + OMDb ek=[${onlyOmdb}]`);
+        }
       }
       if (need.has("production_countries_ids") && countries.length) { updates.production_countries_ids = countries.map(c => c.iso_3166_1); covered.add("production_countries_ids"); }
-      // original_language: TMDB boşsa veya OMDb farklı dil döndürdüyse OMDb'yi kullan
+
+      // === DÜZELTME: OMDb Language TMDB original_language'ı EZMEZ ===
       if (need.has("original_language") || !originalLang) {
         let finalLang = originalLang;
+        let conflict = null;
         if (omdbLanguage) {
           const omdbLangs = omdbLanguage.split(",").map(s => s.trim().toLowerCase());
-          const langMap = { "english": "en", "spanish": "es", "french": "fr", "german": "de", "italian": "it", "portuguese": "pt", "russian": "ru", "japanese": "ja", "korean": "ko", "chinese": "zh", "turkish": "tr" };
+          const langMap = { "english": "en", "spanish": "es", "french": "fr", "german": "de", "italian": "it", "portuguese": "pt", "russian": "ru", "japanese": "ja", "korean": "ko", "chinese": "zh", "turkish": "tr", "hindi": "hi", "arabic": "ar", "dutch": "nl", "swedish": "sv", "danish": "da", "norwegian": "no", "finnish": "fi", "polish": "pl", "czech": "cs", "greek": "el", "hebrew": "he", "persian": "fa", "thai": "th", "vietnamese": "vi", "indonesian": "id", "malay": "ms", "tagalog": "tl", "ukrainian": "uk", "romanian": "ro", "hungarian": "hu", "bulgarian": "bg", "croatian": "hr", "serbian": "sr", "slovak": "sk", "slovenian": "sl", "estonian": "et", "latvian": "lv", "lithuanian": "lt", "icelandic": "is", "irish": "ga", "welsh": "cy", "basque": "eu", "catalan": "ca", "galician": "gl", "maltese": "mt", "luxembourgish": "lb", "afrikaans": "af", "swahili": "sw", "amharic": "am", "bengali": "bn", "tamil": "ta", "telugu": "te", "malayalam": "ml", "kannada": "kn", "marathi": "mr", "gujarati": "gu", "punjabi": "pa", "urdu": "ur", "nepali": "ne", "sinhala": "si", "khmer": "km", "lao": "lo", "burmese": "my", "georgian": "ka", "armenian": "hy", "azerbaijani": "az", "kazakh": "kk", "uzbek": "uz", "kyrgyz": "ky", "tajik": "tg", "turkmen": "tk", "mongolian": "mn", "tibetan": "bo", "dzongkha": "dz", "pashto": "ps", "kurdish": "ku", "yiddish": "yi", "latin": "la" };
           const firstOmdbLang = omdbLangs[0];
           const mapped = langMap[firstOmdbLang] || firstOmdbLang;
-          if (!finalLang || finalLang !== mapped) {
+          if (!finalLang) {
+            // TMDB boş → OMDb kullan
             finalLang = mapped;
+          } else if (mapped && finalLang !== mapped) {
+            // TMDB dolu + OMDb farklı → çelişki, TMDB korunur
+            conflict = { tmdb: finalLang, omdb: mapped };
           }
         }
         if (finalLang) { updates.original_language = finalLang; covered.add("original_language"); }
+        if (conflict) console.warn(`[enrich] original_language çelişkisi (movie ${movie.id}): TMDB=${conflict.tmdb} OMDb=${conflict.omdb} — TMDB korundu`);
       }
+
       if (need.has("runtime")) { updates.runtime = Number(detail.runtime) || null; covered.add("runtime"); }
       const companies = Array.isArray(detail.production_companies) ? detail.production_companies : [];
       if (need.has("production_companies")) { updates.production_companies = companies.map(c => c.name); covered.add("production_companies"); }
@@ -159,4 +172,4 @@ export function sanitizePeopleField(val) {
     }
   }
   return out;
-                   }
+      } 

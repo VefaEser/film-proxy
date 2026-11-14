@@ -1,4 +1,4 @@
-// research.js — fillDetailsBatch: LLM dönüşünde character_traits ve story_dimensions slug filtreleme
+// research.js — story_dimensions için slug + serbest metin birlikte korunur
 import { FIELD_DEFS, FIELD_RULES, SEMANTIC_FIELDS, LLM_FIELDS, CHARACTER_TRAITS_LIST, STORY_DIMENSIONS_LIST } from "./fields.config.js";
 import { getProfileRowsBatch, getFieldRowsBatch, getFieldRows, putFieldRowsBatch, putProfileRowsBatch, putFieldRows, putProfileRow, getProfileRow, findStaleFields, movieKey, yearOf, getVerdictsBatch, putVerdictsBatch, getFilmmapCache, getMetatakeExtendedCache, getSiteRatingForMovie } from "./db.js";
 import { callLLMWithFallback, getPromptTemplate } from "./llm.js";
@@ -8,7 +8,6 @@ import { buildFilterSentence, buildFilterContext, semanticSignature, hasSemantic
 import { getAllConfig, getMovieLists } from "./config.js";
 
 const FILMMAP_LIMIT = 3;
-// === YENİ: geçerli slug setleri ===
 const VALID_CHARACTER_TRAITS = new Set(CHARACTER_TRAITS_LIST);
 const VALID_STORY_DIMENSIONS = new Set(STORY_DIMENSIONS_LIST);
 
@@ -18,7 +17,7 @@ function extractJSON(text) { const clean = String(text).replace(/^```(?:json)?\s
 
 async function classifyBatch(env, movies, filterSentence, filterContext, useSearch, signal, context = {}) { const payload = movies.map(m => ({ id: m.id, title: m.original_title || m.title || "", year: yearOf(m), overview: (m.overview || "").slice(0, 300) })); const template = await getPromptTemplate(env, "prompt_template.stage1"); const prompt = template.replace(/\{\{FILTER_SENTENCE\}\}/g, filterSentence).replace(/\{\{FILTER_CONTEXT\}\}/g, filterContext || "(bağlam yok)").replace(/\{\{MOVIES\}\}/g, JSON.stringify(payload)); const raw = await callLLMWithFallback(env, prompt, 800, useSearch, signal, { ...context, method: "stage1", hasSemantic: true, maxAttempts: 3 }); const arr = extractJSONArray(raw) || []; const byId = new Map(); for (const item of arr) { if (!item || item.id == null) continue; const match = String(item.match || "").toLowerCase(); byId.set(String(item.id), { verdict: ["yes","no","unknown"].includes(match) ? match : "unknown", reason: String(item.reason || "").slice(0, 200) }); } return byId; }
 
-// === YENİ: fillDetailsBatch — slug filtreleme ===
+// === fillDetailsBatch: character_traits ve story_dimensions esnek (slug + serbest) ===
 async function fillDetailsBatch(env, movies, staleFields, signal, context = {}) {
   const out = new Map();
   if (!staleFields.length || !movies.length) return out;
@@ -36,20 +35,28 @@ async function fillDetailsBatch(env, movies, staleFields, signal, context = {}) 
     for (const f of staleFields) {
       const val = item[f];
       if (val === undefined || val === null) continue;
-      // === YENİ: character_traits → sadece slug'lar kalsın ===
+      // === character_traits: slug + serbest metin birlikte korunur ===
       if (f === "character_traits") {
         const arrVal = Array.isArray(val) ? val : [val];
-        const valid = arrVal.map(x => String(x).trim()).filter(x => VALID_CHARACTER_TRAITS.has(x));
-        if (valid.length) updates[f] = valid;
-        else if (arrVal.length) console.warn(`[fillDetails] character_traits slug dışı değerler atıldı (${movieKey(movies.find(m => String(m.id) === String(item.id)) || {})}): ${arrVal.join(", ")}`);
+        const valid = arrVal.map(x => String(x).trim()).filter(x => x.length > 0);
+        if (valid.length) {
+          updates[f] = valid;
+          const slugCount = valid.filter(x => VALID_CHARACTER_TRAITS.has(x)).length;
+          if (slugCount === 0) console.warn(`[fillDetails] character_traits: hiç slug yok (${valid.join(", ")}) — filtre eşleşmeyebilir, kart yine de gösterecek`);
+          else if (slugCount < valid.length) console.log(`[fillDetails] character_traits: ${slugCount} slug + ${valid.length - slugCount} serbest metin`);
+        }
         continue;
       }
-      // === YENİ: story_dimensions → sadece slug'lar kalsın ===
+      // === story_dimensions: slug + serbest metin birlikte korunur ===
       if (f === "story_dimensions") {
         const arrVal = Array.isArray(val) ? val : [val];
-        const valid = arrVal.map(x => String(x).trim()).filter(x => VALID_STORY_DIMENSIONS.has(x));
-        if (valid.length) updates[f] = valid;
-        else if (arrVal.length) console.warn(`[fillDetails] story_dimensions slug dışı değerler atıldı: ${arrVal.join(", ")}`);
+        const valid = arrVal.map(x => String(x).trim()).filter(x => x.length > 0);
+        if (valid.length) {
+          updates[f] = valid;
+          const slugCount = valid.filter(x => VALID_STORY_DIMENSIONS.has(x)).length;
+          if (slugCount === 0) console.warn(`[fillDetails] story_dimensions: hiç slug yok (${valid.join(", ")}) — filtre eşleşmeyebilir, kart yine de gösterecek`);
+          else if (slugCount < valid.length) console.log(`[fillDetails] story_dimensions: ${slugCount} slug + ${valid.length - slugCount} serbest metin`);
+        }
         continue;
       }
       updates[f] = val;
@@ -61,15 +68,13 @@ async function fillDetailsBatch(env, movies, staleFields, signal, context = {}) 
 
 function filmingNamesFromFilmmap(locations) {
   if (!Array.isArray(locations)) return [];
-  const out = [];
-  const seen = new Set();
+  const out = []; const seen = new Set();
   for (const loc of locations) {
     const name = String(loc?.name || loc?.city || "").trim();
     if (!name) continue;
     const key = name.toLowerCase();
     if (seen.has(key)) continue;
-    seen.add(key);
-    out.push(name);
+    seen.add(key); out.push(name);
   }
   return out;
 }
@@ -137,11 +142,7 @@ export async function handleResearchStream(env, body, controller, signal) {
             const names = filmingNamesFromFilmmap(p.filmmap);
             if (names.length) { p.profile.filming_locations = names; p.dirty = true; }
           }
-        } catch (e) {
-          console.warn("filmmap fail:", e.message);
-          p.filmmap = [];
-          p.sourceErrors.push({ source: "filmmap", error: String(e.message || e) });
-        }
+        } catch (e) { console.warn("filmmap fail:", e.message); p.filmmap = []; p.sourceErrors.push({ source: "filmmap", error: String(e.message || e) }); }
       }));
     }
     if (needMetatake) await Promise.all(prepared.map(async (p) => { if (signal?.aborted) return; try { const mt = await metatakeExtended(env, p.movie, signal); if (mt) { if (mt.narrative_setting?.length && (!p.profile.story_locations || !p.profile.story_locations.length)) p.profile.story_locations = mt.narrative_setting; if (mt.kindred_films?.length && (!p.profile.related_films || !p.profile.related_films.length)) p.profile.related_films = mt.kindred_films; if (mt.awards?.length) { const s = new Set(p.profile.awards_ids || []); for (const a of mt.awards) s.add(String(a)); p.profile.awards_ids = [...s]; } if (mt.locations?.length) p.metatakeLocations = mt.locations; } } catch (e) { console.warn("metatake fail:", e.message); p.sourceErrors.push({ source: "metatake", error: String(e.message || e) }); } }));
@@ -213,11 +214,7 @@ export async function handleResearchStream(env, body, controller, signal) {
         send({ type: "movie", index: results.length - 1, total, movie: result });
       } catch (perMovieErr) {
         console.error(`[research] per-movie fail (${p.movieId}):`, perMovieErr.stack || perMovieErr.message);
-        try {
-          const fallback = { id: p.movie.id, ...p.movie, ...p.profile, filter_match: false, filter_reasons: ["İşleme hatası: " + perMovieErr.message], unknown: true, conflicts: false, _source_errors: [{ source: "internal", error: String(perMovieErr.message) }] };
-          results.push(fallback);
-          send({ type: "movie", index: results.length - 1, total, movie: fallback });
-        } catch {}
+        try { const fallback = { id: p.movie.id, ...p.movie, ...p.profile, filter_match: false, filter_reasons: ["İşleme hatası: " + perMovieErr.message], unknown: true, conflicts: false, _source_errors: [{ source: "internal", error: String(perMovieErr.message) }] }; results.push(fallback); send({ type: "movie", index: results.length - 1, total, movie: fallback }); } catch {}
       }
     }
     if (profileUpdates.length) await putProfileRowsBatch(env, profileUpdates, forceRefresh);

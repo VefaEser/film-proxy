@@ -96,7 +96,7 @@ export const FIELD_RULES = {
 2) SONRA istediğin kadar serbest açıklama ekleyebilirsin (örn: "erkek dedektif", "yozlaşmış polis", "kadın avukat") — bunlar filtrelenmez, kartta bilgi olarak gösterilir.`,
   // === YENİ: story_dimensions da iki aşamalı ===
   story_dimensions: `story_dimensions: string[] — İKİ AŞAMALI:
-1) ÖNCE şu slug listesinden en az birini seç (filtre eşleşmesi bunlarla yapılır): ["has_sequel","is_sequel","series_sequel","series_prequel","series_spinoff","concept","similar_script_version","same_plot_diff_script","same_plot_diff_angle"]
+1) ÖNCE şu slug listesinden en az birini seç (filtre eşleşmesi bunlarla yapılır): [${_STORY_DIMS_JSON}]
 TANIMLAR:
 - concept: Konsept filmi. Aynı konseptin farklı dönemlerde, genellikle farklı oyuncu kadrosuyla ve birbirinden bağımsız hikâyelerle tekrar çekilmesi. Örn: James Bond serisi, Godzilla, Sherlock Holmes uyarlamaları. Her film kendi başına bir hikâyedir; önceki filmin devamı değildir.
 - is_sequel: Kendisi bir devam filmi. Hikâye bir önceki filmin doğrudan devamıdır, aynı ana karakterler ve genellikle aynı oyuncular vardır. Örn: Mission: Impossible 2, The Godfather Part II.
@@ -106,7 +106,7 @@ TANIMLAR:
 - series_spinoff: Bir dizideki karakterlerin farklı bir hikâyesi.
 - similar_script_version: Aynı hikâyeyi benzer bir senaryoyla anlatan başka bir film var.
 - same_plot_diff_script: Aynı hikâyeyi farklı bir senaryoyla anlatan başka bir film var.
-- same_plot_diff_angle: Aynı hikâyenin farklı bir yönünü anlatan başka bir film var.`,
+- same_plot_diff_angle: Aynı hikâyenin farklı bir yönünü anlatan başka bir film var.
 2) SONRA istediğin kadar serbest açıklama ekleyebilirsin (örn: "üçlemenin ikinci filmi", "yeniden çevrim", "aynı yönetmenin önceki filmiyle bağlantılı") — bunlar filtrelenmez, kartta bilgi olarak gösterilir.`,
   color_style: 'color_style: ["black_white","color","mostly_color","mostly_bw","blue_filter","yellow_filter","selective_color","colorized","limited_palette","sepia","mono_tint","bw_red_accent","mixed_bw_color"]',
   location_mode: 'location_mode: "single"|"mostly_single"|"few"|"many"'

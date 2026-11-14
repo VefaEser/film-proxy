@@ -1,4 +1,4 @@
-// sources.js — OMDb: önce imdb_id (daha güvenilir), sonra başlık ile dene
+// sources.js — omdbBest: prefixsiz ID'ye sadece "tt" ekle, sıfırları temizleme (Se7en tt0114369 kritik düzeltme)
 import { safeJSON, movieKey, yearOf, norm, getFilmmapCache, putFilmmapCache, getMetatakeExtendedCache, putMetatakeExtendedCache } from "./db.js";
 
 const TMDB_BASE = "https://api.themoviedb.org/3";
@@ -111,22 +111,21 @@ export async function omdb(env, params, outerSignal) {
   throw lastErr || new Error("OMDb: tüm anahtarlar tükendi");
 }
 
-// === YENİ: önce imdb_id, sonra başlık ===
+// === KRİTİK DÜZELTME: prefixsiz ID'ye sıfır temizlemeden sadece "tt" ekle ===
 export async function omdbBest(env, movie, outerSignal) {
   const title = movie.original_title || movie.title || "";
   const year = String(yearOf(movie) || "");
   let lastErr = null;
-  // 1) imdb_id varsa doğrudan dene (Se7en → Seven gibi başlık farkı sorununu atlar)
   if (movie.imdb_id) {
-    try { return await omdb(env, { i: movie.imdb_id }, outerSignal); }
+    const raw = String(movie.imdb_id).trim();
+    const fullId = raw.startsWith("tt") ? raw : `tt${raw}`; // prefixsiz "0114369" → "tt0114369" (sıfırlar korunur)
+    try { return await omdb(env, { i: fullId }, outerSignal); }
     catch (e) { lastErr = e; if (e.status === 401) throw e; }
   }
-  // 2) Başlık + yıl ile dene
   if (title) {
     try { return await omdb(env, { t: title, y: year }, outerSignal); }
     catch (e) { lastErr = e; if (e.status === 401) throw e; }
   }
-  // 3) Son çare: sadece başlık (yıl olmadan)
   if (title) {
     try { return await omdb(env, { t: title }, outerSignal); }
     catch (e) { lastErr = e; if (e.status === 401) throw e; }
@@ -247,4 +246,4 @@ export async function tmdbRoute(env, url, signal) {
     return tmdb(env, path, params, signal);
   }
   throw Object.assign(new Error("Bilinmeyen TMDB uç noktası."), { status: 404 });
-    }
+             }

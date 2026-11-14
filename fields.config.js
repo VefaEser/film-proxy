@@ -1,6 +1,7 @@
-// fields.config.js — story_dimensions da karakter_traits gibi iki aşamalı
+// fields.config.js — story_dimensions 12 slug (reboot, film_franchise, remake eklendi)
+// Tüm LLM alanları iki aşamalı: slug listesi + serbest açıklama
 const days = (n) => n * 86400;
-export const SCHEMA_VERSION = 9;
+export const SCHEMA_VERSION = 10;  // 9 → 10: story_dimensions 12 slug, tüm LLM alanları serbest açıklama
 
 export const CHARACTER_TRAITS_LIST = [
   "male_main", "female_main", "child_main", "lgbt_main",
@@ -10,7 +11,8 @@ export const CHARACTER_TRAITS_LIST = [
 ];
 export const STORY_DIMENSIONS_LIST = [
   "has_sequel", "is_sequel", "series_sequel", "series_prequel", "series_spinoff",
-  "concept", "similar_script_version", "same_plot_diff_script", "same_plot_diff_angle"
+  "concept", "reboot", "film_franchise", "remake",
+  "similar_script_version", "same_plot_diff_script", "same_plot_diff_angle"
 ];
 
 export const FIELD_DEFS = {
@@ -85,37 +87,62 @@ const _CHAR_TRAITS_JSON = CHARACTER_TRAITS_LIST.map(x => `"${x}"`).join(",");
 const _STORY_DIMS_JSON = STORY_DIMENSIONS_LIST.map(x => `"${x}"`).join(",");
 
 export const FIELD_RULES = {
-  season: 'season: "winter"|"summer"|"spring"|"autumn"',
-  reality: 'reality: "true"|"mostly_true"|"inspired"|"realistic"|"fictional"|"utopic"',
-  narrative_style: 'narrative_style: "multi"|"reverse"|"linear"|"flashback"|"end_first"|"mid_first"|"fast"|"slow"|"no_end"|"alt_end"|"alt_narr"',
-  production_process: 'production_process: "amateur"|"indie"|"art"|"big"|"bmovie"|"avant"|"studio"|"no_music"|"rare_music"|"handheld"|"propaganda"|"dogme"',
-  sound: 'sound: "ambient"|"music"|"effects"|"voiceover_ext"|"voiceover_int"|"silent"|"dubbed"',
-  story_geography: 'story_geography: "city"|"town"|"village"|"mountain"|"desert"|"steppe"|"forest"|"seaside"|"riverside"|"opensea"|"air"',
+  // === TÜM LLM ALANLARI İKİ AŞAMALI: slug listesi + serbest açıklama ===
+  season: `season: string[] — İKİ AŞAMALI:
+1) ÖNCE şu slug listesinden en az birini seç (filtre eşleşmesi bunlarla yapılır): ["winter","summer","spring","autumn"]
+2) SONRA istediğin kadar serbest açıklama ekleyebilirsin — bunlar filtrelenmez, kartta bilgi olarak gösterilir.`,
+  reality: `reality: string[] — İKİ AŞAMALI:
+1) ÖNCE şu slug listesinden en az birini seç (filtre eşleşmesi bunlarla yapılır): ["true","mostly_true","inspired","realistic","fictional","utopic"]
+2) SONRA istediğin kadar serbest açıklama ekleyebilirsin — bunlar filtrelenmez, kartta bilgi olarak gösterilir.`,
+  narrative_style: `narrative_style: string[] — İKİ AŞAMALI:
+1) ÖNCE şu slug listesinden en az birini seç (filtre eşleşmesi bunlarla yapılır): ["multi","reverse","linear","flashback","end_first","mid_first","fast","slow","no_end","alt_end","alt_narr"]
+2) SONRA istediğin kadar serbest açıklama ekleyebilirsin — bunlar filtrelenmez, kartta bilgi olarak gösterilir.`,
+  production_process: `production_process: string[] — İKİ AŞAMALI:
+1) ÖNCE şu slug listesinden en az birini seç (filtre eşleşmesi bunlarla yapılır): ["amateur","indie","art","big","bmovie","avant","studio","no_music","rare_music","handheld","propaganda","dogme"]
+2) SONRA istediğin kadar serbest açıklama ekleyebilirsin — bunlar filtrelenmez, kartta bilgi olarak gösterilir.`,
+  sound: `sound: string[] — İKİ AŞAMALI:
+1) ÖNCE şu slug listesinden en az birini seç (filtre eşleşmesi bunlarla yapılır): ["ambient","music","effects","voiceover_ext","voiceover_int","silent","dubbed"]
+2) SONRA istediğin kadar serbest açıklama ekleyebilirsin — bunlar filtrelenmez, kartta bilgi olarak gösterilir.`,
+  story_geography: `story_geography: string[] — İKİ AŞAMALI:
+1) ÖNCE şu slug listesinden en az birini seç (filtre eşleşmesi bunlarla yapılır): ["city","town","village","mountain","desert","steppe","forest","seaside","riverside","opensea","air"]
+2) SONRA istediğin kadar serbest açıklama ekleyebilirsin — bunlar filtrelenmez, kartta bilgi olarak gösterilir.`,
+  story_period: `story_period: string[] — İKİ AŞAMALI:
+1) ÖNCE şu slug listesinden en az birini seç (filtre eşleşmesi bunlarla yapılır): ["bc","c1"..."c19","d1900"..."d2020","future"]
+2) SONRA istediğin kadar serbest açıklama ekleyebilirsin — bunlar filtrelenmez, kartta bilgi olarak gösterilir.`,
   character_traits: `character_traits: string[] — İKİ AŞAMALI:
 1) ÖNCE zorunlu 17 slug listesinden en az birini seç (filtre eşleşmesi bunlarla yapılır): [${_CHAR_TRAITS_JSON}]
 2) SONRA istediğin kadar serbest açıklama ekleyebilirsin (örn: "erkek dedektif", "yozlaşmış polis", "kadın avukat") — bunlar filtrelenmez, kartta bilgi olarak gösterilir.`,
-  // === YENİ: story_dimensions da iki aşamalı ===
   story_dimensions: `story_dimensions: string[] — İKİ AŞAMALI:
 1) ÖNCE şu slug listesinden en az birini seç (filtre eşleşmesi bunlarla yapılır): [${_STORY_DIMS_JSON}]
 TANIMLAR:
 - concept: Konsept filmi. Aynı konseptin farklı dönemlerde, genellikle farklı oyuncu kadrosuyla ve birbirinden bağımsız hikâyelerle tekrar çekilmesi. Örn: James Bond serisi, Godzilla, Sherlock Holmes uyarlamaları. Her film kendi başına bir hikâyedir; önceki filmin devamı değildir.
 - is_sequel: Kendisi bir devam filmi. Hikâye bir önceki filmin doğrudan devamıdır, aynı ana karakterler ve genellikle aynı oyuncular vardır. Örn: Mission: Impossible 2, The Godfather Part II.
 - has_sequel: Bu filmin bir devam filmi çekilmiştir (kendisi ilk filmdir). Örn: Mission: Impossible (1996).
+- reboot: Bir film serisinin hikâyesini veya evrenini SIFIRDAN başlatan yeni başlangıç. Önceki filmlerin olaylarını görmezden gelir. Örn: Batman Begins (2005), Casino Royale (2006), Spider-Man: Homecoming (2017), The Amazing Spider-Man (2012). DİKKAT: Reboot, devam filmi DEĞİLDİR; remake de DEĞİLDİR (belirli bir filmi değil, bir seriyi sıfırlar).
+- film_franchise: Ortak evrende geçen, birbirine bağlı birden fazla filmden oluşan marka/seri. Örn: Marvel Cinematic Universe, Star Wars, Harry Potter, Fast & Furious, The Lord of the Rings. DİKKAT: Franchise üyesi olmak otomatik olarak reboot, remake veya sequel olduğu anlamına GELMEZ.
+- remake: Belirli bir filmin RESMİ yeniden çevrimi. Aynı hikâye, aynı ülke sinemasında, yeni oyuncularla. Örn: A Star Is Born (2018 — 1937/1954/1976 remake), The Magnificent Seven (2016 — Seven Samurai remake), Psycho (1998 — 1960 remake). DİKKAT: Remake, concept'ten farklıdır (concept bağımsız, remake belirli bir eserin resmi yeniden çevrimi); same_plot_diff_script'ten farklıdır (o daha genel).
 - series_sequel: Bir dizideki hikâyenin devamı.
 - series_prequel: Bir dizideki hikâyenin öncesi.
 - series_spinoff: Bir dizideki karakterlerin farklı bir hikâyesi.
 - similar_script_version: Aynı hikâyeyi benzer bir senaryoyla anlatan başka bir film var.
 - same_plot_diff_script: Aynı hikâyeyi farklı bir senaryoyla anlatan başka bir film var.
 - same_plot_diff_angle: Aynı hikâyenin farklı bir yönünü anlatan başka bir film var.
-2) SONRA istediğin kadar serbest açıklama ekleyebilirsin (örn: "üçlemenin ikinci filmi", "yeniden çevrim", "aynı yönetmenin önceki filmiyle bağlantılı") — bunlar filtrelenmez, kartta bilgi olarak gösterilir.`,
-  color_style: 'color_style: ["black_white","color","mostly_color","mostly_bw","blue_filter","yellow_filter","selective_color","colorized","limited_palette","sepia","mono_tint","bw_red_accent","mixed_bw_color"]',
-  location_mode: 'location_mode: "single"|"mostly_single"|"few"|"many"'
+2) SONRA istediğin kadar serbest açıklama ekleyebilirsin (örn: "üçlemenin ikinci filmi", "aynı yönetmenin önceki filmiyle bağlantılı") — bunlar filtrelenmez, kartta bilgi olarak gösterilir.`,
+  color_style: `color_style: string[] — İKİ AŞAMALI:
+1) ÖNCE şu slug listesinden en az birini seç (filtre eşleşmesi bunlarla yapılır): ["black_white","color","mostly_color","mostly_bw","blue_filter","yellow_filter","selective_color","colorized","limited_palette","sepia","mono_tint","bw_red_accent","mixed_bw_color"]
+2) SONRA istediğin kadar serbest açıklama ekleyebilirsin — bunlar filtrelenmez, kartta bilgi olarak gösterilir.`,
+  location_mode: `location_mode: string[] — İKİ AŞAMALI:
+1) ÖNCE şu slug listesinden en az birini seç (filtre eşleşmesi bunlarla yapılır): ["single","mostly_single","few","many"]
+2) SONRA istediğin kadar serbest açıklama ekleyebilirsin — bunlar filtrelenmez, kartta bilgi olarak gösterilir.`,
+  aspect_ratio: `aspect_ratio: string[] — İKİ AŞAMALI:
+1) ÖNCE şu slug listesinden en az birini seç (filtre eşleşmesi bunlarla yapılır): ["1:1","4:3","16:9","18:9","21:9"]
+2) SONRA istediğin kadar serbest açıklama ekleyebilirsin — bunlar filtrelenmez, kartta bilgi olarak gösterilir.`
 };
 export const SEMANTIC_FIELDS = [
   "story_period", "story_geography", "character_traits",
   "narrative_style", "production_process", "sound", "reality",
   "story_dimensions", "family_content", "season", "aspect_ratio",
-  "original_work", "color"
+  "original_work", "color_style", "location_mode"
 ];
 export const RATIO_FIELDS = ["day_ratio", "indoor_ratio", "dialogue_density"];
 export const LOCATION_FIELDS = ["location_count"];

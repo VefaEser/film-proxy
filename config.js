@@ -1,25 +1,158 @@
-// config.js — story_dimensions bağlamı iki aşamalı (slug + serbest)
+// config.js — Tüm semantik alanlar iki aşamalı: slug listesi + serbest açıklama
+// story_dimensions 12 slug (reboot, film_franchise, remake eklendi)
 import { safeJSON } from "./db.js";
 import { invalidatePromptCache } from "./llm.js";
 
+// Tüm semantik alanlar için ortak iki aşamalı yapı notu
+const TWO_STAGE_NOTE = "İKİ AŞAMALI: (1) ÖNCE slug listesinden en az birini seç — filtre eşleşmesi bunlarla yapılır. (2) SONRA istediğin kadar serbest açıklama ekleyebilirsin — bunlar filtrelenmez, kartta bilgi olarak gösterilir.";
+
 const DEFAULT_FILTER_INFO = {
-  "filter_info.season": "[YZ bağlamı]\nHikâyenin geçtiği mevsim.\n- winter: Hikâye kışın geçiyor.\n- summer: Hikâye yazın geçiyor.\n- spring: Hikâye ilkbaharda geçiyor.\n- autumn: Hikâye sonbaharda geçiyor.",
-  "filter_info.reality": "[YZ bağlamı]\nHikâyenin gerçeklik düzeyi.\n- true: Gerçek olaylara birebir sadık.\n- mostly_true: Gerçek olaylara dayalı, sanatsal özgürlük var.\n- inspired: Gerçek olaylardan esinlenmiş.\n- realistic: Kurgusal ama gerçekçi.\n- fictional: Tamamen kurgusal.\n- utopic: Ütopik/distopik gelecek.",
-  "filter_info.production_process": "[YZ bağlamı]\nFİLTRE ADI: Filmin sanatsal veya sektörel konumu. Filmin yapım biçimini, bütçesini ve sektördeki yerini sınıflandırır.\n- amateur: Amatör yapım, çok düşük bütçe, öğrenci/amatör ekip.\n- indie: Bağımsız film, stüdyo dışı, küçük bütçeli.\n- art: Sanat filmi, deneysel anlatım, festival odaklı.\n- big: Büyük prodüksiyon, 100M$+ bütçe, geniş ekip.\n- bmovie: Düşük bütçeli tür sineması (B movie).\n- avant: Avangart film, deneysel/anti-anlatı.\n- studio: Klasik stüdyo filmi (Hollywood/benzeri).\n- no_music: Müziksiz film.\n- rare_music: Nadir/az müzikli film.\n- handheld: El kamerası/hareketli kamera baskın.\n- propaganda: İdeolojik/propaganda amaçlı.\n- dogme: Dogme 95 manifestosuna uygun.",
-  "filter_info.narrative_style": "[YZ bağlamı]\nHikâye anlatım tarzı.\n- multi: Farklı hikâyelerin ayrı ayrı anlatımı.\n- reverse: Sondan başa doğru giden hikâye.\n- linear: Baştan sona giden hikâye.\n- flashback: Ara ara geriye dönüşler yapan hikâye.\n- end_first: Sonu önce anlatılıp başı sonra anlatılan hikâye.\n- mid_first: Ortası önce anlatılıp öncesi ve sonrası sonra anlatılan hikâye.\n- fast: Çok fazla olayın olduğu hareketli hikâye.\n- slow: Çok az olayın olduğu durgun hikâye.\n- no_end: Sonu olmayan hikâye.\n- alt_end: Alternatif sonlu hikâye.\n- alt_narr: Alternatif anlatımlı hikâye.",
-  "filter_info.sound": "[YZ bağlamı]\nFilmde ses kullanımı.\n- ambient: Sürekli doğal ortam gürültüsü.\n- music: Yoğun müzik kullanımı.\n- effects: Yoğun gürültülü efekt kullanımı.\n- voiceover_ext: Dış ses kullanımı.\n- voiceover_int: İç ses kullanımı.\n- silent: Sessiz film.\n- dubbed: Ses dublajı çoğunlukla stüdyoda yapılmış.",
-  "filter_info.story_geography": "[YZ bağlamı]\nHikâyenin coğrafyası.\n- city: Şehir.\n- town: Kasaba.\n- village: Köy.\n- mountain: Dağlık ve yüksek kesimler.\n- desert: Çöl.\n- steppe: Bozkır.\n- forest: Orman.\n- seaside: Deniz kenarı.\n- riverside: Nehir kenarı.\n- opensea: Açık deniz.\n- air: Havada geçen.",
-  "filter_info.character_traits": "[YZ bağlamı]\nFİLTRE ADI: Hikâyedeki karakter niteliği.\nİKİ AŞAMALI:\n1) ÖNCE zorunlu 17 slug listesinden en az birini seç — filtre eşleşmesi bunlarla yapılır:\n   male_main, female_main, child_main, lgbt_main, male_support, female_support, child_support, lgbt_support, male_extra, female_extra, child_extra, lgbt_extra, young_main, middle_main, old_main, disabled_main, animal\n2) SONRA istediğin kadar serbest açıklama ekleyebilirsin (örn: \"erkek dedektif\", \"yozlaşmış polis\", \"kadın avukat\") — bunlar filtrelenmez, kartta bilgi olarak gösterilir.",
-  // === YENİ: story_dimensions da iki aşamalı ===
-  "filter_info.story_dimensions": "[YZ bağlamı]\nFİLTRE ADI: Filmin diğer filmlerle ilgisi.\nÖNEMLİ AYRIM:\n- concept (Konsept filmi): Aynı konseptin farklı dönemlerde, farklı oyuncularla ve birbirinden BAĞIMSIZ hikâyelerle tekrar çekilmesi. James Bond, Godzilla, Sherlock Holmes gibi. Her film kendi başına bir hikâyedir; önceki filmin devamı DEĞİLDİR.\n- is_sequel (Devam filmi): Hikâye bir önceki filmin doğrudan devamıdır; aynı ana karakterler ve genellikle aynı oyuncular vardır. Mission: Impossible 2, The Godfather Part II gibi.\n- has_sequel: Bu filmin bir devam filmi çekilmiştir (kendisi ilk filmdir).\n- Diğer slug'lar: series_sequel, series_prequel, series_spinoff, similar_script_version, same_plot_diff_script, same_plot_diff_angle.\nSadece bu 9 slug'dan seç. Serbest açıklama ekleme.",
-  "filter_info.story_period": "[YZ bağlamı]\nHikâyenin geçtiği tarihsel dönem. Kodlar: bc = milattan önce; c1..c19 = 1.-19. yüzyıl; d1900..d2020 = 1900'ler..2020'ler; future = gelecek.",
-  "filter_info.story_locations": "[YZ bağlamı]\nHikâyenin geçtiği yerler. Şehir, kasaba, köy, dağlık, çöl, bozkır, orman, deniz kenarı, nehir kenarı, açık deniz, hava.",
-  "filter_info.family_content": "[YZ bağlamı]\nAile rehberi. Her içerik türü için intensity ve approach.\n- intensity: none=hiç yok, few=birkaç sahne, side=yan konu, main=ana konu.\n- approach: bad=kötü gösteriyor, neutral=tarafsız kalıyor, legit=meşrulaştırıyor.",
-  "filter_info.color": "[YZ bağlamı]\nFilmin görsel renk stili.\n- black_white: Tamamen siyah beyaz.\n- color: Tamamen renkli.\n- mostly_color: Çoğunlukla renkli.\n- mostly_bw: Çoğunlukla siyah beyaz.\n- blue_filter: Baskın mavi tonlu.\n- yellow_filter: Baskın sarı tonlu.\n- selective_color: Seçici renk.\n- colorized: Sonradan renklendirilmiş.\n- limited_palette: Sınırlı renk paleti.\n- sepia: Sepya tonu.\n- mono_tint: Tek renk monokrom.\n- bw_red_accent: Siyah beyaz + kırmızı vurgu.\n- mixed_bw_color: Renkli ve siyah beyaz karışık.",
-  "filter_info.aspect_ratio": "[YZ bağlamı]\nFilmin en-boy oranı. Örnekler: 1:1, 4:3, 16:9, 18:9, 21:9.",
-  "filter_info.original_language": "[YZ bağlamı]\nFİLTRE ADI: Film dili. Kullanıcı 'Sadece ana dili dikkate al' seçeneğini işaretlerse yalnızca original_language dikkate alınır; aksi halde spoken_languages da eşleştirilir.",
-  "filter_info.dialogue_density_subtitle": "Diyalog yoğunluğu altyazı metninden hesaplanır: karakter sayısı / süre_dk / 10 = yüzde.",
-  "filter_info.award": "Büyük ödüller (Wikidata P166 kazanılan, P1411 aday gösterilen)."
+  "filter_info.season": `[YZ bağlamı]
+Hikâyenin geçtiği mevsim.
+- winter: Hikâye kışın geçiyor.
+- summer: Hikâye yazın geçiyor.
+- spring: Hikâye ilkbaharda geçiyor.
+- autumn: Hikâye sonbaharda geçiyor.
+${TWO_STAGE_NOTE}`,
+
+  "filter_info.reality": `[YZ bağlamı]
+Hikâyenin gerçeklik düzeyi.
+- true: Gerçek olaylara birebir sadık.
+- mostly_true: Gerçek olaylara dayalı, sanatsal özgürlük var.
+- inspired: Gerçek olaylardan esinlenmiş.
+- realistic: Kurgusal ama gerçekçi.
+- fictional: Tamamen kurgusal.
+- utopic: Ütopik/distopik gelecek.
+${TWO_STAGE_NOTE}`,
+
+  "filter_info.production_process": `[YZ bağlamı]
+FİLTRE ADI: Filmin sanatsal veya sektörel konumu. Filmin yapım biçimini, bütçesini ve sektördeki yerini sınıflandırır.
+- amateur: Amatör yapım, çok düşük bütçe, öğrenci/amatör ekip.
+- indie: Bağımsız film, stüdyo dışı, küçük bütçeli.
+- art: Sanat filmi, deneysel anlatım, festival odaklı.
+- big: Büyük prodüksiyon, 100M$+ bütçe, geniş ekip.
+- bmovie: Düşük bütçeli tür sineması (B movie).
+- avant: Avangart film, deneysel/anti-anlatı.
+- studio: Klasik stüdyo filmi (Hollywood/benzeri).
+- no_music: Müziksiz film.
+- rare_music: Nadir/az müzikli film.
+- handheld: El kamerası/hareketli kamera baskın.
+- propaganda: İdeolojik/propaganda amaçlı.
+- dogme: Dogme 95 manifestosuna uygun.
+${TWO_STAGE_NOTE}`,
+
+  "filter_info.narrative_style": `[YZ bağlamı]
+Hikâye anlatım tarzı.
+- multi: Farklı hikâyelerin ayrı ayrı anlatımı.
+- reverse: Sondan başa doğru giden hikâye.
+- linear: Baştan sona giden hikâye.
+- flashback: Ara ara geriye dönüşler yapan hikâye.
+- end_first: Sonu önce anlatılıp başı sonra anlatılan hikâye.
+- mid_first: Ortası önce anlatılıp öncesi ve sonrası sonra anlatılan hikâye.
+- fast: Çok fazla olayın olduğu hareketli hikâye.
+- slow: Çok az olayın olduğu durgun hikâye.
+- no_end: Sonu olmayan hikâye.
+- alt_end: Alternatif sonlu hikâye.
+- alt_narr: Alternatif anlatımlı hikâye.
+${TWO_STAGE_NOTE}`,
+
+  "filter_info.sound": `[YZ bağlamı]
+Filmde ses kullanımı.
+- ambient: Sürekli doğal ortam gürültüsü.
+- music: Yoğun müzik kullanımı.
+- effects: Yoğun gürültülü efekt kullanımı.
+- voiceover_ext: Dış ses kullanımı.
+- voiceover_int: İç ses kullanımı.
+- silent: Sessiz film.
+- dubbed: Ses dublajı çoğunlukla stüdyoda yapılmış.
+${TWO_STAGE_NOTE}`,
+
+  "filter_info.story_geography": `[YZ bağlamı]
+Hikâyenin coğrafyası.
+- city: Şehir.
+- town: Kasaba.
+- village: Köy.
+- mountain: Dağlık ve yüksek kesimler.
+- desert: Çöl.
+- steppe: Bozkır.
+- forest: Orman.
+- seaside: Deniz kenarı.
+- riverside: Nehir kenarı.
+- opensea: Açık deniz.
+- air: Havada geçen.
+${TWO_STAGE_NOTE}`,
+
+  "filter_info.character_traits": `[YZ bağlamı]
+FİLTRE ADI: Hikâyedeki karakter niteliği.
+İKİ AŞAMALI:
+1) ÖNCE zorunlu 17 slug listesinden en az birini seç — filtre eşleşmesi bunlarla yapılır:
+   male_main, female_main, child_main, lgbt_main, male_support, female_support, child_support, lgbt_support, male_extra, female_extra, child_extra, lgbt_extra, young_main, middle_main, old_main, disabled_main, animal
+2) SONRA istediğin kadar serbest açıklama ekleyebilirsin (örn: "erkek dedektif", "yozlaşmış polis", "kadın avukat") — bunlar filtrelenmez, kartta bilgi olarak gösterilir.`,
+
+  "filter_info.story_dimensions": `[YZ bağlamı]
+FİLTRE ADI: Filmin diğer filmlerle ilgisi.
+İKİ AŞAMALI:
+1) ÖNCE şu 12 slug listesinden en az birini seç — filtre eşleşmesi bunlarla yapılır:
+   has_sequel, is_sequel, series_sequel, series_prequel, series_spinoff, concept, reboot, film_franchise, remake, similar_script_version, same_plot_diff_script, same_plot_diff_angle
+TANIMLAR:
+- concept (Konsept filmi): Aynı konseptin farklı dönemlerde, farklı oyuncularla ve birbirinden BAĞIMSIZ hikâyelerle tekrar çekilmesi. James Bond, Godzilla, Sherlock Holmes gibi. Her film kendi başına bir hikâyedir; önceki filmin devamı DEĞİLDİR.
+- is_sequel (Devam filmi): Hikâye bir önceki filmin doğrudan devamıdır; aynı ana karakterler ve genellikle aynı oyuncular vardır. Mission: Impossible 2, The Godfather Part II gibi.
+- has_sequel: Bu filmin bir devam filmi çekilmiştir (kendisi ilk filmdir).
+- reboot (Yeniden Başlatma): Bir film serisinin hikâyesini veya evrenini SIFIRDAN başlatan yeni başlangıç. Önceki filmlerin olaylarını görmezden gelir. Batman Begins (2005), Casino Royale (2006), Spider-Man: Homecoming (2017) gibi. DİKKAT: Reboot, devam filmi DEĞİLDİR; remake de DEĞİLDİR (belirli bir filmi değil, bir seriyi sıfırlar).
+- film_franchise (Film Franchise / Film Serisi): Ortak evrende geçen, birbirine bağlı birden fazla filmden oluşan marka/seri. Marvel Cinematic Universe, Star Wars, Harry Potter, Fast & Furious gibi. DİKKAT: Franchise üyesi olmak otomatik olarak reboot, remake veya sequel olduğu anlamına GELMEZ.
+- remake (Yeniden Çevrim): Belirli bir filmin RESMİ yeniden çevrimi. Aynı hikâye, aynı ülke sinemasında, yeni oyuncularla. A Star Is Born (2018), The Magnificent Seven (2016), Psycho (1998) gibi. DİKKAT: Remake, concept'ten farklıdır (concept bağımsız, remake belirli bir eserin resmi yeniden çevrimi); same_plot_diff_script'ten farklıdır (o daha genel bir ifade).
+- series_sequel: Bir dizideki hikâyenin devamı.
+- series_prequel: Bir dizideki hikâyenin öncesi.
+- series_spinoff: Bir dizideki karakterlerin farklı bir hikâyesi.
+- similar_script_version: Aynı hikâyeyi benzer bir senaryoyla anlatan başka bir film var.
+- same_plot_diff_script: Aynı hikâyeyi farklı bir senaryoyla anlatan başka bir film var.
+- same_plot_diff_angle: Aynı hikâyenin farklı bir yönünü anlatan başka bir film var.
+2) SONRA istediğin kadar serbest açıklama ekleyebilirsin (örn: "üçlemenin ikinci filmi", "yeniden çevrim", "aynı yönetmenin önceki filmiyle bağlantılı") — bunlar filtrelenmez, kartta bilgi olarak gösterilir.`,
+
+  "filter_info.story_period": `[YZ bağlamı]
+Hikâyenin geçtiği tarihsel dönem.
+- bc: Milattan önce.
+- c1..c19: 1.-19. yüzyıl.
+- d1900..d2020: 1900'ler..2020'ler.
+- future: Gelecek.
+${TWO_STAGE_NOTE}`,
+
+  "filter_info.story_locations": `[YZ bağlamı]
+Hikâyenin geçtiği yerler. Şehir, kasaba, köy, dağlık, çöl, bozkır, orman, deniz kenarı, nehir kenarı, açık deniz, hava.`,
+
+  "filter_info.family_content": `[YZ bağlamı]
+Aile rehberi. Her içerik türü için intensity ve approach.
+- intensity: none=hiç yok, few=birkaç sahne, side=yan konu, main=ana konu.
+- approach: bad=kötü gösteriyor, neutral=tarafsız kalıyor, legit=meşrulaştırıyor.`,
+
+  "filter_info.color": `[YZ bağlamı]
+Filmin görsel renk stili.
+- black_white: Tamamen siyah beyaz.
+- color: Tamamen renkli.
+- mostly_color: Çoğunlukla renkli.
+- mostly_bw: Çoğunlukla siyah beyaz.
+- blue_filter: Baskın mavi tonlu.
+- yellow_filter: Baskın sarı tonlu.
+- selective_color: Seçici renk.
+- colorized: Sonradan renklendirilmiş.
+- limited_palette: Sınırlı renk paleti.
+- sepia: Sepya tonu.
+- mono_tint: Tek renk monokrom.
+- bw_red_accent: Siyah beyaz + kırmızı vurgu.
+- mixed_bw_color: Renkli ve siyah beyaz karışık.
+${TWO_STAGE_NOTE}`,
+
+  "filter_info.aspect_ratio": `[YZ bağlamı]
+Filmin en-boy oranı.
+- 1:1, 4:3, 16:9, 18:9, 21:9
+${TWO_STAGE_NOTE}`,
+
+  "filter_info.original_language": `[YZ bağlamı]
+FİLTRE ADI: Film dili. Kullanıcı "Sadece ana dili dikkate al" seçeneğini işaretlerse yalnızca original_language dikkate alınır; aksi halde spoken_languages da eşleştirilir.`,
+
+  "filter_info.dialogue_density_subtitle": `Diyalog yoğunluğu altyazı metninden hesaplanır: karakter sayısı / süre_dk / 10 = yüzde.`,
+
+  "filter_info.award": `Büyük ödüller (Wikidata P166 kazanılan, P1411 aday gösterilen).`
 };
 
 export async function getAllConfig(env) {
@@ -85,4 +218,4 @@ export async function setConfig(env, key, value) {
     `INSERT INTO app_config (key, value, updated_at) VALUES (?, ?, ?)
      ON CONFLICT(key) DO UPDATE SET value = excluded.value, updated_at = excluded.updated_at`
   ).bind(key, value, Math.floor(Date.now() / 1000)).run();
-    }
+  }

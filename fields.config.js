@@ -1,8 +1,7 @@
-// fields.config.js — character_traits ve story_dimensions zorunlu slug listeleri
+// fields.config.js — story_dimensions da karakter_traits gibi iki aşamalı
 const days = (n) => n * 86400;
 export const SCHEMA_VERSION = 9;
 
-// Yeni: sabit slug listeleri — LLM'e ve filtrelere tek kaynak
 export const CHARACTER_TRAITS_LIST = [
   "male_main", "female_main", "child_main", "lgbt_main",
   "male_support", "female_support", "child_support", "lgbt_support",
@@ -82,7 +81,6 @@ export const FIELD_DEFS = {
 export const LLM_FIELDS = Object.entries(FIELD_DEFS).filter(([, d]) => d.source === "llm").map(([k]) => k);
 export const VALID_SOURCES = [...new Set(Object.values(FIELD_DEFS).map(d => d.source))];
 
-// === YENİ: character_traits ve story_dimensions için zorunlu slug listeleri ===
 const _CHAR_TRAITS_JSON = CHARACTER_TRAITS_LIST.map(x => `"${x}"`).join(",");
 const _STORY_DIMS_JSON = STORY_DIMENSIONS_LIST.map(x => `"${x}"`).join(",");
 
@@ -93,8 +91,13 @@ export const FIELD_RULES = {
   production_process: 'production_process: "amateur"|"indie"|"art"|"big"|"bmovie"|"avant"|"studio"|"no_music"|"rare_music"|"handheld"|"propaganda"|"dogme"',
   sound: 'sound: "ambient"|"music"|"effects"|"voiceover_ext"|"voiceover_int"|"silent"|"dubbed"',
   story_geography: 'story_geography: "city"|"town"|"village"|"mountain"|"desert"|"steppe"|"forest"|"seaside"|"riverside"|"opensea"|"air"',
-  character_traits: `character_traits: string[] — YALNIZCA şu slug listesinden seç, serbest metin yazma: [${_CHAR_TRAITS_JSON}]`,
-  story_dimensions: `story_dimensions: string[] — YALNIZCA şu slug listesinden seç: [${_STORY_DIMS_JSON}]`,
+  character_traits: `character_traits: string[] — İKİ AŞAMALI:
+1) ÖNCE zorunlu 17 slug listesinden en az birini seç (filtre eşleşmesi bunlarla yapılır): [${_CHAR_TRAITS_JSON}]
+2) SONRA istediğin kadar serbest açıklama ekleyebilirsin (örn: "erkek dedektif", "yozlaşmış polis", "kadın avukat") — bunlar filtrelenmez, kartta bilgi olarak gösterilir.`,
+  // === YENİ: story_dimensions da iki aşamalı ===
+  story_dimensions: `story_dimensions: string[] — İKİ AŞAMALI:
+1) ÖNCE zorunlu 9 slug listesinden en az birini seç (filtre eşleşmesi bunlarla yapılır): [${_STORY_DIMS_JSON}]
+2) SONRA istediğin kadar serbest açıklama ekleyebilirsin (örn: "üçlemenin ikinci filmi", "yeniden çevrim", "aynı yönetmenin önceki filmiyle bağlantılı") — bunlar filtrelenmez, kartta bilgi olarak gösterilir.`,
   color_style: 'color_style: ["black_white","color","mostly_color","mostly_bw","blue_filter","yellow_filter","selective_color","colorized","limited_palette","sepia","mono_tint","bw_red_accent","mixed_bw_color"]',
   location_mode: 'location_mode: "single"|"mostly_single"|"few"|"many"'
 };

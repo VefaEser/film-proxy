@@ -1,6 +1,7 @@
 // filters.js — Dil filtresi hem original_language hem spoken_languages (languageOnlyOriginal bayrağına saygılı),
 // passesLocalFilters unknown da ELE (rated, award, director, writers, cast, company), family_content unknown da ELE.
-// semanticSignature: story_locations, filming_locations, oranlar, mekan sayısı da imzaya dahil (madde A).
+// semanticSignature: story_locations, filming_locations, oranlar, mekan sayısı da imzaya dahil.
+// Faz 4: color → color_style rename (köprü kaldırıldı, tam tutarlılık)
 import { SEMANTIC_FIELDS, FIELD_DEFS, LLM_FIELDS } from "./fields.config.js";
 import { norm, yearOf, safeJSON } from "./db.js";
 
@@ -26,7 +27,6 @@ export function buildFilterSentence(filters) {
   const f = filters || {}; const parts = [];
   if (f.genres?.include?.length) { const n = f.genres.include.map(x => x.label || x).filter(Boolean); if (n.length) parts.push(`türü ${n.join(" veya ")} olan`); }
   if (f.genres?.exclude?.length) { const n = f.genres.exclude.map(x => x.label || x).filter(Boolean); if (n.length) parts.push(`${n.join(", ")} türünde olmamalı`); }
-  // === Dil filtresi: original_language ve (languageOnlyOriginal değilse) spoken_languages ===
   if (f.original_language?.include?.length) {
     const labels = f.original_language.include.map(x => x.label || x).filter(Boolean);
     const onlyOrig = f.languageOnlyOriginal === true;
@@ -36,17 +36,16 @@ export function buildFilterSentence(filters) {
   const setExclude = (field, suffix) => { const v = f[field]; if (!v?.exclude?.length) return; const n = v.exclude.map(x => x.label || x).filter(Boolean); if (n.length) parts.push(`${suffix} ${n.join(", ")} olmamalı`); };
   setInclude("season", "hikâyesi şu mevsimde geçen"); setExclude("season", "hikâyesi şu mevsimlerde geçmemeli:");
   setInclude("reality", "gerçeklik"); setExclude("reality", "gerçeklik açısından:");
-  // === Filtre adıyla birebir: "Filmin sanatsal veya sektörel konumu" ===
   setInclude("production_process", "filmin sanatsal veya sektörel konumu"); setExclude("production_process", "filmin sanatsal veya sektörel konumu şunlardan olmamalı:");
   setInclude("narrative_style", "anlatım tarzı"); setExclude("narrative_style", "anlatım tarzı şunlardan olmamalı:");
   setInclude("sound", "ses özelliği"); setExclude("sound", "ses özelliği şunlardan olmamalı:");
   setInclude("story_geography", "coğrafya"); setExclude("story_geography", "coğrafya şunlardan olmamalı:");
   setInclude("story_period", "dönem"); setExclude("story_period", "dönem şunlardan olmamalı:");
   setInclude("character_traits", "karakter özellikleri"); setExclude("character_traits", "karakter özellikleri şunlardan olmamalı:");
-  // === Filtre adıyla birebir: "Filmin diğer filmlerle ilgisi" ===
   setInclude("story_dimensions", "filmin diğer filmlerle ilgisi"); setExclude("story_dimensions", "filmin diğer filmlerle ilgisi şunlardan olmamalı:");
   setInclude("aspect_ratio", "en-boy oranı"); setExclude("aspect_ratio", "en-boy oranı şunlardan olmamalı:");
-  setInclude("color", "görsel renk stili"); setExclude("color", "görsel renk stili şunlardan olmamalı:");
+  // === FAZ 4: color → color_style ===
+  setInclude("color_style", "görsel renk stili"); setExclude("color_style", "görsel renk stili şunlardan olmamalı:");
   if (f.family_content) for (const [key, val] of Object.entries(f.family_content)) {
     if (!val) continue;
     const label = TRAIT_TR[key] || key;
@@ -82,18 +81,14 @@ export function buildFilterContext(filters, configAll) {
   }
   return lines.join("\n\n");
 }
-// === GÜNCELLENDİ: story_locations, filming_locations, oranlar ve mekan sayısı da imzaya dahil (madde A) ===
 export function semanticSignature(filters) {
   const f = filters || {}; const active = {};
   for (const field of SEMANTIC_FIELDS) if (f[field] && (f[field].include?.length || f[field].exclude?.length)) active[field] = f[field];
-  // filming_locations SEMANTIC_FIELDS'te değil (ayrı evaluate edilir) ama imza için dahil edilmeli
   if (f.filming_locations && (f.filming_locations.include?.length || f.filming_locations.exclude?.length)) active.filming_locations = f.filming_locations;
-  // story_locations SEMANTIC_FIELDS'te zaten var, aşağıdaki kontroller garanti
   if (f.story_locations && (f.story_locations.include?.length || f.story_locations.exclude?.length)) active.story_locations = f.story_locations;
   if (f.family_content && Object.keys(f.family_content).length) active.family_content = f.family_content;
   if (f.characterDensity) active.characterDensity = f.characterDensity;
   if (f.languageOnlyOriginal) active.languageOnlyOriginal = true;
-  // === YENİ: oran ve mekan sayısı filtreleri de semantik sonucu etkiler ===
   if (f.dayRatioMin != null) active.dayRatioMin = f.dayRatioMin;
   if (f.outdoorRatioMin != null) active.outdoorRatioMin = f.outdoorRatioMin;
   if (f.dialogueDensityMin != null) active.dialogueDensityMin = f.dialogueDensityMin;
@@ -109,16 +104,11 @@ export function locationFieldsNeeded(filters) { const f = filters || {}; return 
 
 function toNum(v) { if (v === null || v === undefined || v === "") return null; if (typeof v === "string" && /^n\/?a$/i.test(v.trim())) return null; const n = Number(String(v).replace(/[^\d.-]/g, "")); return Number.isFinite(n) ? n : null; }
 
-// === matchSet: hibrit eşleşme (slug ↔ slug, label ↔ label, substring) ===
-// 12 slug'lı story_dimensions ve iki aşamalı LLM alanları otomatik desteklenir.
 function matchSet(profileField, filterObj, altProfileField) {
   if (!filterObj) return { match: true, unknown: false, conflict: false, reasons: [] };
   const raw = Array.isArray(profileField) ? profileField.map(norm) : (profileField ? [norm(profileField)] : []);
   const altRaw = Array.isArray(altProfileField) ? altProfileField.map(norm) : (altProfileField ? [norm(altProfileField)] : []);
   const allRaw = [...raw, ...altRaw]; const empty = allRaw.length === 0; const reasons = []; let match = true, unknown = false, conflict = false;
-  // 1) Slug match: x.id profile'da varsa
-  // 2) Label match: x.label profile'da (norm) varsa
-  // 3) Substring match: profile stringlerinde x'in herhangi bir token'ı geçiyorsa (serbest açıklama için)
   const matches = (x) => { const v = norm(x.label || x); if (allRaw.includes(v)) return true; if (x.id != null && x.id !== "" && allRaw.includes(norm(x.id))) return true; return allRaw.some(h => h.includes(v) || v.includes(h)); };
   if (filterObj.include?.length) { const matched = filterObj.include.filter(x => matches(x)); if (matched.length === 0) { if (empty) { unknown = true; reasons.push(`bilinmiyor: ${filterObj.include.map(x => x.label || x).join(", ")}`); } else { match = false; reasons.push(`eksik: ${filterObj.include.map(x => x.label || x).join(", ")}`); } } }
   if (filterObj.exclude?.length) { const hit = filterObj.exclude.filter(x => matches(x)); if (hit.length) { match = false; conflict = true; reasons.push(`hariç: ${hit.map(x => x.label || x).join(", ")}`); } }
@@ -134,7 +124,6 @@ function matchIdSet(profileIds, filterObj) {
 function matchRated(profileRated, filterObj) { if (!filterObj) return { match: true, unknown: false, reasons: [] }; const have = profileRated ? norm(profileRated) : ""; if (!have) return { match: true, unknown: true, reasons: ["Yaş sınırı bilinmiyor"] }; if (filterObj.include?.length) { const labels = filterObj.include.map(x => norm(x.label || x)); if (!labels.includes(have)) return { match: false, unknown: false, reasons: [`Yaş sınırı ${profileRated} uygun değil`] }; } if (filterObj.exclude?.length) { const labels = filterObj.exclude.map(x => norm(x.label || x)); if (labels.includes(have)) return { match: false, unknown: false, reasons: [`Yaş sınırı ${profileRated} hariç tutuldu`] }; } return { match: true, unknown: false, reasons: [] }; }
 function matchAwards(profileAwards, profileNominations, filterObj) { if (!filterObj) return { match: true, unknown: false, reasons: [] }; const awards = (profileAwards || []).map(x => String(x).trim()); const noms = (profileNominations || []).map(x => String(x).trim()); const all = new Set([...awards, ...noms]); if (!all.size) return { match: true, unknown: true, reasons: ["Ödül bilgisi bilinmiyor"] }; if (filterObj.include?.length) { const matched = filterObj.include.filter(x => x.id != null && all.has(String(x.id))); if (matched.length === 0) return { match: false, unknown: false, reasons: [`Ödül eksik: ${filterObj.include.map(x => x.label || x.id).join(", ")}`] }; } return { match: true, unknown: false, reasons: [] }; }
 
-// === Dil filtresi: hem original_language hem spoken_languages (languageOnlyOriginal değilse) ===
 function matchLanguage(profile, filterObj, languageOnlyOriginal) {
   if (!filterObj) return { match: true, unknown: false, reasons: [] };
   const orig = profile.original_language ? norm(profile.original_language) : "";
@@ -162,7 +151,6 @@ function matchLanguage(profile, filterObj, languageOnlyOriginal) {
   return { match: true, unknown: false, reasons: [] };
 }
 
-// === passesLocalFilters: unknown da ELE (rated, award, director, writers, cast, company, dil) ===
 function passesLocalFilters(profile, filters) {
   const imdb = Number(String(profile.imdbRating || "").replace(/[^\d.]/g, "")) || null;
   if (filters.imdbMin > 0 && imdb != null && imdb < filters.imdbMin) return false;
@@ -222,7 +210,8 @@ export function evaluateFilters(profile, filters, semanticVerdict, metatakeLocat
     ["character_traits", "character_traits", "Karakter niteliği", null], ["aspect_ratio", "aspect_ratio", "En-boy oranı", null],
     ["narrative_style", "narrative_style", "Anlatım tarzı", null], ["production_process", "production_process", "Filmin sanatsal veya sektörel konumu", null],
     ["sound", "sound", "Ses", null], ["reality", "reality", "Gerçeklik", null], ["story_dimensions", "story_dimensions", "Filmin diğer filmlerle ilgisi", null],
-    ["color_style", "color", "Görsel renk stili", null]
+    // === FAZ 4: color → color_style (köprü kaldırıldı, pf ve ff aynı) ===
+    ["color_style", "color_style", "Görsel renk stili", null]
   ];
   for (const [pf, ff, label, altField] of setChecks) {
     const f = filters[ff]; if (!f) continue;
@@ -244,4 +233,4 @@ export function evaluateFilters(profile, filters, semanticVerdict, metatakeLocat
     else { state.unknown = true; if (semanticVerdict.reason) state.reasons.push(semanticVerdict.reason); }
   }
   return state;
-    }
+} 

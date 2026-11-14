@@ -1,6 +1,6 @@
-// research.js — story_dimensions için slug + serbest metin birlikte korunur
+// research.js — getSiteRatingsBatch toplu kullanım (Risk 2), diğer tüm mantık korundu.
 import { FIELD_DEFS, FIELD_RULES, SEMANTIC_FIELDS, LLM_FIELDS, CHARACTER_TRAITS_LIST, STORY_DIMENSIONS_LIST } from "./fields.config.js";
-import { getProfileRowsBatch, getFieldRowsBatch, getFieldRows, putFieldRowsBatch, putProfileRowsBatch, putFieldRows, putProfileRow, getProfileRow, findStaleFields, movieKey, yearOf, getVerdictsBatch, putVerdictsBatch, getFilmmapCache, getMetatakeExtendedCache, getSiteRatingForMovie } from "./db.js";
+import { getProfileRowsBatch, getFieldRowsBatch, getFieldRows, putFieldRowsBatch, putProfileRowsBatch, putFieldRows, putProfileRow, getProfileRow, findStaleFields, movieKey, yearOf, getVerdictsBatch, putVerdictsBatch, getFilmmapCache, getMetatakeExtendedCache, getSiteRatingForMovie, getSiteRatingsBatch } from "./db.js";
 import { callLLMWithFallback, getPromptTemplate } from "./llm.js";
 import { enrichClassic, sanitizePeopleField } from "./enrich.js";
 import { filmmapLocations, metatakeExtended, wikidataBatch, fetchSubtitleDensity } from "./sources.js";
@@ -17,7 +17,6 @@ function extractJSON(text) { const clean = String(text).replace(/^```(?:json)?\s
 
 async function classifyBatch(env, movies, filterSentence, filterContext, useSearch, signal, context = {}) { const payload = movies.map(m => ({ id: m.id, title: m.original_title || m.title || "", year: yearOf(m), overview: (m.overview || "").slice(0, 300) })); const template = await getPromptTemplate(env, "prompt_template.stage1"); const prompt = template.replace(/\{\{FILTER_SENTENCE\}\}/g, filterSentence).replace(/\{\{FILTER_CONTEXT\}\}/g, filterContext || "(bağlam yok)").replace(/\{\{MOVIES\}\}/g, JSON.stringify(payload)); const raw = await callLLMWithFallback(env, prompt, 800, useSearch, signal, { ...context, method: "stage1", hasSemantic: true, maxAttempts: 3 }); const arr = extractJSONArray(raw) || []; const byId = new Map(); for (const item of arr) { if (!item || item.id == null) continue; const match = String(item.match || "").toLowerCase(); byId.set(String(item.id), { verdict: ["yes","no","unknown"].includes(match) ? match : "unknown", reason: String(item.reason || "").slice(0, 200) }); } return byId; }
 
-// === fillDetailsBatch: character_traits ve story_dimensions esnek (slug + serbest) ===
 async function fillDetailsBatch(env, movies, staleFields, signal, context = {}) {
   const out = new Map();
   if (!staleFields.length || !movies.length) return out;
@@ -35,7 +34,6 @@ async function fillDetailsBatch(env, movies, staleFields, signal, context = {}) 
     for (const f of staleFields) {
       const val = item[f];
       if (val === undefined || val === null) continue;
-      // === character_traits: slug + serbest metin birlikte korunur ===
       if (f === "character_traits") {
         const arrVal = Array.isArray(val) ? val : [val];
         const valid = arrVal.map(x => String(x).trim()).filter(x => x.length > 0);
@@ -47,7 +45,6 @@ async function fillDetailsBatch(env, movies, staleFields, signal, context = {}) 
         }
         continue;
       }
-      // === story_dimensions: slug + serbest metin birlikte korunur ===
       if (f === "story_dimensions") {
         const arrVal = Array.isArray(val) ? val : [val];
         const valid = arrVal.map(x => String(x).trim()).filter(x => x.length > 0);
@@ -175,6 +172,13 @@ export async function handleResearchStream(env, body, controller, signal) {
     if (useStage2b) { send({ type: "step", index: 0, total: afterLocal.length, title: "Oransal/semantik alanlar dolduruluyor", stage: "sınıflandırılıyor", fields: stage2bFields.slice(0, 6) }); const needMap = new Map(); for (const p of afterLocal) { const stale = findStaleFields(p.profile, p.fieldRows || [], forceRefresh); const need = stage2bFields.filter(f => forceAll || !p.profile[f] || (Array.isArray(p.profile[f]) && p.profile[f].length === 0) || (FIELD_DEFS[f]?.source === "llm" && stale.includes(f))); if (need.length) needMap.set(p.movieId, need); } if (needMap.size > 0 && !signal?.aborted) { const batchMovies = afterLocal.filter(p => needMap.has(p.movieId)).map(p => p.movie); const allFields = [...new Set([].concat(...[...needMap.values()]))]; const results = await fillDetailsBatch(env, batchMovies, allFields, signal, { method: "stage2" }); const llmCovered = []; for (const p of afterLocal) { if (signal?.aborted) break; const updates = results.get(String(p.movie.id)) || {}; if (!Object.keys(updates).length) continue; Object.assign(p.profile, updates); const covered = Object.keys(updates).filter(f => p.profile[f] !== undefined && p.profile[f] !== null); if (covered.length) { p.dirty = true; for (const f of covered) llmCovered.push({ movieId: p.movieId, field: f, source: "llm" }); } } if (llmCovered.length) await putFieldRowsBatch(env, llmCovered); } }
     else if (useStage1 && afterLocal.length) { send({ type: "step", index: 0, total: afterLocal.length, title: "Semantik filtre uygulanıyor", stage: "sınıflandırılıyor", fields: [] }); const signature = semanticSignature(filters); const cachedVerdicts = await getVerdictsBatch(env, afterLocal.map(p => p.movieId), signature); const cacheMisses = []; for (const p of afterLocal) { const cached = cachedVerdicts.get(p.movieId); if (cached && cached.verdict !== "unknown" && !forceRefresh) semanticVerdicts.set(p.movieId, cached); else cacheMisses.push(p); } if (cacheMisses.length) { const newVerdicts = []; try { const configAll = await getAllConfig(env); const sentence = buildFilterSentence(filters); const context = buildFilterContext(filters, configAll); const batchSize = Math.min(5, cacheMisses.length); for (let start = 0; start < cacheMisses.length; start += batchSize) { if (signal?.aborted) break; const chunk = cacheMisses.slice(start, start + batchSize); try { const verdicts = await classifyBatch(env, chunk.map(p => p.movie), sentence, context, stage1UseSearch, signal, { movie_id: chunk[0].movieId }); for (const p of chunk) { const v = verdicts.get(String(p.movie.id)) || { verdict: "unknown", reason: "LLM yanıt vermedi" }; semanticVerdicts.set(p.movieId, v); if (v.verdict !== "unknown") newVerdicts.push({ movieId: p.movieId, verdict: v.verdict, reason: v.reason }); } } catch (e) { console.warn("stage1 chunk:", e.message); stage1Error = e.message; for (const p of chunk) if (!semanticVerdicts.has(p.movieId)) semanticVerdicts.set(p.movieId, { verdict: "unknown", reason: "LLM başarısız" }); } } } catch (e) { console.warn("stage1 fail:", e.message); stage1Error = e.message; } if (newVerdicts.length) await putVerdictsBatch(env, newVerdicts, signature); } }
     const movieIds = afterLocal.map(p => p.movieId); const listsMap = await getMovieLists(env, movieIds);
+    // === YENİ: site puanlarını toplu hesapla (paralel) ===
+    let siteRatingMap = new Map();
+    try {
+      if (afterLocal.length) {
+        siteRatingMap = await getSiteRatingsBatch(env, afterLocal.map(p => ({ id: p.movie.id, imdbID: p.profile.imdbID || p.profile.imdb_id })));
+      }
+    } catch (e) { console.warn("site-rating batch:", e.message); }
     const profileUpdates = []; const results = [];
     for (const p of afterLocal) {
       try {
@@ -183,8 +187,8 @@ export async function handleResearchStream(env, body, controller, signal) {
         if (p.dirty || p.staleDeterministic.length) profileUpdates.push({ movieId: p.movieId, title: p.movie.title || p.profile.title || p.profile.original_title, year: yearOf(p.movie), data: p.profile });
         const movieLists = listsMap.get(p.movieId) || [];
         const locInfo = getLocationCount(p.profile, p.metatakeLocations, p.filmmap);
-        let siteRating = { avg: null, count: 0 };
-        try { siteRating = await getSiteRatingForMovie(env, { movieId: p.movieId, tmdbId: p.movie.id, imdbId: p.profile.imdbID || p.profile.imdb_id }); } catch {}
+        // === YENİ: toplu Map'ten al ===
+        const siteRating = siteRatingMap.get(String(p.movie.id)) || { avg: null, count: 0 };
         const result = {
           id: p.movie.id, ...p.movie, ...p.profile,
           filter_match: evalResult.match,
@@ -267,4 +271,4 @@ export async function handleMovieDetails(env, body, signal) {
   try { const sr = await getSiteRatingForMovie(env, { movieId, tmdbId: movie.id, imdbId: merged.imdbID || merged.imdb_id }); merged.site_rating = sr.avg; merged.site_rating_count = sr.count; } catch {}
   if (sourceErrors.length) merged._source_errors = sourceErrors;
   return { movie: merged };
-  }
+                                                                                                                                              }

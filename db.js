@@ -1,4 +1,6 @@
 // db.js — getSiteRatingsBatch sadeleştirildi.
+// + arrayFields setine aspect_ratio ve location_mode eklendi (iki aşamalı model)
+// Faz 4: getVisualProfile + putVisualProfile eklendi (görsel analiz Aşama 1)
 import { FIELD_DEFS } from "./fields.config.js";
 
 export const VERDICT_TTL = 86400;
@@ -36,7 +38,6 @@ export async function getSiteRatingForMovie(env, { movieId, tmdbId, imdbId }) {
   } catch (e) { console.warn("site rating:", e.message); return { avg: null, count: 0 }; }
 }
 
-// === SADELEŞTİRİLDİ: sadece tmdbId + imdbId ===
 export async function getSiteRatingsBatch(env, movies) {
   if (!env.DB || !movies.length) return new Map();
   const results = new Map();
@@ -61,6 +62,37 @@ export async function putMetatakeExtendedCache(env, movieId, data) { if (!env.DB
 export async function getFilmmapCache(env, movieId) { if (!env.DB) return null; try { const row = await env.DB.prepare("SELECT locations_json, fetched_at FROM filmmap_cache WHERE movie_id = ?").bind(movieId).first(); if (!row) return null; if (Math.floor(Date.now() / 1000) - row.fetched_at > 90 * 86400) return null; return safeJSON(row.locations_json, []); } catch { return null; } }
 export async function putFilmmapCache(env, movieId, locations) { if (!env.DB) return; try { await env.DB.prepare(`INSERT INTO filmmap_cache (movie_id, locations_json, fetched_at) VALUES (?, ?, ?) ON CONFLICT(movie_id) DO UPDATE SET locations_json = excluded.locations_json, fetched_at = excluded.fetched_at`).bind(movieId, JSON.stringify(locations), Math.floor(Date.now() / 1000)).run(); } catch (e) { console.warn("filmmap cache:", e.message); } }
 
+// === YENİ: Görsel analiz profili (Faz 4 — Aşama 1) ===
+export async function getVisualProfile(env, movieId) {
+  if (!env.DB || !movieId) return null;
+  try {
+    const profile = await env.DB.prepare("SELECT movie_id, schema_version, analysis_status, updated_at FROM visual_profiles WHERE movie_id = ?").bind(movieId).first();
+    if (!profile) return null;
+    const { results: fields } = await env.DB.prepare("SELECT field_name, value_json, confidence, sample_count, source_type, model_name, model_version, analyzed_at FROM visual_profile_fields WHERE movie_id = ?").bind(movieId).all();
+    const fieldMap = {};
+    for (const f of fields || []) {
+      fieldMap[f.field_name] = { value: safeJSON(f.value_json, null), confidence: f.confidence, sampleCount: f.sample_count, sourceType: f.source_type, modelName: f.model_name, modelVersion: f.model_version, analyzedAt: f.analyzed_at };
+    }
+    return { movieId: profile.movie_id, schemaVersion: profile.schema_version, analysisStatus: profile.analysis_status, updatedAt: profile.updated_at, fields: fieldMap };
+  } catch (e) { console.warn("visual profile read:", e.message); return null; }
+}
+
+export async function putVisualProfile(env, movieId, fields, opts = {}) {
+  if (!env.DB || !movieId || !fields || !Object.keys(fields).length) return;
+  const now = Math.floor(Date.now() / 1000);
+  const schemaVersion = opts.schemaVersion || 1;
+  const status = opts.status || "complete";
+  try {
+    await env.DB.prepare(`INSERT INTO visual_profiles (movie_id, schema_version, analysis_status, updated_at) VALUES (?, ?, ?, ?) ON CONFLICT(movie_id) DO UPDATE SET schema_version = excluded.schema_version, analysis_status = excluded.analysis_status, updated_at = excluded.updated_at`).bind(movieId, schemaVersion, status, now).run();
+    const stmts = [];
+    for (const [name, entry] of Object.entries(fields)) {
+      if (!entry || typeof entry !== "object") continue;
+      stmts.push(env.DB.prepare(`INSERT INTO visual_profile_fields (movie_id, field_name, value_json, confidence, sample_count, source_type, model_name, model_version, analyzed_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?) ON CONFLICT(movie_id, field_name) DO UPDATE SET value_json = excluded.value_json, confidence = excluded.confidence, sample_count = excluded.sample_count, source_type = excluded.source_type, model_name = excluded.model_name, model_version = excluded.model_version, analyzed_at = excluded.analyzed_at`).bind(movieId, name, JSON.stringify(entry.value), entry.confidence ?? null, entry.sampleCount ?? 1, entry.sourceType || "poster", entry.modelName || "canvas-colorthief", entry.modelVersion || "1.0", entry.analyzedAt || now));
+    }
+    if (stmts.length) await env.DB.batch(stmts);
+  } catch (e) { console.warn("visual profile write:", e.message); }
+}
+
 export function isBadDetailArray(val) { if (!Array.isArray(val)) return false; if (val.length === 0) return false; const looksLikeId = (s) => { if (typeof s !== "string") return false; const t = s.trim(); if (!t) return true; return /^(nm|tt)\d+$/i.test(t) || /^\d+$/.test(t) || /^[QP]\d+$/i.test(t) || /^person[\/_-]\d+$/i.test(t) || /^id[\/_-]?\d+$/i.test(t) || /^@\d+$/.test(t) || /^\[object /i.test(t) || /^\{.*\}$/.test(t) || /^\[.*\]$/.test(t) || /":\s*"/.test(t) || /^[0-9a-f]{8}-[0-9a-f]{4}-/i.test(t); }; return val.some(v => { if (v == null) return true; if (typeof v === "string") return looksLikeId(v); if (typeof v === "number" || typeof v === "boolean") return true; if (typeof v === "object") { const candidates = [v.name, v.original_name]; for (const c of candidates) if (typeof c === "string" && c.trim() && !looksLikeId(c)) return false; return true; } return true; }); }
 
 export function findStaleFields(profile, fieldRows, forceRefresh) {
@@ -68,7 +100,7 @@ export function findStaleFields(profile, fieldRows, forceRefresh) {
   const fetched = new Map(fieldRows.map(r => [r.field, Number(r.fetched_at)]));
   const stale = [];
   const detailFields = new Set(["writers", "writers_ids", "cast", "cast_ids", "director", "director_ids", "producers", "actors", "omdb_directors"]);
-  const arrayFields = new Set(["genres", "genres_ids", "spoken_languages", "spoken_languages_ids", "production_countries", "production_countries_ids", "production_companies", "production_companies_ids", "director", "director_ids", "writers", "writers_ids", "producers", "cast", "cast_ids", "keywords", "keywords_ids", "story_locations", "story_period", "story_geography", "season", "character_traits", "narrative_style", "production_process", "sound", "reality", "story_dimensions", "related_films", "related_films_detail", "filming_locations", "filming_countries", "awards_ids", "nominated_ids", "color_style"]);
+  const arrayFields = new Set(["genres", "genres_ids", "spoken_languages", "spoken_languages_ids", "production_countries", "production_countries_ids", "production_companies", "production_companies_ids", "director", "director_ids", "writers", "writers_ids", "producers", "cast", "cast_ids", "keywords", "keywords_ids", "story_locations", "story_period", "story_geography", "season", "character_traits", "narrative_style", "production_process", "sound", "reality", "story_dimensions", "related_films", "related_films_detail", "filming_locations", "filming_countries", "awards_ids", "nominated_ids", "color_style", "aspect_ratio", "location_mode"]);
   for (const [field, def] of Object.entries(FIELD_DEFS)) {
     const raw = profile[field];
     const isEmptyArray = Array.isArray(raw) && raw.length === 0;
@@ -88,4 +120,4 @@ export async function loadDeadKeys(env) { const now = Date.now(); if (now - dead
 export function isKeyDeadForModel(dead, model, index) { const forModel = dead.gemini.get(model) || new Set(); const forAll = dead.gemini.get("") || new Set(); return forModel.has(index) || forAll.has(index); }
 export async function markDeadKey(env, provider, keyIndex, untilTs, reason, model) { deadKeysCache.ts = 0; if (!env.DB) return; try { await env.DB.prepare(`INSERT INTO dead_keys (provider, key_index, model, until_ts, reason) VALUES (?, ?, ?, ?, ?) ON CONFLICT(provider, key_index, model) DO UPDATE SET until_ts = excluded.until_ts, reason = excluded.reason`).bind(provider, keyIndex, model || "", untilTs, reason || "").run(); } catch (e) { console.warn("dead_keys write:", e.message); } }
 export function logLlmCall(env, provider, model, keyIndex, ok, latencyMs, errSnippet, context) { if (!env.DB) return; const now = Math.floor(Date.now() / 1000); env.DB.prepare("INSERT INTO llm_calls (ts, provider, model, key_index, ok, latency_ms, error_snippet) VALUES (?, ?, ?, ?, ?, ?, ?)").bind(now, provider, model, keyIndex, ok ? 1 : 0, latencyMs, errSnippet || null).run().catch(e => console.warn("llm_calls:", e.message)); }
-export async function getDailyModelCalls(env, provider, model) { if (!env.DB) return 0; try { const since = Math.floor(Date.now() / 1000) - 86400; const row = await env.DB.prepare("SELECT COUNT(*) AS c FROM llm_calls WHERE provider = ? AND model = ? AND ok = 1 AND ts > ?").bind(provider, model, since).first(); return Number(row?.c || 0); } catch { return 0; } }
+export async function getDailyModelCalls(env, provider, model) { if (!env.DB) return 0; try { const since = Math.floor(Date.now() / 1000) - 86400; const row = await env.DB.prepare("SELECT COUNT(*) AS c FROM llm_calls WHERE provider = ? AND model = ? AND ok = 1 AND ts > ?").bind(provider, model, since).first(); return Number(row?.c || 0); } catch { return 0; } } 

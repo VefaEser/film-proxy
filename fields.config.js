@@ -1,7 +1,5 @@
-// fields.config.js — Faz 8 Phase D: taxonomy split
-// narrative_style (yapı) + narrative_pace (tempo)
-// production_category (yapım + propaganda) + cinema_approach (akım) + technical_style (teknik)
-// SCHEMA_VERSION 10 → 11
+// fields.config.js — Faz 8 Phase D revize: technical_style sadece kamera, sound'a no_music/rare_music
+// SCHEMA_VERSION 11 → 12
 const days = (n) => n * 86400;
 export const SCHEMA_VERSION = 12;
 
@@ -47,7 +45,6 @@ export const FIELD_DEFS = {
   story_geography:    { source: "llm", ttl: days(90) },
   character_traits:   { source: "llm", ttl: days(90) },
   narrative_style:    { source: "llm", ttl: days(90) },
-  // === FAZ 8 Phase D: 4 yeni alan ===
   narrative_pace:     { source: "llm", ttl: days(90) },
   production_category: { source: "llm", ttl: days(90) },
   cinema_approach:    { source: "llm", ttl: days(90) },
@@ -93,13 +90,11 @@ const _CHAR_TRAITS_JSON = CHARACTER_TRAITS_LIST.map(x => `"${x}"`).join(",");
 const _STORY_DIMS_JSON = STORY_DIMENSIONS_LIST.map(x => `"${x}"`).join(",");
 
 export const FIELD_RULES = {
-  // === narrative_style: sadece anlatı YAPISI (tempo YOK) ===
   narrative_style: `narrative_style: string[] — İKİ AŞAMALI:
 1) ÖNCE şu slug listesinden en az birini seç (filtre eşleşmesi bunlarla yapılır): ["multi","reverse","linear","flashback","end_first","mid_first","no_end","alt_end","alt_narr"]
 2) SONRA istediğin kadar serbest açıklama ekleyebilirsin — bunlar filtrelenmez, kartta bilgi olarak gösterilir.
 DİKKAT: Anlatı YAPISI ile TEMPO ayrıdır. "hızlı" / "yavaş" / "tempo" buraya DEĞİL, narrative_pace alanına girer.`,
 
-  // === narrative_pace: sadece TEMPO ===
   narrative_pace: `narrative_pace: string[] — İKİ AŞAMALI:
 1) ÖNCE şu slug listesinden en az birini seç (filtre eşleşmesi bunlarla yapılır): ["fast","slow"]
 - fast: Çok fazla olayın olduğu hareketli hikâye. Hızlı kurgu, yüksek olay yoğunluğu.
@@ -107,7 +102,6 @@ DİKKAT: Anlatı YAPISI ile TEMPO ayrıdır. "hızlı" / "yavaş" / "tempo" bura
 2) SONRA istediğin kadar serbest açıklama ekleyebilirsin — bunlar filtrelenmez, kartta bilgi olarak gösterilir.
 DİKKAT: Anlatının YAPISI (linear, flashback, multi vb.) buraya DEĞİL, narrative_style alanına girer.`,
 
-  // === production_category: yapım biçimi + propaganda (ideolojik işlev) ===
   production_category: `production_category: string[] — İKİ AŞAMALI:
 1) ÖNCE şu slug listesinden en az birini seç (filtre eşleşmesi bunlarla yapılır): ["amateur","indie","big","bmovie","studio","propaganda"]
 - amateur: Amatör yapım, çok düşük bütçe, öğrenci/amatör ekip.
@@ -115,27 +109,45 @@ DİKKAT: Anlatının YAPISI (linear, flashback, multi vb.) buraya DEĞİL, narra
 - big: Büyük prodüksiyon, 100M$+ bütçe, geniş ekip.
 - bmovie: Düşük bütçeli tür sineması (B movie).
 - studio: Klasik stüdyo filmi (Hollywood/benzeri).
-- propaganda: İdeolojik/propaganda amaçlı film. Filmin üretim biçimi değil, ideolojik ve iletişimsel işlevi vurgulanır. Politik/ideolojik mesaj iletmek için üretilmiş yapımlar.
+- propaganda: İdeolojik/propaganda amaçlı film. Filmin üretim biçimi değil, ideolojik ve iletişimsel işlevi vurgulanır.
 2) SONRA istediğin kadar serbest açıklama ekleyebilirsin — bunlar filtrelenmez, kartta bilgi olarak gösterilir.
-DİKKAT: Sanat filmi, avangart, Dogme 95 gibi sinemasal akımlar buraya DEĞİL, cinema_approach alanına girer. El kamerası, müziksiz film gibi teknikler buraya DEĞİL, technical_style alanına girer.`,
+DİKKAT: Sanat filmi, avangart, Dogme 95 gibi sinemasal akımlar buraya DEĞİL, cinema_approach alanına girer. El kamerası, müziksiz film gibi teknikler buraya DEĞİL, technical_style ve sound alanlarına girer.`,
 
-  // === cinema_approach: sinemasal akım / gelenek / yaklaşım ===
   cinema_approach: `cinema_approach: string[] — İKİ AŞAMALI:
 1) ÖNCE şu slug listesinden en az birini seç (filtre eşleşmesi bunlarla yapılır): ["art","avant","dogme"]
 - art: Sanat filmi, deneysel anlatım, festival odaklı, "art-house" geleneği.
 - avant: Avangart film, deneysel/anti-anlatı, biçimsel yenilik arayışı.
-- dogme: Dogme 95 manifestosuna uygun (Lars von Trier & Thomas Vinterberg, 1995), sade üretim kurallarına bağlı.
+- dogme: Dogme 95 manifestosuna uygun (Lars von Trier & Thomas Vinterberg, 1995).
 2) SONRA istediğin kadar serbest açıklama ekleyebilirsin — bunlar filtrelenmez, kartta bilgi olarak gösterilir.
-DİKKAT: Film TÜRÜ (dram, komedi) ve yapım BÜYÜKLÜĞÜ (indie, big) buraya DEĞİL. Bir teknik (el kamerası) tek başına bu alana kanıt DEĞİLDİR; belirli bir akıma (Dogme 95) üyelik ayrıca değerlendirilmelidir.`,
+DİKKAT: Film TÜRÜ (dram, komedi) ve yapım BÜYÜKLÜĞÜ (indie, big) buraya DEĞİL. Bir teknik (el kamerası) tek başına bu alana kanıt DEĞİLDİR.`,
 
-  // === technical_style: kamera ve ses/müzik teknikleri ===
   technical_style: `technical_style: string[] — İKİ AŞAMALI:
-1) ÖNCE şu slug listesinden en az birini seç (filtre eşleşmesi bunlarla yapılır): ["handheld","no_music","rare_music"]
-- handheld: El kamerası / hareketli kamera baskın (found footage, cinéma vérité, mockumentary vb.).
-- no_music: Müziksiz film. Film boyunca müzik kullanılmamış.
-- rare_music: Nadir/az müzikli film. Müzik sadece kritik anlarda kullanılmış.
+1) ÖNCE şu slug listesinden en az birini seç (filtre eşleşmesi bunlarla yapılır): ["handheld","static_camera","tracking_shot","steadicam","crane_shot","aerial_shot","zoom","pan_tilt"]
+- handheld: El kamerası — kameranın operatör tarafından elde taşınması.
+- static_camera: Sabit kamera — kameranın sabit konumda kullanılması.
+- tracking_shot: Takip çekimi — kameranın karakteri veya nesneyi takip etmesi.
+- steadicam: Steadicam — hareket sırasında dengeli ve akıcı görüntü.
+- crane_shot: Vinç çekimi — kameranın vinç veya jib sistemiyle yükselip alçalması.
+- aerial_shot: Havadan çekim — drone, helikopter veya benzeri araçlarla çekim.
+- zoom: Zoom kullanımı — optik yakınlaştırma/uzaklaştırmanın belirgin kullanımı.
+- pan_tilt: Pan / tilt — kameranın yatay veya dikey eksende döndürülmesi.
 2) SONRA istediğin kadar serbest açıklama ekleyebilirsin — bunlar filtrelenmez, kartta bilgi olarak gösterilir.
-DİKKAT: Bir teknik kullanım (el kamerası) TEK BAŞINA bir sinema akımına (Dogme 95, found footage) kanıt DEĞİLDİR. Ses tasarımı (ambient, voiceover) buraya DEĞİL, sound alanına girer.`,
+DİKKAT: SADECE KAMERA kullanım teknikleri. Ses/müzik buraya DEĞİL, sound alanına girer. Bir teknik kullanım (el kamerası) TEK BAŞINA bir sinema akımına (Dogme 95) kanıt DEĞİLDİR.
+SINIFLANDIRMA İLKESİ: Bir tekniğin filmde yalnızca bir kez görülmesi yeterli DEĞİLDİR. Filmin genel görsel anlatımında belirgin ve TEKRARLANAN kullanım aranmalıdır. Gerektiğinde birden fazla teknik aynı filme atanabilir.`,
+
+  sound: `sound: string[] — İKİ AŞAMALI:
+1) ÖNCE şu slug listesinden en az birini seç (filtre eşleşmesi bunlarla yapılır): ["ambient","music","rare_music","no_music","effects","voiceover_ext","voiceover_int","silent","dubbed"]
+- ambient: Sürekli doğal ortam gürültüsü.
+- music: Yoğun müzik kullanımı.
+- rare_music: Nadir/az müzikli film — müzik sadece kritik anlarda kullanılmış.
+- no_music: Müziksiz film — film boyunca hiç müzik yok.
+- effects: Yoğun gürültülü efekt kullanımı.
+- voiceover_ext: Dış ses kullanımı.
+- voiceover_int: İç ses kullanımı.
+- silent: Sessiz film — hiç ses yok (no_music'ten FARKLI; no_music'te ses var ama müzik yok).
+- dubbed: Ses dublajı çoğunlukla stüdyoda yapılmış.
+2) SONRA istediğin kadar serbest açıklama ekleyebilirsin — bunlar filtrelenmez, kartta bilgi olarak gösterilir.
+DİKKAT: silent (hiç ses yok) ile no_music (ses var, müzik yok) FARKLIDIR. Kamera teknikleri buraya DEĞİL, technical_style alanına girer.`,
 
   season: `season: string[] — İKİ AŞAMALI:
 1) ÖNCE şu slug listesinden en az birini seç (filtre eşleşmesi bunlarla yapılır): ["winter","summer","spring","autumn"]
@@ -143,10 +155,6 @@ DİKKAT: Bir teknik kullanım (el kamerası) TEK BAŞINA bir sinema akımına (D
 
   reality: `reality: string[] — İKİ AŞAMALI:
 1) ÖNCE şu slug listesinden en az birini seç (filtre eşleşmesi bunlarla yapılır): ["true","mostly_true","inspired","realistic","fictional","utopic"]
-2) SONRA istediğin kadar serbest açıklama ekleyebilirsin — bunlar filtrelenmez, kartta bilgi olarak gösterilir.`,
-
-  sound: `sound: string[] — İKİ AŞAMALI:
-1) ÖNCE şu slug listesinden en az birini seç (filtre eşleşmesi bunlarla yapılır): ["ambient","music","effects","voiceover_ext","voiceover_int","silent","dubbed"]
 2) SONRA istediğin kadar serbest açıklama ekleyebilirsin — bunlar filtrelenmez, kartta bilgi olarak gösterilir.`,
 
   story_geography: `story_geography: string[] — İKİ AŞAMALI:
@@ -164,19 +172,19 @@ DİKKAT: Bir teknik kullanım (el kamerası) TEK BAŞINA bir sinema akımına (D
   story_dimensions: `story_dimensions: string[] — İKİ AŞAMALI:
 1) ÖNCE şu slug listesinden en az birini seç (filtre eşleşmesi bunlarla yapılır): [${_STORY_DIMS_JSON}]
 TANIMLAR:
-- concept: Konsept filmi. Aynı konseptin farklı dönemlerde, genellikle farklı oyuncu kadrosuyla ve birbirinden bağımsız hikâyelerle tekrar çekilmesi. Örn: James Bond serisi, Godzilla, Sherlock Holmes uyarlamaları. Her film kendi başına bir hikâyedir; önceki filmin devamı değildir.
+- concept: Konsept filmi. Aynı konseptin farklı dönemlerde, genellikle farklı oyuncu kadrosuyla ve birbirinden bağımsız hikâyelerle tekrar çekilmesi. Örn: James Bond serisi, Godzilla, Sherlock Holmes uyarlamaları.
 - is_sequel: Kendisi bir devam filmi. Hikâye bir önceki filmin doğrudan devamıdır, aynı ana karakterler ve genellikle aynı oyuncular vardır. Örn: Mission: Impossible 2, The Godfather Part II.
 - has_sequel: Bu filmin bir devam filmi çekilmiştir (kendisi ilk filmdir). Örn: Mission: Impossible (1996).
-- reboot: Bir film serisinin hikâyesini veya evrenini SIFIRDAN başlatan yeni başlangıç. Önceki filmlerin olaylarını görmezden gelir. Örn: Batman Begins (2005), Casino Royale (2006), Spider-Man: Homecoming (2017). DİKKAT: Reboot, devam filmi DEĞİLDİR; remake de DEĞİLDİR (belirli bir filmi değil, bir seriyi sıfırlar).
-- film_franchise: Ortak evrende geçen, birbirine bağlı birden fazla filmden oluşan marka/seri. Örn: Marvel Cinematic Universe, Star Wars, Harry Potter, Fast & Furious. DİKKAT: Franchise üyesi olmak otomatik olarak reboot, remake veya sequel olduğu anlamına GELMEZ.
-- remake: Belirli bir filmin RESMİ yeniden çevrimi. Aynı hikâye, aynı ülke sinemasında, yeni oyuncularla. Örn: A Star Is Born (2018), The Magnificent Seven (2016), Psycho (1998). DİKKAT: Remake, concept'ten farklıdır (concept bağımsız, remake belirli bir eserin resmi yeniden çevrimi); same_plot_diff_script'ten farklıdır (o daha genel).
+- reboot: Bir film serisinin hikâyesini veya evrenini SIFIRDAN başlatan yeni başlangıç. Önceki filmlerin olaylarını görmezden gelir. Örn: Batman Begins (2005), Casino Royale (2006). DİKKAT: Reboot, devam filmi DEĞİLDİR; remake de DEĞİLDİR.
+- film_franchise: Ortak evrende geçen, birbirine bağlı birden fazla filmden oluşan marka/seri. Örn: Marvel Cinematic Universe, Star Wars, Harry Potter. DİKKAT: Franchise üyesi olmak otomatik olarak reboot, remake veya sequel olduğu anlamına GELMEZ.
+- remake: Belirli bir filmin RESMİ yeniden çevrimi. Aynı hikâye, aynı ülke sinemasında, yeni oyuncularla. Örn: A Star Is Born (2018), Psycho (1998).
 - series_sequel: Bir dizideki hikâyenin devamı.
 - series_prequel: Bir dizideki hikâyenin öncesi.
 - series_spinoff: Bir dizideki karakterlerin farklı bir hikâyesi.
 - similar_script_version: Aynı hikâyeyi benzer bir senaryoyla anlatan başka bir film var.
 - same_plot_diff_script: Aynı hikâyeyi farklı bir senaryoyla anlatan başka bir film var.
 - same_plot_diff_angle: Aynı hikâyenin farklı bir yönünü anlatan başka bir film var.
-2) SONRA istediğin kadar serbest açıklama ekleyebilirsin (örn: "üçlemenin ikinci filmi", "aynı yönetmenin önceki filmiyle bağlantılı") — bunlar filtrelenmez, kartta bilgi olarak gösterilir.`,
+2) SONRA istediğin kadar serbest açıklama ekleyebilirsin — bunlar filtrelenmez, kartta bilgi olarak gösterilir.`,
 
   color_style: `color_style: string[] — İKİ AŞAMALI:
 1) ÖNCE şu slug listesinden en az birini seç (filtre eşleşmesi bunlarla yapılır): ["black_white","color","mostly_color","mostly_bw","blue_filter","yellow_filter","selective_color","colorized","limited_palette","sepia","mono_tint","bw_red_accent","mixed_bw_color"]

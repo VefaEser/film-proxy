@@ -1,4 +1,6 @@
-// filters.js — semanticSignature artık SCHEMA_VERSION içeriyor (model/prompt/schema değişince cache invalidate)
+// filters.js — Faz 8 Phase D: taxonomy split
+// narrative_style (yapı) + narrative_pace (tempo)
+// production_category (yapım+propaganda) + cinema_approach (akım) + technical_style (teknik)
 import { SEMANTIC_FIELDS, FIELD_DEFS, LLM_FIELDS, SCHEMA_VERSION } from "./fields.config.js";
 import { norm, yearOf, safeJSON } from "./db.js";
 
@@ -33,8 +35,13 @@ export function buildFilterSentence(filters) {
   const setExclude = (field, suffix) => { const v = f[field]; if (!v?.exclude?.length) return; const n = v.exclude.map(x => x.label || x).filter(Boolean); if (n.length) parts.push(`${suffix} ${n.join(", ")} olmamalı`); };
   setInclude("season", "hikâyesi şu mevsimde geçen"); setExclude("season", "hikâyesi şu mevsimlerde geçmemeli:");
   setInclude("reality", "gerçeklik"); setExclude("reality", "gerçeklik açısından:");
-  setInclude("production_process", "filmin sanatsal veya sektörel konumu"); setExclude("production_process", "filmin sanatsal veya sektörel konumu şunlardan olmamalı:");
-  setInclude("narrative_style", "anlatım tarzı"); setExclude("narrative_style", "anlatım tarzı şunlardan olmamalı:");
+  // === FAZ 8 Phase D: production_process → production_category ===
+  setInclude("production_category", "filmin yapım kategorisi"); setExclude("production_category", "filmin yapım kategorisi şunlardan olmamalı:");
+  // === YENİ: narrative_pace, cinema_approach, technical_style ===
+  setInclude("narrative_pace", "anlatım temposu"); setExclude("narrative_pace", "anlatım temposu şunlardan olmamalı:");
+  setInclude("cinema_approach", "sinemasal akım/yaklaşım"); setExclude("cinema_approach", "sinemasal akım/yaklaşım şunlardan olmamalı:");
+  setInclude("technical_style", "teknik stil (kamera/ses)"); setExclude("technical_style", "teknik stil şunlardan olmamalı:");
+  setInclude("narrative_style", "anlatım tarzı (yapı)"); setExclude("narrative_style", "anlatım tarzı şunlardan olmamalı:");
   setInclude("sound", "ses özelliği"); setExclude("sound", "ses özelliği şunlardan olmamalı:");
   setInclude("story_geography", "coğrafya"); setExclude("story_geography", "coğrafya şunlardan olmamalı:");
   setInclude("story_period", "dönem"); setExclude("story_period", "dönem şunlardan olmamalı:");
@@ -77,7 +84,6 @@ export function buildFilterContext(filters, configAll) {
   }
   return lines.join("\n\n");
 }
-// === FAZ 7: SCHEMA_VERSION imzaya dahil → model/prompt/schema değişince cache invalidate ===
 export function semanticSignature(filters) {
   const f = filters || {}; const active = {};
   for (const field of SEMANTIC_FIELDS) if (f[field] && (f[field].include?.length || f[field].exclude?.length)) active[field] = f[field];
@@ -92,7 +98,6 @@ export function semanticSignature(filters) {
   if (f.locationMin != null) active.locationMin = f.locationMin;
   if (f.locationMax != null) active.locationMax = f.locationMax;
   const sorted = Object.keys(active).sort().reduce((o, k) => { o[k] = active[k]; return o; }, {});
-  // === FAZ 7: SCHEMA_VERSION ile model/prompt değişikliği cache'i invalidate eder ===
   return JSON.stringify({ v: SCHEMA_VERSION, f: sorted });
 }
 export function hasSemanticFilters(filters) { return semanticSignature(filters) !== JSON.stringify({ v: SCHEMA_VERSION, f: {} }); }
@@ -102,14 +107,85 @@ export function locationFieldsNeeded(filters) { const f = filters || {}; return 
 
 function toNum(v) { if (v === null || v === undefined || v === "") return null; if (typeof v === "string" && /^n\/?a$/i.test(v.trim())) return null; const n = Number(String(v).replace(/[^\d.-]/g, "")); return Number.isFinite(n) ? n : null; }
 
+function parseAspect(s) {
+  if (s == null) return null;
+  const m = String(s).match(/(\d+(?:\.\d+)?)\s*:\s*(\d+(?:\.\d+)?)/);
+  if (!m) return null;
+  const w = parseFloat(m[1]), h = parseFloat(m[2]);
+  if (!w || !h) return null;
+  return w / h;
+}
+function matchAspectRatio(profileAr, filterObj) {
+  if (!filterObj) return { match: true, unknown: false, reasons: [] };
+  const raw = Array.isArray(profileAr) ? profileAr : (profileAr ? [profileAr] : []);
+  const profileRatios = raw.map(parseAspect).filter(x => x !== null);
+  if (!profileRatios.length) {
+    if (filterObj.include?.length) return { match: true, unknown: true, reasons: ["bilinmiyor"] };
+    return { match: true, unknown: false, reasons: [] };
+  }
+  const matches = (x) => {
+    const target = parseAspect(x.id || x.label);
+    if (target === null) return false;
+    return profileRatios.some(pr => Math.abs(pr - target) <= 0.05);
+  };
+  if (filterObj.include?.length) {
+    const matched = filterObj.include.filter(matches);
+    if (!matched.length) return { match: false, unknown: false, reasons: [`eşleşmiyor: ${filterObj.include.map(x => x.label || x.id).join(", ")}`] };
+  }
+  if (filterObj.exclude?.length) {
+    const hit = filterObj.exclude.filter(matches);
+    if (hit.length) return { match: false, unknown: false, reasons: [`hariç: ${hit.map(x => x.label || x.id).join(", ")}`] };
+  }
+  return { match: true, unknown: false, reasons: [] };
+}
+
+function matchAwards(profileIds, filterObj, mode) {
+  if (!filterObj) return { match: true, unknown: false, reasons: [] };
+  const ids = (profileIds || []).map(x => String(x).trim()).filter(Boolean);
+  const label = mode === "win" ? "Ödül" : "Adaylık";
+  if (!ids.length) {
+    if (filterObj.include?.length) return { match: true, unknown: true, reasons: [`${label} bilgisi bilinmiyor`] };
+    return { match: true, unknown: false, reasons: [] };
+  }
+  const all = new Set(ids);
+  if (filterObj.include?.length) {
+    const matched = filterObj.include.filter(x => x.id != null && all.has(String(x.id)));
+    if (!matched.length) return { match: false, unknown: false, reasons: [`${label} eksik: ${filterObj.include.map(x => x.label || x.id).join(", ")}`] };
+  }
+  if (filterObj.exclude?.length) {
+    const hit = filterObj.exclude.filter(x => x.id != null && all.has(String(x.id)));
+    if (hit.length) return { match: false, unknown: false, reasons: [`${label} hariç: ${hit.map(x => x.label || x.id).join(", ")}`] };
+  }
+  return { match: true, unknown: false, reasons: [] };
+}
+
 function matchSet(profileField, filterObj, altProfileField) {
   if (!filterObj) return { match: true, unknown: false, conflict: false, reasons: [] };
   const raw = Array.isArray(profileField) ? profileField.map(norm) : (profileField ? [norm(profileField)] : []);
   const altRaw = Array.isArray(altProfileField) ? altProfileField.map(norm) : (altProfileField ? [norm(altProfileField)] : []);
   const allRaw = [...raw, ...altRaw]; const empty = allRaw.length === 0; const reasons = []; let match = true, unknown = false, conflict = false;
   const matches = (x) => { const v = norm(x.label || x); if (allRaw.includes(v)) return true; if (x.id != null && x.id !== "" && allRaw.includes(norm(x.id))) return true; return allRaw.some(h => h.includes(v) || v.includes(h)); };
-  if (filterObj.include?.length) { const matched = filterObj.include.filter(x => matches(x)); if (matched.length === 0) { if (empty) { unknown = true; reasons.push(`bilinmiyor: ${filterObj.include.map(x => x.label || x).join(", ")}`); } else { match = false; reasons.push(`eksik: ${filterObj.include.map(x => x.label || x).join(", ")}`); } } }
-  if (filterObj.exclude?.length) { const hit = filterObj.exclude.filter(x => matches(x)); if (hit.length) { match = false; conflict = true; reasons.push(`hariç: ${hit.map(x => x.label || x).join(", ")}`); } }
+  if (filterObj.include?.length) {
+    const matched = filterObj.include.filter(x => matches(x));
+    if (matched.length === 0) {
+      if (empty) { unknown = true; reasons.push(`bilinmiyor: ${filterObj.include.map(x => x.label || x).join(", ")}`); }
+      else { match = false; reasons.push(`eksik: ${filterObj.include.map(x => x.label || x).join(", ")}`); }
+    }
+  }
+  if (filterObj.exclude?.length) {
+    const hit = filterObj.exclude.filter(x => matches(x));
+    if (hit.length) {
+      const hasOverlap = filterObj.include?.length && filterObj.include.some(x => matches(x));
+      if (hasOverlap && filterObj.conflict === true) {
+        conflict = true;
+        reasons.push(`çakışma (dahil edildi): ${hit.map(x => x.label || x).join(", ")}`);
+      } else {
+        match = false;
+        conflict = true;
+        reasons.push(`hariç: ${hit.map(x => x.label || x).join(", ")}`);
+      }
+    }
+  }
   return { match, unknown, conflict, reasons };
 }
 function matchIdSet(profileIds, filterObj) {
@@ -120,7 +196,6 @@ function matchIdSet(profileIds, filterObj) {
   return { match: true, unknown: false, reasons: [] };
 }
 function matchRated(profileRated, filterObj) { if (!filterObj) return { match: true, unknown: false, reasons: [] }; const have = profileRated ? norm(profileRated) : ""; if (!have) return { match: true, unknown: true, reasons: ["Yaş sınırı bilinmiyor"] }; if (filterObj.include?.length) { const labels = filterObj.include.map(x => norm(x.label || x)); if (!labels.includes(have)) return { match: false, unknown: false, reasons: [`Yaş sınırı ${profileRated} uygun değil`] }; } if (filterObj.exclude?.length) { const labels = filterObj.exclude.map(x => norm(x.label || x)); if (labels.includes(have)) return { match: false, unknown: false, reasons: [`Yaş sınırı ${profileRated} hariç tutuldu`] }; } return { match: true, unknown: false, reasons: [] }; }
-function matchAwards(profileAwards, profileNominations, filterObj) { if (!filterObj) return { match: true, unknown: false, reasons: [] }; const awards = (profileAwards || []).map(x => String(x).trim()); const noms = (profileNominations || []).map(x => String(x).trim()); const all = new Set([...awards, ...noms]); if (!all.size) return { match: true, unknown: true, reasons: ["Ödül bilgisi bilinmiyor"] }; if (filterObj.include?.length) { const matched = filterObj.include.filter(x => x.id != null && all.has(String(x.id))); if (matched.length === 0) return { match: false, unknown: false, reasons: [`Ödül eksik: ${filterObj.include.map(x => x.label || x.id).join(", ")}`] }; } return { match: true, unknown: false, reasons: [] }; }
 
 function matchLanguage(profile, filterObj, languageOnlyOriginal) {
   if (!filterObj) return { match: true, unknown: false, reasons: [] };
@@ -150,6 +225,7 @@ function matchLanguage(profile, filterObj, languageOnlyOriginal) {
 }
 
 function passesLocalFilters(profile, filters) {
+  const includeUnknown = filters.includeUnknown === true;
   const imdb = Number(String(profile.imdbRating || "").replace(/[^\d.]/g, "")) || null;
   if (filters.imdbMin > 0 && imdb != null && imdb < filters.imdbMin) return false;
   if (filters.imdbMax < 10 && imdb != null && imdb > filters.imdbMax) return false;
@@ -161,13 +237,14 @@ function passesLocalFilters(profile, filters) {
   const runtime = toNum(profile.runtime);
   if (filters.runtimeMin != null && runtime != null && runtime < filters.runtimeMin) return false;
   if (filters.runtimeMax != null && runtime != null && runtime > filters.runtimeMax) return false;
-  if (filters.rated) { const r = matchRated(profile.rated, filters.rated); if (!r.match || r.unknown) return false; }
-  if (filters.award) { const r = matchAwards(profile.awards_ids, profile.nominated_ids, filters.award); if (!r.match || r.unknown) return false; }
-  if (filters.director) { const r = matchIdSet(profile.director_ids, filters.director); if (!r.match || r.unknown) return false; }
-  if (filters.writers) { const r = matchIdSet(profile.writers_ids, filters.writers); if (!r.match || r.unknown) return false; }
-  if (filters.cast) { const r = matchIdSet(profile.cast_ids, filters.cast); if (!r.match || r.unknown) return false; }
-  if (filters.company) { const r = matchIdSet(profile.production_companies_ids, filters.company); if (!r.match || r.unknown) return false; }
-  if (filters.original_language) { const r = matchLanguage(profile, filters.original_language, filters.languageOnlyOriginal === true); if (!r.match || r.unknown) return false; }
+  if (filters.rated) { const r = matchRated(profile.rated, filters.rated); if (!r.match) return false; if (r.unknown && !includeUnknown) return false; }
+  if (filters.award) { const r = matchAwards(profile.awards_ids, filters.award, "win"); if (!r.match) return false; if (r.unknown && !includeUnknown) return false; }
+  if (filters.award_nom) { const r = matchAwards(profile.nominated_ids, filters.award_nom, "nom"); if (!r.match) return false; if (r.unknown && !includeUnknown) return false; }
+  if (filters.director) { const r = matchIdSet(profile.director_ids, filters.director); if (!r.match) return false; if (r.unknown && !includeUnknown) return false; }
+  if (filters.writers) { const r = matchIdSet(profile.writers_ids, filters.writers); if (!r.match) return false; if (r.unknown && !includeUnknown) return false; }
+  if (filters.cast) { const r = matchIdSet(profile.cast_ids, filters.cast); if (!r.match) return false; if (r.unknown && !includeUnknown) return false; }
+  if (filters.company) { const r = matchIdSet(profile.production_companies_ids, filters.company); if (!r.match) return false; if (r.unknown && !includeUnknown) return false; }
+  if (filters.original_language) { const r = matchLanguage(profile, filters.original_language, filters.languageOnlyOriginal === true); if (!r.match) return false; if (r.unknown && !includeUnknown) return false; }
   return true;
 }
 function evalFilmingLocations(profile, f, metatakeLocations, filmmapLocations) {
@@ -205,8 +282,13 @@ export function evaluateFilters(profile, filters, semanticVerdict, metatakeLocat
     ["production_countries_ids", "production_countries", "Ülke", "production_countries"],
     ["story_locations", "story_locations", "Hikâye yeri", null], ["story_period", "story_period", "Dönem", null],
     ["story_geography", "story_geography", "Coğrafya", null], ["season", "season", "Mevsim", null],
-    ["character_traits", "character_traits", "Karakter niteliği", null], ["aspect_ratio", "aspect_ratio", "En-boy oranı", null],
-    ["narrative_style", "narrative_style", "Anlatım tarzı", null], ["production_process", "production_process", "Filmin sanatsal veya sektörel konumu", null],
+    ["character_traits", "character_traits", "Karakter niteliği", null],
+    // === FAZ 8 Phase D: narrative_style + 3 yeni alan ===
+    ["narrative_style", "narrative_style", "Anlatım tarzı (yapı)", null],
+    ["narrative_pace", "narrative_pace", "Anlatım temposu", null],
+    ["production_category", "production_category", "Yapım kategorisi", null],
+    ["cinema_approach", "cinema_approach", "Sinemasal akım/yaklaşım", null],
+    ["technical_style", "technical_style", "Teknik stil", null],
     ["sound", "sound", "Ses", null], ["reality", "reality", "Gerçeklik", null], ["story_dimensions", "story_dimensions", "Filmin diğer filmlerle ilgisi", null],
     ["color_style", "color_style", "Görsel renk stili", null]
   ];
@@ -219,6 +301,12 @@ export function evaluateFilters(profile, filters, semanticVerdict, metatakeLocat
     if (res.conflict) state.conflicts = true;
     for (const r of res.reasons) state.reasons.push(`${label} ${r}`);
   }
+  if (filters.aspect_ratio) {
+    const res = matchAspectRatio(profile.aspect_ratio, filters.aspect_ratio);
+    if (!res.match) state.match = false;
+    if (res.unknown) state.unknown = true;
+    for (const r of res.reasons) state.reasons.push(`En-boy oranı ${r}`);
+  }
   if (filters.keywords) { const res = matchIdSet(profile.keywords_ids, filters.keywords); if (!res.match) state.match = false; if (res.unknown) state.unknown = true; }
   if (filters.filming_locations) { const res = evalFilmingLocations(profile, filters.filming_locations, metatakeLocations, filmmapLocations); if (!res.match) state.match = false; if (res.unknown) state.unknown = true; if (res.reason) state.reasons.push(res.reason); }
   evalRatioFilters(profile, filters, state);
@@ -230,4 +318,4 @@ export function evaluateFilters(profile, filters, semanticVerdict, metatakeLocat
     else { state.unknown = true; if (semanticVerdict.reason) state.reasons.push(semanticVerdict.reason); }
   }
   return state;
-    }
+  }

@@ -1,6 +1,4 @@
-// filters.js — Faz 8 Phase D: taxonomy split
-// narrative_style (yapı) + narrative_pace (tempo)
-// production_category (yapım+propaganda) + cinema_approach (akım) + technical_style (teknik)
+// filters.js — Faz 8 Phase D revize: technical_style kamera label güncellendi
 import { SEMANTIC_FIELDS, FIELD_DEFS, LLM_FIELDS, SCHEMA_VERSION } from "./fields.config.js";
 import { norm, yearOf, safeJSON } from "./db.js";
 
@@ -35,14 +33,13 @@ export function buildFilterSentence(filters) {
   const setExclude = (field, suffix) => { const v = f[field]; if (!v?.exclude?.length) return; const n = v.exclude.map(x => x.label || x).filter(Boolean); if (n.length) parts.push(`${suffix} ${n.join(", ")} olmamalı`); };
   setInclude("season", "hikâyesi şu mevsimde geçen"); setExclude("season", "hikâyesi şu mevsimlerde geçmemeli:");
   setInclude("reality", "gerçeklik"); setExclude("reality", "gerçeklik açısından:");
-  // === FAZ 8 Phase D: production_process → production_category ===
   setInclude("production_category", "filmin yapım kategorisi"); setExclude("production_category", "filmin yapım kategorisi şunlardan olmamalı:");
-  // === YENİ: narrative_pace, cinema_approach, technical_style ===
   setInclude("narrative_pace", "anlatım temposu"); setExclude("narrative_pace", "anlatım temposu şunlardan olmamalı:");
   setInclude("cinema_approach", "sinemasal akım/yaklaşım"); setExclude("cinema_approach", "sinemasal akım/yaklaşım şunlardan olmamalı:");
-  setInclude("technical_style", "teknik stil (kamera/ses)"); setExclude("technical_style", "teknik stil şunlardan olmamalı:");
+  // === FAZ 8 Phase D revize: technical_style artık sadece kamera ===
+  setInclude("technical_style", "kamera kullanım tekniği"); setExclude("technical_style", "kamera kullanım tekniği şunlardan olmamalı:");
   setInclude("narrative_style", "anlatım tarzı (yapı)"); setExclude("narrative_style", "anlatım tarzı şunlardan olmamalı:");
-  setInclude("sound", "ses özelliği"); setExclude("sound", "ses özelliği şunlardan olmamalı:");
+  setInclude("sound", "ses ve müzik özelliği"); setExclude("sound", "ses ve müzik özelliği şunlardan olmamalı:");
   setInclude("story_geography", "coğrafya"); setExclude("story_geography", "coğrafya şunlardan olmamalı:");
   setInclude("story_period", "dönem"); setExclude("story_period", "dönem şunlardan olmamalı:");
   setInclude("character_traits", "karakter özellikleri"); setExclude("character_traits", "karakter özellikleri şunlardan olmamalı:");
@@ -283,13 +280,12 @@ export function evaluateFilters(profile, filters, semanticVerdict, metatakeLocat
     ["story_locations", "story_locations", "Hikâye yeri", null], ["story_period", "story_period", "Dönem", null],
     ["story_geography", "story_geography", "Coğrafya", null], ["season", "season", "Mevsim", null],
     ["character_traits", "character_traits", "Karakter niteliği", null],
-    // === FAZ 8 Phase D: narrative_style + 3 yeni alan ===
     ["narrative_style", "narrative_style", "Anlatım tarzı (yapı)", null],
     ["narrative_pace", "narrative_pace", "Anlatım temposu", null],
     ["production_category", "production_category", "Yapım kategorisi", null],
     ["cinema_approach", "cinema_approach", "Sinemasal akım/yaklaşım", null],
-    ["technical_style", "technical_style", "Teknik stil", null],
-    ["sound", "sound", "Ses", null], ["reality", "reality", "Gerçeklik", null], ["story_dimensions", "story_dimensions", "Filmin diğer filmlerle ilgisi", null],
+    ["technical_style", "technical_style", "Kamera kullanım tekniği", null],
+    ["sound", "sound", "Ses ve müzik", null], ["reality", "reality", "Gerçeklik", null], ["story_dimensions", "story_dimensions", "Filmin diğer filmlerle ilgisi", null],
     ["color_style", "color_style", "Görsel renk stili", null]
   ];
   for (const [pf, ff, label, altField] of setChecks) {

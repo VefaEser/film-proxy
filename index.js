@@ -1,4 +1,5 @@
 // index.js — Yeni /movie/rating-* ve /admin/user-* route'ları handleUser'a yönlendirildi
+// Faz 6: /admin/config GET → auth varsa tüm config, yoksa sadece filter_info.* (prompt template korunur)
 import { corsHeaders } from "./cors.js";
 import { handleAuth, getCurrentUserWithAdminBridge } from "./auth.js";
 import { handleUser } from "./users.js";
@@ -38,7 +39,6 @@ async function handleRequest(request, env, ctx) {
   if (request.method === "OPTIONS") return new Response(null, { status: 204, headers: CORS });
   const _u = new URL(request.url);
   if (_u.pathname.startsWith("/auth/")) return await handleAuth(request, env, ctx);
-  // === YENİ: rating ve admin user-* route'ları handleUser'a ===
   if (_u.pathname.startsWith("/user/") ||
       _u.pathname.startsWith("/movie/rating-stats/") ||
       _u.pathname.startsWith("/movie/rating-users/") ||
@@ -76,7 +76,18 @@ async function handleRequest(request, env, ctx) {
     if (url.pathname === "/movie/lists" && request.method === "POST") { let body; try { body = await request.json(); } catch { return jsonError("Geçersiz JSON.", 400); } const ids = Array.isArray(body.movie_ids) ? body.movie_ids.map(String) : []; const lists = await getMovieLists(env, ids); const obj = {}; for (const [k, v] of lists) obj[k] = v; return response({ lists: obj }); }
 
     if (url.pathname === "/admin/ping" && request.method === "GET") { const auth = await requireAdminEither(env, request); if (!auth) return jsonError("Yetkisiz.", 401); return response({ ok: true, via: auth.via }); }
-    if (url.pathname === "/admin/config" && request.method === "GET") return response({ config: await getAllConfig(env) });
+    // === FAZ 6: /admin/config GET → auth varsa tüm config, yoksa sadece filter_info.* ===
+    if (url.pathname === "/admin/config" && request.method === "GET") {
+      const auth = await requireAdminEither(env, request);
+      const allConfig = await getAllConfig(env);
+      if (auth) return response({ config: allConfig });
+      // Auth yoksa sadece filter_info.* (kullanıcı tooltip'leri için gerekli) döndür
+      const filtered = {};
+      for (const [k, v] of Object.entries(allConfig)) {
+        if (k.startsWith("filter_info.")) filtered[k] = v;
+      }
+      return response({ config: filtered });
+    }
     if (url.pathname === "/admin/config" && request.method === "PUT") { const auth = await requireAdminEither(env, request); if (!auth) return jsonError("Yetkisiz.", 401); let body; try { body = await request.json(); } catch { return jsonError("Geçersiz JSON.", 400); } if (!body.key || typeof body.value !== "string") return jsonError("key ve value gerekli.", 400); const { setConfig } = await import("./config.js"); await setConfig(env, body.key, body.value); return response({ ok: true, key: body.key }); }
     if (url.pathname === "/admin/filter_info" && request.method === "GET") return response({ config: await getFilterInfoAll(env) });
     if (url.pathname === "/admin/stats" && request.method === "GET") { const auth = await requireAdminEither(env, request); if (!auth) return jsonError("Yetkisiz.", 401); return response({ stats: await getLlmStats(env), deadKeys: await getActiveDeadKeys(env), keyHealth: (() => { try { return getKeyHealth(); } catch { return {}; } })() }); }

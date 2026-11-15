@@ -1,5 +1,8 @@
-// fields.config.js — Faz 8 Phase D revize: technical_style sadece kamera, sound'a no_music/rare_music
-// SCHEMA_VERSION 11 → 12
+// fields.config.js — Faz A: taxonomy alanları eklendi
+// SCHEMA_VERSION 12 → DEĞİŞMEDİ (ek rapor kararı).
+// TAXONOMY_VERSION ayrı yönetilir (taxonomy.config.js).
+import { TAXONOMY_VERSION } from "./taxonomy.config.js";
+
 const days = (n) => n * 86400;
 export const SCHEMA_VERSION = 12;
 
@@ -61,6 +64,10 @@ export const FIELD_DEFS = {
   aspect_ratio:       { source: "llm", ttl: days(90) },
   season:             { source: "llm", ttl: days(90) },
   color_style:        { source: "llm", ttl: days(90) },
+  // === FAZ A: Taxonomy alanları — source "llm" olarak KALIR (forceAll'dan ayrı kontrol) ===
+  subgenres:          { source: "llm", ttl: days(90) },
+  tropes:             { source: "llm", ttl: days(90) },
+  themes:             { source: "llm", ttl: days(90) },
   imdbRating:         { source: "omdb", ttl: days(7) },
   imdbVotes:          { source: "omdb", ttl: days(7) },
   imdbID:             { source: "omdb", ttl: days(7) },
@@ -83,8 +90,24 @@ export const FIELD_DEFS = {
   commons_images:     { source: "commons", ttl: days(90) },
   web_evidence:       { source: "tavily", ttl: days(30) }
 };
-export const LLM_FIELDS = Object.entries(FIELD_DEFS).filter(([, d]) => d.source === "llm").map(([k]) => k);
+
+// ============================================================
+// FAZ A: TAXONOMY_LLM_FIELDS — forceAll'dan AYRI tutulur.
+// Bu alanlar SADECE kullanıcı ilgili taksonomi filtresini aktif ettiğinde
+// AI'ya gönderilir. forceAll çağrısında DAHİL EDİLMEZ.
+// ============================================================
+export const TAXONOMY_LLM_FIELDS = ["subgenres", "tropes", "themes"];
+
+// Mevcut LLM_FIELDS — taxonomy HARİÇ tutulur.
+export const LLM_FIELDS = Object.entries(FIELD_DEFS)
+  .filter(([, d]) => d.source === "llm")
+  .map(([k]) => k)
+  .filter(k => !TAXONOMY_LLM_FIELDS.includes(k));
+
 export const VALID_SOURCES = [...new Set(Object.values(FIELD_DEFS).map(d => d.source))];
+
+// Taxonomy sürümü tek noktadan export (research.js / filters.js ihtiyaç duyarsa)
+export { TAXONOMY_VERSION };
 
 const _CHAR_TRAITS_JSON = CHARACTER_TRAITS_LIST.map(x => `"${x}"`).join(",");
 const _STORY_DIMS_JSON = STORY_DIMENSIONS_LIST.map(x => `"${x}"`).join(",");
@@ -109,9 +132,9 @@ DİKKAT: Anlatının YAPISI (linear, flashback, multi vb.) buraya DEĞİL, narra
 - big: Büyük prodüksiyon, 100M$+ bütçe, geniş ekip.
 - bmovie: Düşük bütçeli tür sineması (B movie).
 - studio: Klasik stüdyo filmi (Hollywood/benzeri).
-- propaganda: İdeolojik/propaganda amaçlı film. Filmin üretim biçimi değil, ideolojik ve iletişimsel işlevi vurgulanır.
+- propaganda: İdeolojik/propaganda amaçlı film.
 2) SONRA istediğin kadar serbest açıklama ekleyebilirsin — bunlar filtrelenmez, kartta bilgi olarak gösterilir.
-DİKKAT: Sanat filmi, avangart, Dogme 95 gibi sinemasal akımlar buraya DEĞİL, cinema_approach alanına girer. El kamerası, müziksiz film gibi teknikler buraya DEĞİL, technical_style ve sound alanlarına girer.`,
+DİKKAT: Sanat filmi, avangart, Dogme 95 gibi sinemasal akımlar buraya DEĞİL, cinema_approach alanına girer.`,
 
   cinema_approach: `cinema_approach: string[] — İKİ AŞAMALI:
 1) ÖNCE şu slug listesinden en az birini seç (filtre eşleşmesi bunlarla yapılır): ["art","avant","dogme"]
@@ -119,7 +142,7 @@ DİKKAT: Sanat filmi, avangart, Dogme 95 gibi sinemasal akımlar buraya DEĞİL,
 - avant: Avangart film, deneysel/anti-anlatı, biçimsel yenilik arayışı.
 - dogme: Dogme 95 manifestosuna uygun (Lars von Trier & Thomas Vinterberg, 1995).
 2) SONRA istediğin kadar serbest açıklama ekleyebilirsin — bunlar filtrelenmez, kartta bilgi olarak gösterilir.
-DİKKAT: Film TÜRÜ (dram, komedi) ve yapım BÜYÜKLÜĞÜ (indie, big) buraya DEĞİL. Bir teknik (el kamerası) tek başına bu alana kanıt DEĞİLDİR.`,
+DİKKAT: Film TÜRÜ (dram, komedi) ve yapım BÜYÜKLÜĞÜ (indie, big) buraya DEĞİL.`,
 
   technical_style: `technical_style: string[] — İKİ AŞAMALI:
 1) ÖNCE şu slug listesinden en az birini seç (filtre eşleşmesi bunlarla yapılır): ["handheld","static_camera","tracking_shot","steadicam","crane_shot","aerial_shot","zoom","pan_tilt"]
@@ -132,8 +155,8 @@ DİKKAT: Film TÜRÜ (dram, komedi) ve yapım BÜYÜKLÜĞÜ (indie, big) buraya
 - zoom: Zoom kullanımı — optik yakınlaştırma/uzaklaştırmanın belirgin kullanımı.
 - pan_tilt: Pan / tilt — kameranın yatay veya dikey eksende döndürülmesi.
 2) SONRA istediğin kadar serbest açıklama ekleyebilirsin — bunlar filtrelenmez, kartta bilgi olarak gösterilir.
-DİKKAT: SADECE KAMERA kullanım teknikleri. Ses/müzik buraya DEĞİL, sound alanına girer. Bir teknik kullanım (el kamerası) TEK BAŞINA bir sinema akımına (Dogme 95) kanıt DEĞİLDİR.
-SINIFLANDIRMA İLKESİ: Bir tekniğin filmde yalnızca bir kez görülmesi yeterli DEĞİLDİR. Filmin genel görsel anlatımında belirgin ve TEKRARLANAN kullanım aranmalıdır. Gerektiğinde birden fazla teknik aynı filme atanabilir.`,
+DİKKAT: SADECE KAMERA kullanım teknikleri. Ses/müzik buraya DEĞİL, sound alanına girer.
+SINIFLANDIRMA İLKESİ: Bir tekniğin filmde yalnızca bir kez görülmesi yeterli DEĞİLDİR.`,
 
   sound: `sound: string[] — İKİ AŞAMALI:
 1) ÖNCE şu slug listesinden en az birini seç (filtre eşleşmesi bunlarla yapılır): ["ambient","music","rare_music","no_music","effects","voiceover_ext","voiceover_int","silent","dubbed"]
@@ -147,7 +170,7 @@ SINIFLANDIRMA İLKESİ: Bir tekniğin filmde yalnızca bir kez görülmesi yeter
 - silent: Sessiz film — hiç ses yok (no_music'ten FARKLI; no_music'te ses var ama müzik yok).
 - dubbed: Ses dublajı çoğunlukla stüdyoda yapılmış.
 2) SONRA istediğin kadar serbest açıklama ekleyebilirsin — bunlar filtrelenmez, kartta bilgi olarak gösterilir.
-DİKKAT: silent (hiç ses yok) ile no_music (ses var, müzik yok) FARKLIDIR. Kamera teknikleri buraya DEĞİL, technical_style alanına girer.`,
+DİKKAT: silent (hiç ses yok) ile no_music (ses var, müzik yok) FARKLIDIR.`,
 
   season: `season: string[] — İKİ AŞAMALI:
 1) ÖNCE şu slug listesinden en az birini seç (filtre eşleşmesi bunlarla yapılır): ["winter","summer","spring","autumn"]
@@ -172,18 +195,14 @@ DİKKAT: silent (hiç ses yok) ile no_music (ses var, müzik yok) FARKLIDIR. Kam
   story_dimensions: `story_dimensions: string[] — İKİ AŞAMALI:
 1) ÖNCE şu slug listesinden en az birini seç (filtre eşleşmesi bunlarla yapılır): [${_STORY_DIMS_JSON}]
 TANIMLAR:
-- concept: Konsept filmi. Aynı konseptin farklı dönemlerde, genellikle farklı oyuncu kadrosuyla ve birbirinden bağımsız hikâyelerle tekrar çekilmesi. Örn: James Bond serisi, Godzilla, Sherlock Holmes uyarlamaları.
-- is_sequel: Kendisi bir devam filmi. Hikâye bir önceki filmin doğrudan devamıdır, aynı ana karakterler ve genellikle aynı oyuncular vardır. Örn: Mission: Impossible 2, The Godfather Part II.
-- has_sequel: Bu filmin bir devam filmi çekilmiştir (kendisi ilk filmdir). Örn: Mission: Impossible (1996).
-- reboot: Bir film serisinin hikâyesini veya evrenini SIFIRDAN başlatan yeni başlangıç. Önceki filmlerin olaylarını görmezden gelir. Örn: Batman Begins (2005), Casino Royale (2006). DİKKAT: Reboot, devam filmi DEĞİLDİR; remake de DEĞİLDİR.
-- film_franchise: Ortak evrende geçen, birbirine bağlı birden fazla filmden oluşan marka/seri. Örn: Marvel Cinematic Universe, Star Wars, Harry Potter. DİKKAT: Franchise üyesi olmak otomatik olarak reboot, remake veya sequel olduğu anlamına GELMEZ.
-- remake: Belirli bir filmin RESMİ yeniden çevrimi. Aynı hikâye, aynı ülke sinemasında, yeni oyuncularla. Örn: A Star Is Born (2018), Psycho (1998).
-- series_sequel: Bir dizideki hikâyenin devamı.
-- series_prequel: Bir dizideki hikâyenin öncesi.
-- series_spinoff: Bir dizideki karakterlerin farklı bir hikâyesi.
-- similar_script_version: Aynı hikâyeyi benzer bir senaryoyla anlatan başka bir film var.
-- same_plot_diff_script: Aynı hikâyeyi farklı bir senaryoyla anlatan başka bir film var.
-- same_plot_diff_angle: Aynı hikâyenin farklı bir yönünü anlatan başka bir film var.
+- concept: Konsept filmi.
+- is_sequel: Kendisi bir devam filmi.
+- has_sequel: Bu filmin bir devam filmi çekilmiştir.
+- reboot: Bir film serisinin hikâyesini veya evrenini SIFIRDAN başlatan yeni başlangıç.
+- film_franchise: Ortak evrende geçen, birbirine bağlı birden fazla filmden oluşan marka/seri.
+- remake: Belirli bir filmin RESMİ yeniden çevrimi.
+- series_sequel / series_prequel / series_spinoff: Dizi bağlantıları.
+- similar_script_version / same_plot_diff_script / same_plot_diff_angle: Aynı hikâyeyi farklı anlatan filmler.
 2) SONRA istediğin kadar serbest açıklama ekleyebilirsin — bunlar filtrelenmez, kartta bilgi olarak gösterilir.`,
 
   color_style: `color_style: string[] — İKİ AŞAMALI:
@@ -196,14 +215,34 @@ TANIMLAR:
 
   aspect_ratio: `aspect_ratio: string[] — İKİ AŞAMALI:
 1) ÖNCE şu slug listesinden en az birini seç (filtre eşleşmesi bunlarla yapılır): ["1:1","1.33:1","1.37:1","1.66:1","1.78:1","1.85:1","2.00:1","2.20:1","2.35:1","2.39:1","2.76:1"]
-2) SONRA istediğin kadar serbest açıklama ekleyebilirsin — bunlar filtrelenmez, kartta bilgi olarak gösterilir.`
+2) SONRA istediğin kadar serbest açıklama ekleyebilirsin — bunlar filtrelenmez, kartta bilgi olarak gösterilir.`,
+
+  // === FAZ A: Taxonomy alanları ===
+  subgenres: `subgenres: string[] — Filmin TMDB ana türünün daha özel bir alt kategorisi (ör: Heist, Neo-Noir, Folk Horror, Cyberpunk).
+İKİ AŞAMALI:
+1) ÖNCE geçerli subgenre slug listesinden en az birini seç (filtre eşleşmesi bunlarla yapılır). Örnek slug'lar: "heist", "neo_noir", "cyberpunk", "folk_horror", "time_travel".
+2) SONRA istediğin kadar serbest açıklama ekleyebilirsin — bunlar filtrelenmez, kartta bilgi olarak gösterilir.
+DİKKAT: Bu alan TMDB ana türünü (Drama, Comedy, Horror vb.) DEĞİŞTİRMEZ veya tekrarlamaz. TMDB ana türleri ayrı tutulur. Alt tür, ana türün daha özel bir alt sınıfıdır.`,
+  tropes: `tropes: string[] — Filmde tanınabilir anlatı motifleri, olay örgüsü kalıpları, karakter arketipleri veya ilişki kalıpları (ör: One Last Job, Love Triangle, Unreliable Narrator, Time Loop).
+İKİ AŞAMALI:
+1) ÖNCE geçerli trope slug listesinden en az birini seç (filtre eşleşmesi bunlarla yapılır). Örnek slug'lar: "one_last_job", "love_triangle", "unreliable_narrator", "time_loop", "plot_twist".
+2) SONRA istediğin kadar serbest açıklama ekleyebilirsin — bunlar filtrelenmez, kartta bilgi olarak gösterilir.
+DİKKAT: Bir motifin filmde yalnızca bir kez geçmesi otomatik olarak o klişenin bulunduğu anlamına GELMEZ. Motifin hikâyede anlamlı bir yeri olmalıdır. Tema ile karıştırılmamalıdır (tema düşünsel meseledir, trope anlatı aracıdır).`,
+  themes: `themes: string[] — Filmin temel düşüncesi, insani meselesi, toplumsal veya felsefi konusu (ör: Family Bonds, Alienation, Justice, Freedom, Meaning of Life).
+İKİ AŞAMALI:
+1) ÖNCE geçerli theme slug listesinden en az birini seç (filtre eşleşmesi bunlarla yapılır). Örnek slug'lar: "family_bonds", "alienation", "justice", "freedom", "meaning_of_life".
+2) SONRA istediğin kadar serbest açıklama ekleyebilirsin — bunlar filtrelenmez, kartta bilgi olarak gösterilir.
+DİKKAT: Tema ile olay örgüsü motifi birbirine karıştırılmamalıdır. Örn: "Yıllar sonra yeniden buluşan aile üyeleri" bir motif (reunion_after_years), "Aile bağlarının önemi" bir tema (family_bonds).`
 };
+
 export const SEMANTIC_FIELDS = [
   "story_period", "story_geography", "character_traits",
   "narrative_style", "narrative_pace", "production_category", "cinema_approach", "technical_style",
   "sound", "reality",
   "story_dimensions", "family_content", "season", "aspect_ratio",
-  "original_work", "color_style", "location_mode"
+  "original_work", "color_style", "location_mode",
+  // === FAZ A: Taxonomy ===
+  "subgenres", "tropes", "themes"
 ];
 export const RATIO_FIELDS = ["day_ratio", "indoor_ratio", "dialogue_density"];
 export const LOCATION_FIELDS = ["location_count"];

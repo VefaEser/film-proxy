@@ -1,6 +1,4 @@
-// config.js — Tüm semantik alanlar iki aşamalı: slug listesi + serbest açıklama
-// story_dimensions 12 slug (reboot, film_franchise, remake eklendi)
-// Faz 4: filter_info.color → filter_info.color_style (rename)
+// config.js — Faz 8 Phase D: taxonomy split (narrative_pace, production_category, cinema_approach, technical_style)
 import { safeJSON } from "./db.js";
 import { invalidatePromptCache } from "./llm.js";
 
@@ -25,35 +23,57 @@ Hikâyenin gerçeklik düzeyi.
 - utopic: Ütopik/distopik gelecek.
 ${TWO_STAGE_NOTE}`,
 
-  "filter_info.production_process": `[YZ bağlamı]
-FİLTRE ADI: Filmin sanatsal veya sektörel konumu. Filmin yapım biçimini, bütçesini ve sektördeki yerini sınıflandırır.
-- amateur: Amatör yapım, çok düşük bütçe, öğrenci/amatör ekip.
-- indie: Bağımsız film, stüdyo dışı, küçük bütçeli.
-- art: Sanat filmi, deneysel anlatım, festival odaklı.
-- big: Büyük prodüksiyon, 100M$+ bütçe, geniş ekip.
-- bmovie: Düşük bütçeli tür sineması (B movie).
-- avant: Avangart film, deneysel/anti-anlatı.
-- studio: Klasik stüdyo filmi (Hollywood/benzeri).
-- no_music: Müziksiz film.
-- rare_music: Nadir/az müzikli film.
-- handheld: El kamerası/hareketli kamera baskın.
-- propaganda: İdeolojik/propaganda amaçlı.
-- dogme: Dogme 95 manifestosuna uygun.
-${TWO_STAGE_NOTE}`,
-
+  // === FAZ 8 Phase D: narrative_style — sadece YAPI (tempo YOK) ===
   "filter_info.narrative_style": `[YZ bağlamı]
-Hikâye anlatım tarzı.
-- multi: Farklı hikâyelerin ayrı ayrı anlatımı.
+FİLTRE ADI: Hikâye anlatım tarzı — ANLATI YAPISI.
+- multi: Farklı hikâyelerin ayrı ayrı anlatımı (mozaik/parçalı anlatı).
 - reverse: Sondan başa doğru giden hikâye.
-- linear: Baştan sona giden hikâye.
+- linear: Baştan sona doğrusal giden hikâye.
 - flashback: Ara ara geriye dönüşler yapan hikâye.
 - end_first: Sonu önce anlatılıp başı sonra anlatılan hikâye.
 - mid_first: Ortası önce anlatılıp öncesi ve sonrası sonra anlatılan hikâye.
-- fast: Çok fazla olayın olduğu hareketli hikâye.
-- slow: Çok az olayın olduğu durgun hikâye.
-- no_end: Sonu olmayan hikâye.
+- no_end: Sonu olmayan (açık uçlu) hikâye.
 - alt_end: Alternatif sonlu hikâye.
 - alt_narr: Alternatif anlatımlı hikâye.
+DİKKAT: Anlatının TEMPOSU (hızlı/yavaş) buraya DEĞİL, narrative_pace alanına girer. Anlatı yapısı (linear, flashback) ile tempo (fast, slow) farklı kavramlardır.
+${TWO_STAGE_NOTE}`,
+
+  // === FAZ 8 Phase D: narrative_pace — sadece TEMPO ===
+  "filter_info.narrative_pace": `[YZ bağlamı]
+FİLTRE ADI: Anlatının temposu.
+- fast: Çok fazla olayın olduğu hareketli hikâye. Hızlı kurgu, yüksek olay yoğunluğu, sürekli aksiyon.
+- slow: Çok az olayın olduğu durgun hikâye. Yavaş tempolu, uzun planlar, minimal olay örgüsü.
+DİKKAT: Anlatının YAPISI (linear, reverse, flashback, multi vb.) buraya DEĞİL, narrative_style alanına girer. Tempo (hız/yavaşlık) ve yapı (kronoloji) farklı kavramlardır. Örn: "Sondan başa anlatılan yavaş bir film" → narrative_style=reverse + narrative_pace=slow.
+${TWO_STAGE_NOTE}`,
+
+  // === FAZ 8 Phase D: production_category — yapım biçimi + propaganda ===
+  "filter_info.production_category": `[YZ bağlamı]
+FİLTRE ADI: Yapım kategorisi ve ideolojik işlev.
+- amateur: Amatör yapım, çok düşük bütçe, öğrenci/amatör ekip.
+- indie: Bağımsız film, stüdyo dışı, küçük bütçeli.
+- big: Büyük prodüksiyon, 100M$+ bütçe, geniş ekip.
+- bmovie: Düşük bütçeli tür sineması (B movie).
+- studio: Klasik stüdyo filmi (Hollywood/benzeri).
+- propaganda: İdeolojik/propaganda amaçlı film. Filmin ÜRETİM BİÇİMİ değil, ideolojik ve iletişimsel İŞLEVİ vurgulanır. Politik/ideolojik mesaj iletmek için üretilmiş yapımlar.
+DİKKAT: Sanat filmi, avangart, Dogme 95 gibi sinemasal akımlar/yaklaşımlar buraya DEĞİL, cinema_approach alanına girer. El kamerası, müziksiz film gibi teknikler buraya DEĞİL, technical_style alanına girer.
+${TWO_STAGE_NOTE}`,
+
+  // === FAZ 8 Phase D: cinema_approach — sinemasal akım/yaklaşım ===
+  "filter_info.cinema_approach": `[YZ bağlamı]
+FİLTRE ADI: Sinemasal akım, gelenek veya yaklaşım.
+- art: Sanat filmi, deneysel anlatım, festival odaklı, "art-house" geleneği.
+- avant: Avangart film, deneysel/anti-anlatı, biçimsel yenilik arayışı.
+- dogme: Dogme 95 manifestosuna uygun (Lars von Trier & Thomas Vinterberg, 1995), sade üretim kurallarına bağlı (doğal ışık, elde kamera, müzik yok vb. — ama bu teknikler tek başına Dogme 95 kanıtı DEĞİLDİR; manifesto üyeliği ayrıca değerlendirilmelidir).
+DİKKAT: Film TÜRÜ (dram, komedi) ve yapım BÜYÜKLÜĞÜ (indie, big) buraya DEĞİL. Bir teknik (el kamerası) tek başına bu alana kanıt DEĞİLDİR; belirli bir akıma (Dogme 95) üyelik ayrıca değerlendirilmelidir.
+${TWO_STAGE_NOTE}`,
+
+  // === FAZ 8 Phase D: technical_style — kamera + ses/müzik ===
+  "filter_info.technical_style": `[YZ bağlamı]
+FİLTRE ADI: Teknik ve biçimsel tercihler — kamera ve ses/müzik kullanımı.
+- handheld: El kamerası / hareketli kamera baskın (found footage, cinéma vérité, mockumentary vb.).
+- no_music: Müziksiz film. Film boyunca müzik kullanılmamış.
+- rare_music: Nadir/az müzikli film. Müzik sadece kritik anlarda kullanılmış.
+DİKKAT: Bir teknik kullanım (el kamerası) TEK BAŞINA bir sinema akımına (Dogme 95, found footage) kanıt DEĞİLDİR; akım üyeliği cinema_approach alanında ayrıca değerlendirilir. Ses tasarımı (ambient, voiceover, sessiz film) buraya DEĞİL, sound alanına girer. Yapım büyüklüğü (indie, big) buraya DEĞİL, production_category alanına girer.
 ${TWO_STAGE_NOTE}`,
 
   "filter_info.sound": `[YZ bağlamı]
@@ -125,7 +145,6 @@ Aile rehberi. Her içerik türü için intensity ve approach.
 - intensity: none=hiç yok, few=birkaç sahne, side=yan konu, main=ana konu.
 - approach: bad=kötü gösteriyor, neutral=tarafsız kalıyor, legit=meşrulaştırıyor.`,
 
-  // === FAZ 4 RENAME: filter_info.color → filter_info.color_style ===
   "filter_info.color_style": `[YZ bağlamı]
 Filmin görsel renk stili.
 - black_white: Tamamen siyah beyaz.
@@ -143,9 +162,21 @@ Filmin görsel renk stili.
 - mixed_bw_color: Renkli ve siyah beyaz karışık.
 ${TWO_STAGE_NOTE}`,
 
+  // === Phase A'dan: hassas aspect_ratio + tolerans ===
   "filter_info.aspect_ratio": `[YZ bağlamı]
-Filmin en-boy oranı.
-- 1:1, 4:3, 16:9, 18:9, 21:9
+Filmin gerçek en-boy oranı (sinema oranları).
+- 1:1 (kare format)
+- 1.33:1 (klasik 4:3 televizyon)
+- 1.37:1 (Akademi oranı, 1932-1952 Hollywood)
+- 1.66:1 (Avrupa geniş ekran)
+- 1.78:1 (16:9 HDTV)
+- 1.85:1 (Amerikan geniş ekran)
+- 2.00:1 (Univisium / Netflix orijinal)
+- 2.20:1 (70mm Todd-AO)
+- 2.35:1 (CinemaScope, klasik anamorfik)
+- 2.39:1 (modern anamorfik)
+- 2.76:1 (Ultra Panavision 70, çok nadir)
+Eşleşme toleransı: ±0.05 (örn. 2.39:1 filtre 2.35-2.43 aralığındaki filmleri yakalar)
 ${TWO_STAGE_NOTE}`,
 
   "filter_info.original_language": `[YZ bağlamı]
@@ -153,7 +184,22 @@ FİLTRE ADI: Film dili. Kullanıcı "Sadece ana dili dikkate al" seçeneğini i�
 
   "filter_info.dialogue_density_subtitle": `Diyalog yoğunluğu altyazı metninden hesaplanır: karakter sayısı / süre_dk / 10 = yüzde.`,
 
-  "filter_info.award": `Büyük ödüller (Wikidata P166 kazanılan, P1411 aday gösterilen).`
+  "filter_info.award": `[YZ bağlamı]
+FİLTRE ADI: Ödül KAZANMA. Film bu ödülü fiilen kazanmış olmalı.
+Kaynak: Wikidata P166 (award received).
+Seçilen ödül, film tarafından kazanılmışsa eşleşir. Sadece aday gösterilmiş filmler bu filtrede YER ALMAZ.
+${TWO_STAGE_NOTE}`,
+
+  "filter_info.award_nom": `[YZ bağlamı]
+FİLTRE ADI: Ödüle ADAY GÖSTERİLME. Film bu ödüle aday gösterilmiş olmalı (kazanmış olması gerekmez).
+Kaynak: Wikidata P1411 (nominated for).
+Seçilen ödüle aday gösterilmiş filmler eşleşir. Ödülü kazanan filmler de adaylık listesinde yer alıyorsa eşleşir.
+${TWO_STAGE_NOTE}`,
+
+  "filter_info.includeUnknown": `Bilinmeyen veri politikası.
+- Kapalı (varsayılan): Filtre için gerekli alan bilinmiyorsa film listeden çıkarılır (kesin filtre davranışı).
+- Açık: Bilinmeyen veri "bilinmiyor" olarak işaretlenir ama film listeden ÇIKARILMAZ; kullanıcı "bilinmiyor" notu ile birlikte görür.
+Öneri: Yüksek kesinlik gereken filtreler (rated, award, director vb.) için kapalı; gevşek keşif için açık.`
 };
 
 export async function getAllConfig(env) {
@@ -219,4 +265,4 @@ export async function setConfig(env, key, value) {
     `INSERT INTO app_config (key, value, updated_at) VALUES (?, ?, ?)
      ON CONFLICT(key) DO UPDATE SET value = excluded.value, updated_at = excluded.updated_at`
   ).bind(key, value, Math.floor(Date.now() / 1000)).run();
-} 
+    }

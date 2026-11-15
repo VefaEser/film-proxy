@@ -1,6 +1,7 @@
 // llm.js — Gemini + Groq çağrıları, model zincirleri, failover ve prompt şablonları.
 // Faz 7 Aşama A: Gemini %60 + Groq %40 ayrı süre bütçesi, Groq için minimum 1 deneme payı
-import { loadDeadKeys, isKeyDeadForModel, markDeadKey, logLlmCall, getDailyModelCalls, safeJSON } from "./db.js";
+// Faz 8 Phase B-2: in-flight lock + exponential backoff + token logging + RPM soft check
+import { loadDeadKeys, isKeyDeadForModel, markDeadKey, logLlmCall, getDailyModelCalls, safeJSON, checkLlmRpm, acquireInFlightLock, simpleHash } from "./db.js";
 
 export const GEMINI_MODEL_CHAIN = ["gemini-3.8-flash", "gemini-3.7-flash", "gemini-3.6-flash", "gemini-3.5-flash-lite", "gemini-3.1-flash-lite"];
 export const GEMINI_MODEL_DEFAULT = "gemini-3.8-flash";
@@ -11,8 +12,31 @@ const GOOGLE_INTERACTIONS = "https://generativelanguage.googleapis.com/v1beta/in
 const GOOGLE_GENERATE = "https://generativelanguage.googleapis.com/v1beta/models";
 const GROQ_TPM_BUDGET = 7000;
 const LLM_DEADLINE_MS = 60000;
-// === FAZ 7: Gemini/Groq süre bütçesi oranı ===
-const GEMINI_BUDGET_RATIO = 0.6; // %60 Gemini, %40 Groq
+const GEMINI_BUDGET_RATIO = 0.6;
+
+// === FAZ 8 B-2: RPM soft check cache (5s TTL) ===
+const _rpmCheckCache = new Map();
+function _getRpmCheckCached(env, provider, model, keyIndex, limit) {
+  const cacheKey = `${provider}|${model}|${keyIndex}`;
+  const nowMs = Date.now();
+  const cached = _rpmCheckCache.get(cacheKey);
+  if (cached && nowMs - cached.ts < 5000) return cached.promise;
+  const promise = checkLlmRpm(env, provider, model, keyIndex, limit).catch(() => ({ ok: true, count: 0 }));
+  _rpmCheckCache.set(cacheKey, { ts: nowMs, promise });
+  return promise;
+}
+
+// === FAZ 8 B-2: Exponential backoff (retriable hatalar için) ===
+function backoffMs(attempt, errorClass) {
+  if (errorClass === "ratelimit-minute" || errorClass === "ratelimit" || errorClass === "ratelimit-daily") return 0; // key rotation handles
+  if (errorClass === "invalid" || errorClass === "invalid-param") return 0; // won't help
+  return Math.min(1000, 200 * attempt); // network/timeout/5xx: 200, 400, 600, 800, 1000...
+}
+async function sleep(ms) {
+  if (!ms || ms <= 0) return;
+  return new Promise(r => setTimeout(r, ms));
+}
+
 let geminiRR = 0;
 let groqRR = 0;
 const geminiCallLog = new Map();
@@ -93,6 +117,7 @@ function orderGroqModels(chain, promptLen) {
   for (const m of chain) if (!seen.has(m)) { seen.add(m); result.push(m); }
   return result;
 }
+function geminiRpmLimit(model) { return /lite/i.test(model) ? 15 : 5; }
 function classifyError(msg) {
   if (/HTTP 40[13]|invalid.?key|forbidden|unauthor/i.test(msg)) return { type: "invalid", cooldown: 3600, modelWide: false };
   if (/HTTP 429|rate.?limit|quota|exceeded/i.test(msg)) {
@@ -128,6 +153,13 @@ function extractGeminiText(data) {
   if (Array.isArray(steps)) for (const s of steps) walk(s);
   return texts.length ? texts.join("\n") : "";
 }
+function extractGeminiUsage(data) {
+  const meta = data?.usageMetadata || data?.usage || null;
+  if (!meta) return { promptTokens: null, outputTokens: null };
+  const pt = meta.promptTokenCount ?? meta.prompt_tokens ?? null;
+  const ot = meta.candidatesTokenCount ?? meta.totalTokenCount ?? meta.output_tokens ?? meta.completion_tokens ?? null;
+  return { promptTokens: pt, outputTokens: ot };
+}
 async function fetchJSON(url, options = {}, label = "Uzak servis", timeoutMs = 18000, outerSignal) {
   const signals = [];
   if (outerSignal) signals.push(outerSignal);
@@ -158,7 +190,8 @@ async function callGeminiInteractions(env, key, model, prompt, outerSignal) {
   }, `Gemini Interactions ${model}`, 20000, outerSignal);
   const text = extractGeminiText(data);
   if (!text) throw new Error(`Gemini Interactions ${model} yanıtında metin yok.`);
-  return text;
+  const usage = extractGeminiUsage(data);
+  return { text, ...usage };
 }
 async function callGeminiGenerate(env, key, model, prompt, outerSignal) {
   const url = `${GOOGLE_GENERATE}/${encodeURIComponent(model)}:generateContent`;
@@ -168,7 +201,8 @@ async function callGeminiGenerate(env, key, model, prompt, outerSignal) {
   }, `Gemini generateContent ${model}`, 20000, outerSignal);
   const text = extractGeminiText(data);
   if (!text) throw new Error(`Gemini generateContent ${model} yanıtında metin yok.`);
-  return text;
+  const usage = extractGeminiUsage(data);
+  return { text, ...usage };
 }
 async function callGeminiModel(env, key, model, prompt, outerSignal) {
   const errors = [];
@@ -195,7 +229,8 @@ async function callGroq(env, key, model, prompt, maxOutputTokens, useSearch, out
   }, `Groq ${model}`, 30000, outerSignal);
   const text = data?.choices?.[0]?.message?.content || "";
   if (!text) throw new Error(`Groq ${model} yanıtında metin yok.`);
-  return text;
+  const usage = data?.usage || {};
+  return { text, promptTokens: usage.prompt_tokens ?? null, outputTokens: usage.completion_tokens ?? null };
 }
 async function callGroqModel(env, key, model, prompt, maxOutputTokens, useSearch, outerSignal) {
   if (!useSearch) return callGroq(env, key, model, prompt, maxOutputTokens, false, outerSignal);
@@ -206,8 +241,15 @@ async function callGroqModel(env, key, model, prompt, maxOutputTokens, useSearch
   }
 }
 
-// === FAZ 7: Gemini %60 + Groq %40 ayrı süre bütçesi ===
+// === FAZ 8 B-2: In-flight lock wrapper ===
 export async function callLLMWithFallback(env, prompt, maxOutputTokens, useSearch, outerSignal, context = {}) {
+  // Aynı prompt (aynı film + aynı filtreler) → tek çalıştırma
+  const promptStr = String(prompt || "");
+  const lockKey = context.lockKey || `llm:${promptStr.length}:${simpleHash(promptStr)}`;
+  return acquireInFlightLock(lockKey, () => _callLLMWithFallbackInner(env, prompt, maxOutputTokens, useSearch, outerSignal, context));
+}
+
+async function _callLLMWithFallbackInner(env, prompt, maxOutputTokens, useSearch, outerSignal, context = {}) {
   const totalBudgetMs = context.timeoutMs ? Math.min(context.timeoutMs, LLM_DEADLINE_MS) : LLM_DEADLINE_MS;
   const startTs = Date.now();
   const geminiDeadline = startTs + Math.floor(totalBudgetMs * GEMINI_BUDGET_RATIO);
@@ -217,11 +259,10 @@ export async function callLLMWithFallback(env, prompt, maxOutputTokens, useSearc
   const dead = await loadDeadKeys(env);
   const nowSec = () => Math.floor(Date.now() / 1000);
   const maxAttempts = Math.max(1, Math.min(context.maxAttempts ?? 4, 6));
-  // === FAZ 7: Groq için en az 1 deneme payı ===
   const geminiMaxAttempts = Math.max(1, maxAttempts - 1);
   let attempts = 0;
 
-  // === Gemini döngüsü: kendi deadline'ına kadar ===
+  // === Gemini döngüsü ===
   const geminiKeys = [env.GEMINI_API_KEY_1, env.GEMINI_API_KEY_2, env.GEMINI_API_KEY_3].map((k, i) => ({ key: k, index: i + 1 })).filter(x => x.key);
   const rotatedG = rotateKeys(geminiKeys, geminiRR++);
   const geminiModels = orderGeminiModels(buildGeminiChain(env));
@@ -242,16 +283,42 @@ export async function callLLMWithFallback(env, prompt, maxOutputTokens, useSearc
       if (Date.now() > geminiDeadline) break outer;
       if (outerSignal?.aborted) throw new Error("İstemci isteği iptal etti.");
       if (!geminiTryAcquire(model, index)) continue;
+      // === FAZ 8 B-2: RPM soft check ===
+      const rpmLimit = geminiRpmLimit(model);
+      const rpmInfo = await _getRpmCheckCached(env, "gemini", model, index, rpmLimit);
+      if (!rpmInfo.ok) {
+        errors.push(`gemini ${model} key=${index}: RPM soft skip (${rpmInfo.count}/${rpmLimit})`);
+        continue;
+      }
       attempts++;
       const start = Date.now();
+      const wasFallback = attempts > 1;
       try {
         const result = await callGeminiModel(env, key, model, prompt, outerSignal);
-        logLlmCall(env, "gemini", model, index, true, Date.now() - start, null, { ...context, method: context.method || "unknown" });
-        return result;
+        const respTokens = result.outputTokens ?? estimateTokens(result.text);
+        const promptTokens = result.promptTokens ?? estimateTokens(prompt);
+        logLlmCall(env, "gemini", model, index, true, Date.now() - start, null, {
+          ...context,
+          inputTokens: promptTokens,
+          outputTokens: respTokens,
+          wasFallback,
+          fromCache: false,
+          httpStatus: 200,
+          retryCount: attempts - 1
+        });
+        return result.text;
       } catch (e) {
         const msg = String(e.message || e);
         const cls = classifyError(msg);
-        logLlmCall(env, "gemini", model, index, false, Date.now() - start, msg.slice(0, 200), context);
+        logLlmCall(env, "gemini", model, index, false, Date.now() - start, msg.slice(0, 200), {
+          ...context,
+          inputTokens: estimateTokens(prompt),
+          outputTokens: null,
+          wasFallback,
+          fromCache: false,
+          httpStatus: e.status ?? null,
+          retryCount: attempts - 1
+        });
         errors.push(`gemini ${model} key=${index}: ${msg.slice(0, 120)}`);
         if (cls.modelWide) { modelWideIssue = true; errors.push(`[${model} ${cls.type} model-wide]`); }
         else if (cls.type === "ratelimit-daily") {
@@ -261,11 +328,14 @@ export async function callLLMWithFallback(env, prompt, maxOutputTokens, useSearc
           const waitSec = e.retryAfterMs ? Math.ceil(e.retryAfterMs / 1000) : 60;
           await markDeadKey(env, "gemini", index, nowSec() + waitSec, msg.slice(0, 200), model);
         } else if (cls.cooldown) await markDeadKey(env, "gemini", index, nowSec() + cls.cooldown, msg.slice(0, 200), model);
+        // === FAZ 8 B-2: Exponential backoff (retriable hatalar için) ===
+        const delay = backoffMs(attempts, cls.type);
+        if (delay > 0) await sleep(delay);
       }
     }
   }
 
-  // === Groq döngüsü: kalan süre için, toplam deadline'a kadar ===
+  // === Groq döngüsü ===
   const groqKeys = [env.GROQ_API_KEY_1, env.GROQ_API_KEY_2, env.GROQ_API_KEY_3].map((k, i) => ({ key: k, index: i + 1 })).filter(x => x.key);
   const rotatedQ = rotateKeys(groqKeys, groqRR++);
   const groqModels = orderGroqModels(buildGroqChain(env), promptLen);
@@ -281,14 +351,33 @@ export async function callLLMWithFallback(env, prompt, maxOutputTokens, useSearc
         if (outerSignal?.aborted) throw new Error("İstemci isteği iptal etti.");
         attempts++;
         const start = Date.now();
+        const wasFallback = attempts > 1;
         try {
           const result = await callGroqModel(env, key, model, prompt, maxOutputTokens, useSearch, outerSignal);
-          logLlmCall(env, "groq", model, index, true, Date.now() - start, null, context);
-          return result;
+          const respTokens = result.outputTokens ?? estimateTokens(result.text);
+          const promptTokens = result.promptTokens ?? estimateTokens(prompt);
+          logLlmCall(env, "groq", model, index, true, Date.now() - start, null, {
+            ...context,
+            inputTokens: promptTokens,
+            outputTokens: respTokens,
+            wasFallback,
+            fromCache: false,
+            httpStatus: 200,
+            retryCount: attempts - 1
+          });
+          return result.text;
         } catch (e) {
           const msg = String(e.message || e);
           const cls = classifyError(msg);
-          logLlmCall(env, "groq", model, index, false, Date.now() - start, msg.slice(0, 200), context);
+          logLlmCall(env, "groq", model, index, false, Date.now() - start, msg.slice(0, 200), {
+            ...context,
+            inputTokens: estimateTokens(prompt),
+            outputTokens: null,
+            wasFallback,
+            fromCache: false,
+            httpStatus: e.status ?? null,
+            retryCount: attempts - 1
+          });
           errors.push(`groq ${model} key=${index}: ${msg.slice(0, 120)}`);
           if (cls.type === "ratelimit-daily") {
             const tomorrow = new Date(); tomorrow.setUTCHours(0, 0, 0, 0); tomorrow.setUTCDate(tomorrow.getUTCDate() + 1);
@@ -297,6 +386,8 @@ export async function callLLMWithFallback(env, prompt, maxOutputTokens, useSearc
             const waitSec = e.retryAfterMs ? Math.ceil(e.retryAfterMs / 1000) : 60;
             await markDeadKey(env, "groq", index, nowSec() + waitSec, msg.slice(0, 200));
           } else if (cls.cooldown) await markDeadKey(env, "groq", index, nowSec() + cls.cooldown, msg.slice(0, 200));
+          const delay = backoffMs(attempts, cls.type);
+          if (delay > 0) await sleep(delay);
         }
       }
     }
@@ -321,4 +412,4 @@ export async function getPromptTemplate(env, key) {
 export function invalidatePromptCache(key) {
   if (key === "prompt_template.stage1") promptCache.stage1.ts = 0;
   if (key === "prompt_template.stage2") promptCache.stage2.ts = 0;
-      }
+  }

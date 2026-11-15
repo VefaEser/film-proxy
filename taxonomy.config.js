@@ -1,101 +1,140 @@
-// taxonomy.config.js — Faz A: 220 kavramlık merkezi sözlük (backend)
-// VERSION: 1.0.0
-//
-// ⚠️ KRİTİK: TAXONOMY_VERSION app-taxonomy.js ile BİREBİR AYNI olmalı.
-// ⚠️ TMDB_KEYWORD_MAP BOŞ — hiçbir keyword ID doğrulanmamış durumda.
-// ⚠️ TMDB_KEYWORD_CANDIDATES sadece ARAŞTIRMA amaçlıdır, çalışma zamanında KULLANILMAZ.
-//
-// Kategori ayrımı:
-//   - subgenre: Filmin anlatısal/türsel alt kategorisi
-//   - trope:    Olay örgüsü / karakter ilişkisi / dramatik durum kalıbı
-//   - theme:    Filmin işlediği düşünsel/toplumsal/duygusal mesele
+// taxonomy.config.js — Birleştirici modül
+// TAXONOMY_VERSION 2.0.0
+// 76 alt tür + 155 klişe + 75 tema = 306 kavram
+// 4 alt modülden beslenir, dışarıya tek bir API sunar.
+import { SUBGENRES } from "./taxonomy.subgenres.js";
+import { TROPES, TROPE_SUBTYPES } from "./taxonomy.tropes.js";
+import { THEMES } from "./taxonomy.themes.js";
+import { TMDB_KEYWORD_MAP, TMDB_KEYWORD_CANDIDATES, getKeywordIdsForSlug, hasKeywordForSlug } from "./taxonomy.keywords.js";
 
-export const TAXONOMY_VERSION = "1.0.0";
+export const TAXONOMY_VERSION = "2.0.0";
+
+// Re-export (mevcut kod uyumu için)
+export { SUBGENRES, TROPES, THEMES, TROPE_SUBTYPES };
+export { TMDB_KEYWORD_MAP, TMDB_KEYWORD_CANDIDATES, getKeywordIdsForSlug, hasKeywordForSlug };
 
 // ============================================================
-// ALT TÜRLER — 60
+// KATEGORİ SETLERİ
 // ============================================================
-export const SUBGENRES = [
-  { slug: "film_noir", name_tr: "Kara film", name_en: "Film Noir",
-    definition_tr: "1940-50'lerde Hollywood'da gelişen, sert dedektifler, femme fatale karakterler ve ahlaki gri alanlarla örülü karanlık atmosferli suç filmleri.",
-    definition_en: "Dark, morally ambiguous crime films from 1940s-50s Hollywood, featuring hardboiled detectives, femme fatales, and shadowy cinematography.",
-    aliases_tr: ["kara film", "noir"], aliases_en: ["noir", "classic noir"], related_slugs: ["neo_noir", "detective", "gangster"] },
-  { slug: "neo_noir", name_tr: "Yeni kara film", name_en: "Neo-Noir",
-    definition_tr: "Klasik kara film estetiğini modern dönem, teknoloji veya farklı kültürlerde yeniden yorumlayan filmler.",
-    definition_en: "Modern films that reinterpret classic film noir aesthetics in contemporary settings, technologies or cultures.",
-    aliases_tr: ["modern noir", "yeni noir"], aliases_en: ["modern noir", "contemporary noir"], related_slugs: ["film_noir", "psychological_thriller"] },
-  { slug: "heist", name_tr: "Soygun filmi", name_en: "Heist",
-    definition_tr: "Planlı bir soygun veya büyük çaplı bir suç operasyonunun hazırlık, uygulama ve sonrasını merkeze alan filmler.",
-    definition_en: "Films centered on a planned robbery or major criminal operation, covering preparation, execution, and aftermath.",
-    aliases_tr: ["soygun"], aliases_en: ["heist film", "caper"], related_slugs: ["gangster", "one_last_job", "assembling_the_crew"] },
-  { slug: "coming_of_age", name_tr: "Büyüme hikâyesi", name_en: "Coming-of-Age",
-    definition_tr: "Genç bir karakterin ergenlikten yetişkinliğe geçiş sürecini, kimlik arayışını ve olgunlaşmasını merkeze alan filmler.",
-    definition_en: "Films following a young character's transition from adolescence to adulthood, focusing on identity formation and maturation.",
-    aliases_tr: ["ergenlik filmi"], aliases_en: ["coming of age", "bildungsroman"], related_slugs: ["self_discovery", "family_drama"] },
-  { slug: "road_movie", name_tr: "Yol filmi", name_en: "Road Movie",
-    definition_tr: "Karakterlerin uzun bir yolculuk sırasında yaşadığı olaylar ve değişimle şekillenen, mekân değişiminin anlatıyı yönlendirdiği filmler.",
-    definition_en: "Films structured around a long journey where travel itself drives the narrative and character transformation.",
-    aliases_tr: ["yolculuk filmi"], aliases_en: ["road film"], related_slugs: ["buddy_film", "self_discovery"] },
-  { slug: "buddy_film", name_tr: "Dostluk filmi", name_en: "Buddy Film",
-    definition_tr: "İki (veya daha fazla) zıt veya uyumlu karakterin ortak bir hedef doğrultusunda gelişen ilişkisini merkeze alan filmler.",
-    definition_en: "Films centered on the evolving relationship between two (or more) contrasting or complementary characters pursuing a shared goal.",
-    aliases_tr: ["arkadaşlık filmi"], aliases_en: ["buddy movie", "buddy cop"], related_slugs: ["odd_couple", "friendship", "road_movie"] },
-  { slug: "gangster", name_tr: "Gangster filmi", name_en: "Gangster",
-    definition_tr: "Organize suç dünyasının hiyerarşilerini, iktidar mücadelelerini ve şiddet döngülerini merkeze alan filmler.",
-    definition_en: "Films centered on organized crime hierarchies, power struggles and cycles of violence within criminal syndicates.",
-    aliases_tr: ["mafya filmi", "organize suç"], aliases_en: ["mob film", "mafia film"], related_slugs: ["heist", "film_noir", "power"] },
-  { slug: "detective", name_tr: "Dedektif filmi", name_en: "Detective",
-    definition_tr: "Bir dedektifin veya araştırmacının bir suçu veya gizemi çözme sürecini merkeze alan filmler.",
-    definition_en: "Films following a detective or investigator working to solve a crime or mystery.",
-    aliases_tr: ["dedektif"], aliases_en: ["detective film", "sleuth"], related_slugs: ["film_noir", "whodunit", "police_procedural"] },
-  { slug: "police_procedural", name_tr: "Polis soruşturması", name_en: "Police Procedural",
-    definition_tr: "Polis teşkilatının kurumsal işleyişini, soruşturma süreçlerini ve prosedürlerini merkeze alan filmler.",
-    definition_en: "Films centered on police institutional processes, investigation methods and procedural work.",
-    aliases_tr: ["polisiye"], aliases_en: ["cop procedural"], related_slugs: ["detective", "legal_thriller"] },
-  { slug: "courtroom_drama", name_tr: "Mahkeme dramı", name_en: "Courtroom Drama",
-    definition_tr: "Hukuki bir davanın mahkeme salonunda geçen yargılama sürecini merkeze alan dramatik filmler.",
-    definition_en: "Dramatic films set primarily within courtroom proceedings and the legal trial process.",
-    aliases_tr: ["mahkeme filmi"], aliases_en: ["courtroom film", "legal drama"], related_slugs: ["legal_thriller", "justice"] },
-  { slug: "political_thriller", name_tr: "Politik gerilim", name_en: "Political Thriller",
-    definition_tr: "Siyasi güç mücadeleleri, hükümet komploları veya seçim süreçleri etrafında gelişen gerilim filmleri.",
-    definition_en: "Thrillers built around political power struggles, government conspiracies or electoral processes.",
-    aliases_tr: ["siyasi gerilim"], aliases_en: ["political drama thriller"], related_slugs: ["conspiracy_thriller", "power"] },
-  { slug: "psychological_thriller", name_tr: "Psikolojik gerilim", name_en: "Psychological Thriller",
-    definition_tr: "Karakterlerin iç dünyalarına, algı bozukluklarına ve zihinsel çatışmalarına odaklanan gerilim filmleri.",
-    definition_en: "Thrillers focused on characters' inner worlds, perceptual disturbances and psychological conflicts.",
-    aliases_tr: ["psikolojik gerilim"], aliases_en: ["psych thriller"], related_slugs: ["neo_noir", "unreliable_narrator", "conspiracy_thriller"] },
-  { slug: "conspiracy_thriller", name_tr: "Komplo gerilimi", name_en: "Conspiracy Thriller",
-    definition_tr: "Büyük bir örtbas, gizli örgüt veya sistemik yalanın çözülmesi etrafında gelişen gerilim filmleri.",
-    definition_en: "Thrillers centered on the unraveling of a large-scale cover-up, secret organization or systemic lie.",
-    aliases_tr: ["komplo teorisi filmi"], aliases_en: ["conspiracy film"], related_slugs: ["political_thriller", "paranoia", "unreliable_narrator"] },
-  { slug: "spy_thriller", name_tr: "Casusluk filmi", name_en: "Spy Thriller",
-    definition_tr: "Casuslar, ajanlar ve gizli istihbarat operasyonları etrafında gelişen gerilim filmleri.",
-    definition_en: "Thrillers built around spies, agents and secret intelligence operations.",
-    aliases_tr: ["casus filmi"], aliases_en: ["spy film", "espionage thriller"], related_slugs: ["political_thriller", "double_agent"] },
-  { slug: "revenge_thriller", name_tr: "İntikam gerilimi", name_en: "Revenge Thriller",
-    definition_tr: "Bir karakterin uğradığı haksızlık veya zarar sonrası intikam peşine düştüğü gerilim filmleri.",
-    definition_en: "Thrillers following a character's pursuit of vengeance after suffering harm or injustice.",
-    aliases_tr: ["intikam filmi"], aliases_en: ["revenge film", "vengeance film"], related_slugs: ["revenge", "vow_of_vengeance"] },
-  { slug: "survival", name_tr: "Hayatta kalma filmi", name_en: "Survival",
-    definition_tr: "Karakterlerin zorlu doğal veya insan yapımı koşullarda hayatta kalmak için verdiği mücadeleyi merkeze alan filmler.",
-    definition_en: "Films centered on characters struggling to stay alive in harsh natural or man-made conditions.",
-    aliases_tr: ["hayatta kalma"], aliases_en: ["survival film"], related_slugs: ["trapped_together", "humanity_and_nature"] },
-  { slug: "prison_drama", name_tr: "Hapishane dramı", name_en: "Prison Drama",
-    definition_tr: "Cezaevinde geçen, mahkûmlar arasındaki ilişkileri ve hapishane sistemini merkeze alan dram filmleri.",
-    definition_en: "Dramas set in prisons, focusing on inmate relations and the penal system.",
-    aliases_tr: ["hapishane filmi"], aliases_en: ["prison film", "jail drama"], related_slugs: ["freedom", "oppression_authoritarianism"] },
-  { slug: "serial_killer", name_tr: "Seri katil filmi", name_en: "Serial Killer",
-    definition_tr: "Bir seri katilin eylemleri, motivasyonları veya onu durdurmaya çalışan kişileri merkeze alan filmler.",
-    definition_en: "Films centered on a serial killer's acts, motivations, or those trying to stop them.",
-    aliases_tr: ["seri katil"], aliases_en: ["serial killer film"], related_slugs: ["slasher", "detective", "psychological_thriller"] },
-  { slug: "slasher", name_tr: "Slasher korku", name_en: "Slasher",
-    definition_tr: "Genellikle bir grup gencin kimliği gizli bir bıçaklı katil tarafından tek tek avlandığı korku filmleri.",
-    definition_en: "Horror films where a masked or hidden killer stalks and murders a group of (usually young) victims one by one.",
-    aliases_tr: ["bıçaklı korku", "slasher"], aliases_en: ["slasher film"], related_slugs: ["serial_killer", "found_footage_horror"] },
-  { slug: "folk_horror", name_tr: "Halk korkusu", name_en: "Folk Horror",
-    definition_tr: "Kırsal topluluklar, eski ritüeller ve pagan inançları etrafında gelişen korku filmleri.",
-    definition_en: "Horror films built around rural communities, ancient rituals and pagan beliefs.",
-    aliases_tr: ["folk korku", "pagan korku"], aliases_en: ["folk horror film"], related_slugs: ["supernatural_horror", "witch_horror", "migration_displacement"] },
+export const SUBGENRE_SLUGS = new Set(SUBGENRES.map(x => x.slug));
+export const TROPE_SLUGS = new Set(TROPES.map(x => x.slug));
+export const THEME_SLUGS = new Set(THEMES.map(x => x.slug));
+export const ALL_TAXONOMY_SLUGS = new Set([...SUBGENRE_SLUGS, ...TROPE_SLUGS, ...THEME_SLUGS]);
+
+// Kategori meta (frontend için)
+export const TAXONOMY_CATEGORIES = [
+  { key: "subgenres", label: "Alt türler",              count: SUBGENRES.length },
+  { key: "tropes",    label: "Klişeler / anlatı motifleri", count: TROPES.length },
+  { key: "themes",    label: "Temalar",                 count: THEMES.length }
+];
+
+// ============================================================
+// YARDIMCILAR
+// ============================================================
+
+// Bir slug'ı bulur, hangi kategoride olduğunu döner.
+export function findSlugCategory(slug) {
+  const s = String(slug || "").trim();
+  if (!s) return null;
+  if (SUBGENRE_SLUGS.has(s)) return "subgenres";
+  if (TROPE_SLUGS.has(s)) return "tropes";
+  if (THEME_SLUGS.has(s)) return "themes";
+  return null;
+}
+
+// Slug geçerli mi (herhangi bir kategoride)?
+export function isValidTaxonomySlug(slug) {
+  return findSlugCategory(slug) !== null;
+}
+
+// Slug'ın kategoriye uygun olup olmadığını kontrol eder.
+export function isValidSlugForCategory(slug, category) {
+  const s = String(slug || "").trim();
+  if (category === "subgenres") return SUBGENRE_SLUGS.has(s);
+  if (category === "tropes") return TROPE_SLUGS.has(s);
+  if (category === "themes") return THEME_SLUGS.has(s);
+  return false;
+}
+
+// Name/alias araması — kullanıcı özel girişi için.
+// Dönen: { category, slug, matchType } | null
+export function matchUserInputToTaxonomy(input) {
+  const q = String(input || "").trim().toLowerCase();
+  if (!q) return null;
+  const normStr = (s) => String(s || "").toLowerCase().trim();
+
+  const tryMatch = (arr, category) => {
+    // 1) Tam slug
+    for (const e of arr) if (normStr(e.slug) === q) return { category, slug: e.slug, matchType: "slug" };
+    // 2) Tam TR/EN ad
+    for (const e of arr) {
+      if (normStr(e.name_tr) === q || normStr(e.name_en) === q) return { category, slug: e.slug, matchType: "name" };
+    }
+    // 3) Alias
+    for (const e of arr) {
+      const all = [...(e.aliases_tr || []), ...(e.aliases_en || [])];
+      if (all.some(a => normStr(a) === q)) return { category, slug: e.slug, matchType: "alias" };
+    }
+    // 4) Kısmi eşleşme (ad içinde)
+    for (const e of arr) {
+      if (normStr(e.name_tr).includes(q) || normStr(e.name_en).includes(q)) return { category, slug: e.slug, matchType: "partial" };
+    }
+    return null;
+  };
+
+  return tryMatch(SUBGENRES, "subgenres") ||
+         tryMatch(TROPES, "tropes") ||
+         tryMatch(THEMES, "themes");
+}
+
+// Bir kategorideki tüm slug'ları liste olarak döner.
+export function getSlugsForCategory(category) {
+  if (category === "subgenres") return [...SUBGENRE_SLUGS];
+  if (category === "tropes") return [...TROPE_SLUGS];
+  if (category === "themes") return [...THEME_SLUGS];
+  return [];
+}
+
+// Bir slug'ın tüm detaylarını getirir.
+export function getTaxonomyEntry(slug) {
+  const s = String(slug || "").trim();
+  if (!s) return null;
+  const cat = findSlugCategory(s);
+  if (!cat) return null;
+  const arr = cat === "subgenres" ? SUBGENRES : cat === "tropes" ? TROPES : THEMES;
+  return arr.find(e => e.slug === s) || null;
+}
+
+// Sözlük bütünlüğü doğrulaması — startup'ta opsiyonel çağrılabilir.
+export function validateTaxonomy() {
+  const errors = [];
+  const seenSlugs = new Set();
+  const all = [...SUBGENRES, ...TROPES, ...THEMES];
+  for (const e of all) {
+    if (!e.slug) { errors.push(`Boş slug: ${JSON.stringify(e).slice(0, 60)}`); continue; }
+    if (seenSlugs.has(e.slug)) errors.push(`Duplicate slug: ${e.slug}`);
+    seenSlugs.add(e.slug);
+    if (!e.name_tr || !e.name_en) errors.push(`Eksik isim: ${e.slug}`);
+    if (!e.definition_tr || !e.definition_en) errors.push(`Eksik tanım: ${e.slug}`);
+    if (e.subtype && !TROPE_SUBTYPES.has(e.subtype)) errors.push(`Geçersiz subtype: ${e.slug} → ${e.subtype}`);
+  }
+  for (const t of TROPES) if (!t.subtype) errors.push(`Subtype eksik: ${t.slug}`);
+  for (const e of all) {
+    for (const rel of (e.related_slugs || [])) {
+      if (!seenSlugs.has(rel)) errors.push(`Geçersiz related_slug: ${e.slug} → ${rel}`);
+    }
+  }
+  return {
+    ok: errors.length === 0,
+    totalSubgenres: SUBGENRES.length,
+    totalTropes: TROPES.length,
+    totalThemes: THEMES.length,
+    total: all.length,
+    keywordMapped: Object.keys(TMDB_KEYWORD_MAP).length,
+    keywordCandidates: Object.keys(TMDB_KEYWORD_CANDIDATES).length,
+    errors
+  };
+    }d_slugs: ["supernatural_horror", "witch_horror", "migration_displacement"] },
   { slug: "body_horror", name_tr: "Beden korkusu", name_en: "Body Horror",
     definition_tr: "Bedenin fiziksel dönüşümü, çürümesi veya işgali etrafında gelişen korku filmleri.",
     definition_en: "Horror films centered on bodily transformation, decay or invasion.",

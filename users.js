@@ -1,8 +1,4 @@
-// users.js — searchCsvCache: user_rating SQL'den çıkarıldı (gizlilik sızıntısı düzeltmesi)
-// + /public/:username is_public kontrolü
-// + /movie/rating-stats/ 60sn in-memory cache
-// Faz 3: CORS temizlendi
-// Faz 4: /user/visual-profile GET + POST eklendi (girişsiz de erişilebilir)
+// users.js — Faz 8 C-2: refreshCardForImdb çoklu aday disambiguation
 import { getCurrentUserWithAdminBridge } from "./auth.js";
 import { handleMovieDetails } from "./research.js";
 import { evaluateFilters } from "./filters.js";
@@ -34,6 +30,52 @@ function normalizeRatingValue(raw) {
   return null;
 }
 function cleanImdb(raw) { return String(raw || "").trim().replace(/^tt/, ""); }
+
+// === FAZ 8 C-2: Başlık normalizasyonu (disambiguation için) ===
+function normalizeTitle(t) {
+  return String(t || "").toLowerCase().trim()
+    .replace(/ı/g, "i").replace(/İ/g, "i").replace(/ş/g, "s").replace(/Ş/g, "s")
+    .replace(/ğ/g, "g").replace(/Ğ/g, "g").replace(/ü/g, "u").replace(/Ü/g, "u")
+    .replace(/ö/g, "o").replace(/Ö/g, "o").replace(/ç/g, "c").replace(/Ç/g, "c")
+    .replace(/[^a-z0-9]/g, "");
+}
+
+// === FAZ 8 C-2: Çoklu TMDB adayı skorlama ===
+function pickBestTmdbCandidate(candidates, meta) {
+  if (!Array.isArray(candidates) || !candidates.length) return { picked: null, reason: "no-candidate", candidates };
+  if (candidates.length === 1) return { picked: candidates[0], reason: "single", candidates };
+
+  const targetYear = meta.year ? parseInt(meta.year) : null;
+  const targetTitles = [meta.title_original, meta.title_tr, meta.title]
+    .filter(Boolean).map(normalizeTitle).filter(Boolean);
+
+  const scored = candidates.map(c => {
+    let score = 0;
+    const cYear = parseInt(String(c.release_date || "").slice(0, 4));
+    if (targetYear && cYear) {
+      if (targetYear === cYear) score += 100;
+      else if (Math.abs(targetYear - cYear) === 1) score += 30;
+      else if (Math.abs(targetYear - cYear) <= 2) score += 10;
+    }
+    if (targetTitles.length) {
+      const cTitle = normalizeTitle(c.original_title || c.title);
+      const cTitleAlt = normalizeTitle(c.title);
+      for (const t of targetTitles) {
+        if (cTitle === t || cTitleAlt === t) score += 200;
+        else if (cTitle.includes(t) || t.includes(cTitle)) score += 80;
+        else if (cTitleAlt.includes(t) || t.includes(cTitleAlt)) score += 60;
+      }
+    }
+    return { candidate: c, score };
+  });
+  scored.sort((a, b) => b.score - a.score);
+
+  // Benzersiz en yüksek skor (>=100) → otomatik seç
+  if (scored[0].score >= 100 && (scored.length === 1 || scored[1].score < scored[0].score)) {
+    return { picked: scored[0].candidate, reason: "scored", candidates };
+  }
+  return { picked: null, reason: "ambiguous", candidates };
+}
 
 function parseCsv(text) {
   const lines = String(text || "").replace(/^\uFEFF/, "").trim().split(/\r?\n/);
@@ -165,14 +207,29 @@ async function getList(env, userId, listType, page = 1, pageSize = 10, sort = "y
 
 async function getMovieCounts(env, movieId) { if (!env.DB) return { watched: 0, want: 0, wont: 0 }; const { results } = await env.DB.prepare(`SELECT list_type, COUNT(*) AS c FROM user_movies WHERE movie_id = ? GROUP BY list_type`).bind(movieId).all(); const out = { watched: 0, want: 0, wont: 0 }; for (const r of results || []) out[r.list_type] = r.c; return out; }
 
-async function refreshCardForImdb(env, imdbId, signal) {
-  const cleanId = cleanImdb(imdbId); if (!cleanId) throw new Error("imdb_id gerekli");
+// === FAZ 8 C-2: refreshCardForImdb — meta parametresi + disambiguation ===
+async function refreshCardForImdb(env, imdbId, signal, meta = {}) {
+  const cleanId = cleanImdb(imdbId);
+  if (!cleanId) throw new Error("imdb_id gerekli");
   const { tmdb } = await import("./sources.js");
   const findData = await tmdb(env, `/find/tt${cleanId}`, { external_source: "imdb_id", language: "tr-TR" }, signal);
-  const tmdbMovie = (findData.movie_results || [])[0];
-  if (!tmdbMovie) throw new Error("Film TMDB'de bulunamadı");
-  const result = await handleMovieDetails(env, { movie: { id: tmdbMovie.id, imdb_id: `tt${cleanId}`, title: tmdbMovie.title, original_title: tmdbMovie.original_title, release_date: tmdbMovie.release_date, overview: tmdbMovie.overview, poster_path: tmdbMovie.poster_path, vote_average: tmdbMovie.vote_average, vote_count: tmdbMovie.vote_count, genre_ids: tmdbMovie.genre_ids || [] }, forceAll: true }, signal);
-  return { tmdbId: tmdbMovie.id, movie: result.movie };
+  const candidates = findData.movie_results || [];
+  if (!candidates.length) throw new Error("Film TMDB'de bulunamadı");
+
+  const fullMeta = { imdb_id: cleanId, ...meta };
+  const result = pickBestTmdbCandidate(candidates, fullMeta);
+
+  if (!result.picked) {
+    const list = candidates.slice(0, 5).map(c => `TMDB#${c.id} "${c.original_title || c.title}" (${(c.release_date || "").slice(0, 4) || "?"})`).join(" | ");
+    const err = new Error(`IMDb ID (tt${cleanId}) için ${candidates.length} aday bulundu, otomatik seçim yapılamadı: ${list}`);
+    err.code = "ambiguous";
+    err.candidates = candidates.map(c => ({ id: c.id, title: c.original_title || c.title, year: (c.release_date || "").slice(0, 4) || null }));
+    throw err;
+  }
+
+  const tmdbMovie = result.picked;
+  const detailResult = await handleMovieDetails(env, { movie: { id: tmdbMovie.id, imdb_id: `tt${cleanId}`, title: tmdbMovie.title, original_title: tmdbMovie.original_title, release_date: tmdbMovie.release_date, overview: tmdbMovie.overview, poster_path: tmdbMovie.poster_path, vote_average: tmdbMovie.vote_average, vote_count: tmdbMovie.vote_count, genre_ids: tmdbMovie.genre_ids || [] }, forceAll: true }, signal);
+  return { tmdbId: tmdbMovie.id, movie: detailResult.movie, disambiguation: result.reason };
 }
 
 async function searchCsvCache(env, filters, limit, viewerId, query) {
@@ -216,7 +273,6 @@ export async function handleUser(request, env, ctx) {
   const sess = await getCurrentUserWithAdminBridge(env, request);
   const isAuth = !!sess && !sess.is_suspended;
 
-  // === YENİ (Faz 4): /user/visual-profile — GET herkese açık, POST herkese açık (görsel profil poster bazlı deterministik, auth gerektirmez) ===
   if (path === "/visual-profile" && request.method === "GET") {
     const movieId = String(url.searchParams.get("movieId") || "").trim();
     if (!movieId) return jsonErr("movieId gerekli", 400);
@@ -233,7 +289,6 @@ export async function handleUser(request, env, ctx) {
     const fields = body.fields && typeof body.fields === "object" ? body.fields : null;
     if (!fields || !Object.keys(fields).length) return jsonErr("fields gerekli", 400);
     if (Object.keys(fields).length > 20) return jsonErr("Çok fazla alan (max 20)", 400);
-    // Basit boyut limiti: her field value_json 10KB'yi geçmesin
     for (const [k, v] of Object.entries(fields)) {
       if (!v || typeof v !== "object") return jsonErr(`Geçersiz alan: ${k}`, 400);
       try { if (JSON.stringify(v.value).length > 10240) return jsonErr(`Alan çok büyük: ${k}`, 400); } catch { return jsonErr(`Alan serileştirilemiyor: ${k}`, 400); }
@@ -456,11 +511,23 @@ export async function handleUser(request, env, ctx) {
     if (!allowed) return jsonErr("Bu işlem için yetkiniz yok", 403);
     const imdbId = cleanImdb(decodeURIComponent(path.replace("/refresh-card/", "")));
     if (!imdbId) return jsonErr("imdb_id gerekli", 400);
+    // === FAZ 8 C-2: CSV'den metadata çek (disambiguation için) ===
+    let meta = {};
     try {
-      const r = await refreshCardForImdb(env, imdbId, request.signal);
+      const row = await env.DB.prepare("SELECT title_original, title_tr, year FROM user_movies WHERE (imdb_id = ? OR imdb_id = ?) LIMIT 1").bind(imdbId, `tt${imdbId}`).first();
+      if (row) meta = { title_original: row.title_original, title_tr: row.title_tr, year: row.year };
+    } catch (e) { console.warn("refresh-card meta:", e.message); }
+    try {
+      const r = await refreshCardForImdb(env, imdbId, request.signal, meta);
       await env.DB.prepare("UPDATE user_movies SET tmdb_id = ?, updated_at = ? WHERE (imdb_id = ? OR imdb_id = ?)").bind(r.tmdbId, Math.floor(Date.now() / 1000), imdbId, `tt${imdbId}`).run();
-      return jsonRes({ ok: true, tmdbId: r.tmdbId, movie: r.movie, message: "Film kartı oluşturuldu/güncellendi." });
-    } catch (e) { return jsonErr("İşlem başarısız: " + e.message, 500); }
+      return jsonRes({ ok: true, tmdbId: r.tmdbId, movie: r.movie, disambiguation: r.disambiguation, message: "Film kartı oluşturuldu/güncellendi." });
+    } catch (e) {
+      // === FAZ 8 C-2: Ambiguous → 422 + candidates listesi ===
+      if (e.code === "ambiguous") {
+        return jsonRes({ ok: false, error: e.message, code: "ambiguous", candidates: e.candidates || [] }, 422);
+      }
+      return jsonErr("İşlem başarısız: " + e.message, 500);
+    }
   }
   if (path.startsWith("/votes/") && request.method === "GET") { const movieId = decodeURIComponent(path.replace("/votes/", "")); const { results } = await env.DB.prepare("SELECT field, value_json, updated_at FROM user_votes WHERE user_id = ? AND movie_id = ?").bind(sess.user_id, movieId).all(); const votes = {}; for (const r of results || []) votes[r.field] = safeJSON(r.value_json, null); return jsonRes({ movieId, votes }); }
   if (path.startsWith("/votes/") && request.method === "PUT") {
@@ -490,4 +557,4 @@ export async function handleUser(request, env, ctx) {
     return jsonRes({ movieId, aggregated });
   }
   return jsonErr("Kullanıcı route bulunamadı", 404);
-                                                      } 
+}

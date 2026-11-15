@@ -1,4 +1,5 @@
 // llm.js — Gemini + Groq çağrıları, model zincirleri, failover ve prompt şablonları.
+// Faz 7 Aşama A: Gemini %60 + Groq %40 ayrı süre bütçesi, Groq için minimum 1 deneme payı
 import { loadDeadKeys, isKeyDeadForModel, markDeadKey, logLlmCall, getDailyModelCalls, safeJSON } from "./db.js";
 
 export const GEMINI_MODEL_CHAIN = ["gemini-3.8-flash", "gemini-3.7-flash", "gemini-3.6-flash", "gemini-3.5-flash-lite", "gemini-3.1-flash-lite"];
@@ -10,6 +11,8 @@ const GOOGLE_INTERACTIONS = "https://generativelanguage.googleapis.com/v1beta/in
 const GOOGLE_GENERATE = "https://generativelanguage.googleapis.com/v1beta/models";
 const GROQ_TPM_BUDGET = 7000;
 const LLM_DEADLINE_MS = 60000;
+// === FAZ 7: Gemini/Groq süre bütçesi oranı ===
+const GEMINI_BUDGET_RATIO = 0.6; // %60 Gemini, %40 Groq
 let geminiRR = 0;
 let groqRR = 0;
 const geminiCallLog = new Map();
@@ -202,22 +205,29 @@ async function callGroqModel(env, key, model, prompt, maxOutputTokens, useSearch
     return await callGroq(env, key, model, prompt, maxOutputTokens, false, outerSignal);
   }
 }
+
+// === FAZ 7: Gemini %60 + Groq %40 ayrı süre bütçesi ===
 export async function callLLMWithFallback(env, prompt, maxOutputTokens, useSearch, outerSignal, context = {}) {
-  const deadlineMs = context.timeoutMs ? Math.min(context.timeoutMs, LLM_DEADLINE_MS) : LLM_DEADLINE_MS;
-  const deadline = Date.now() + deadlineMs;
+  const totalBudgetMs = context.timeoutMs ? Math.min(context.timeoutMs, LLM_DEADLINE_MS) : LLM_DEADLINE_MS;
+  const startTs = Date.now();
+  const geminiDeadline = startTs + Math.floor(totalBudgetMs * GEMINI_BUDGET_RATIO);
+  const totalDeadline = startTs + totalBudgetMs;
   const errors = [];
   const promptLen = estimateTokens(prompt);
   const dead = await loadDeadKeys(env);
   const nowSec = () => Math.floor(Date.now() / 1000);
   const maxAttempts = Math.max(1, Math.min(context.maxAttempts ?? 4, 6));
+  // === FAZ 7: Groq için en az 1 deneme payı ===
+  const geminiMaxAttempts = Math.max(1, maxAttempts - 1);
   let attempts = 0;
 
+  // === Gemini döngüsü: kendi deadline'ına kadar ===
   const geminiKeys = [env.GEMINI_API_KEY_1, env.GEMINI_API_KEY_2, env.GEMINI_API_KEY_3].map((k, i) => ({ key: k, index: i + 1 })).filter(x => x.key);
   const rotatedG = rotateKeys(geminiKeys, geminiRR++);
   const geminiModels = orderGeminiModels(buildGeminiChain(env));
 
   outer: for (const model of geminiModels) {
-    if (Date.now() > deadline || attempts >= maxAttempts) break;
+    if (Date.now() > geminiDeadline || attempts >= geminiMaxAttempts) break;
     let rpdSkip = false;
     try {
       const daily = await getDailyModelCalls(env, "gemini", model);
@@ -227,9 +237,9 @@ export async function callLLMWithFallback(env, prompt, maxOutputTokens, useSearc
     if (rpdSkip) continue;
     let modelWideIssue = false;
     for (const { key, index } of rotatedG) {
-      if (attempts >= maxAttempts) break outer;
+      if (attempts >= geminiMaxAttempts) break outer;
       if (modelWideIssue || isKeyDeadForModel(dead, model, index)) continue;
-      if (Date.now() > deadline) break outer;
+      if (Date.now() > geminiDeadline) break outer;
       if (outerSignal?.aborted) throw new Error("İstemci isteği iptal etti.");
       if (!geminiTryAcquire(model, index)) continue;
       attempts++;
@@ -255,18 +265,19 @@ export async function callLLMWithFallback(env, prompt, maxOutputTokens, useSearc
     }
   }
 
+  // === Groq döngüsü: kalan süre için, toplam deadline'a kadar ===
   const groqKeys = [env.GROQ_API_KEY_1, env.GROQ_API_KEY_2, env.GROQ_API_KEY_3].map((k, i) => ({ key: k, index: i + 1 })).filter(x => x.key);
   const rotatedQ = rotateKeys(groqKeys, groqRR++);
   const groqModels = orderGroqModels(buildGroqChain(env), promptLen);
 
-  if (groqKeys.length) {
+  if (groqKeys.length && Date.now() < totalDeadline) {
     outerQ: for (const model of groqModels) {
       if (attempts >= maxAttempts) break;
-      if (Date.now() > deadline) break;
+      if (Date.now() > totalDeadline) break;
       for (const { key, index } of rotatedQ) {
         if (attempts >= maxAttempts) break outerQ;
         if (dead.groq.has(index)) continue;
-        if (Date.now() > deadline) break outerQ;
+        if (Date.now() > totalDeadline) break outerQ;
         if (outerSignal?.aborted) throw new Error("İstemci isteği iptal etti.");
         attempts++;
         const start = Date.now();
@@ -291,7 +302,8 @@ export async function callLLMWithFallback(env, prompt, maxOutputTokens, useSearc
     }
   }
 
-  throw new Error(`LLM tüm modellerde başarısız: ${errors.join(" | ")}`);
+  const totalMs = Date.now() - startTs;
+  throw new Error(`LLM tüm modellerde başarısız (${totalMs}ms, Gemini=${Math.floor(totalBudgetMs * GEMINI_BUDGET_RATIO)}ms, Groq=${Math.floor(totalBudgetMs * (1 - GEMINI_BUDGET_RATIO))}ms): ${errors.join(" | ")}`);
 }
 
 export async function getPromptTemplate(env, key) {
@@ -309,4 +321,4 @@ export async function getPromptTemplate(env, key) {
 export function invalidatePromptCache(key) {
   if (key === "prompt_template.stage1") promptCache.stage1.ts = 0;
   if (key === "prompt_template.stage2") promptCache.stage2.ts = 0;
-} 
+      }

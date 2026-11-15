@@ -3,7 +3,7 @@
 // production_category (yapım + propaganda) + cinema_approach (akım) + technical_style (teknik)
 // SCHEMA_VERSION 10 → 11
 const days = (n) => n * 86400;
-export const SCHEMA_VERSION = 11;
+export const SCHEMA_VERSION = 12;
 
 export const CHARACTER_TRAITS_LIST = [
   "male_main", "female_main", "child_main", "lgbt_main",

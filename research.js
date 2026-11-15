@@ -1,6 +1,4 @@
-// research.js — getSiteRatingsBatch toplu kullanım (Risk 2), diğer tüm mantık korundu.
-// + TÜM LLM alanları için array normalize (story_dimensions, character_traits, season, reality, ...)
-// Faz 7 Aşama A: fillDetailsBatch sayısal alan doğrulaması + needMap per-movie gruplama
+// research.js — Faz 8 Phase D: ARRAY_NORMALIZE_LLM_FIELDS taxonomy split
 import { FIELD_DEFS, FIELD_RULES, SEMANTIC_FIELDS, LLM_FIELDS, CHARACTER_TRAITS_LIST, STORY_DIMENSIONS_LIST } from "./fields.config.js";
 import { getProfileRowsBatch, getFieldRowsBatch, getFieldRows, putFieldRowsBatch, putProfileRowsBatch, putFieldRows, putProfileRow, getProfileRow, findStaleFields, movieKey, yearOf, getVerdictsBatch, putVerdictsBatch, getFilmmapCache, getMetatakeExtendedCache, getSiteRatingForMovie, getSiteRatingsBatch } from "./db.js";
 import { callLLMWithFallback, getPromptTemplate } from "./llm.js";
@@ -13,13 +11,14 @@ const FILMMAP_LIMIT = 3;
 const VALID_CHARACTER_TRAITS = new Set(CHARACTER_TRAITS_LIST);
 const VALID_STORY_DIMENSIONS = new Set(STORY_DIMENSIONS_LIST);
 
-// İki aşamalı modele geçen tüm LLM alanları array olarak saklanmalı
+// === FAZ 8 Phase D: production_process çıkarıldı → 4 yeni alan eklendi ===
 const ARRAY_NORMALIZE_LLM_FIELDS = new Set([
-  "season", "reality", "narrative_style", "production_process", "sound",
-  "story_geography", "story_period", "color_style", "location_mode", "aspect_ratio"
+  "season", "reality",
+  "narrative_style", "narrative_pace",
+  "production_category", "cinema_approach", "technical_style",
+  "sound", "story_geography", "story_period", "color_style", "location_mode", "aspect_ratio"
 ]);
 
-// === FAZ 7: Sayısal alan sınırları (LLM hatalı değer dönerse kırpılır) ===
 const NUMERIC_BOUNDS = {
   day_ratio: [0, 100],
   night_ratio: [0, 100],
@@ -29,8 +28,14 @@ const NUMERIC_BOUNDS = {
   location_count: [1, 100]
 };
 
-// === FAZ 7: Stage 2b max grup sayısı (RPM koruması) ===
 const MAX_STAGE2_GROUPS = 3;
+
+const CONFIDENCE = {
+  STATIC: 0.95,
+  WIKIDATA: 0.9,
+  SUBTITLES: 0.9,
+  LLM: 0.7
+};
 
 function buildStage2Rules(fields) { const rules = []; for (const f of fields) { if (FIELD_RULES[f]) rules.push(FIELD_RULES[f]); else if (f === "day_ratio") rules.push(`day_ratio: 0-100 tam sayı`); else if (f === "night_ratio") rules.push(`night_ratio: 0-100 tam sayı`); else if (f === "indoor_ratio") rules.push(`indoor_ratio: 0-100 tam sayı`); else if (f === "dialogue_density") rules.push(`dialogue_density: 0-100 tam sayı`); else if (f === "family_content") rules.push(`family_content: {"main_characters": <int>, "supporting_characters": <int>, "extras": <int>, "<trait>": {"intensity": "none|few|side|main", "approach": "bad|neutral|legit"}}`); else if (f === "story_period") rules.push(`story_period: string[]`); else if (f === "story_locations") rules.push(`story_locations: string[]`); else if (f === "aspect_ratio") rules.push(`aspect_ratio: string[]`); else if (f === "color_style") rules.push(`color_style: string[]`); else if (f === "dialogue_density_subtitle") rules.push(`dialogue_density_subtitle: 0-100 tam sayı`); else if (f === "location_count") rules.push(`location_count: 1-100 tam sayı`); else rules.push(`${f}: uygun değer`); } return rules.join("\n"); }
 function extractJSONArray(text) { const clean = String(text).replace(/^```(?:json)?\s*/i, "").replace(/\s*```\s*$/, "").trim(); const start = clean.indexOf("["), end = clean.lastIndexOf("]"); if (start < 0 || end < start) return null; try { return JSON.parse(clean.slice(start, end + 1)); } catch { return null; } }
@@ -38,7 +43,7 @@ function extractJSON(text) { const clean = String(text).replace(/^```(?:json)?\s
 
 async function classifyBatch(env, movies, filterSentence, filterContext, useSearch, signal, context = {}) { const payload = movies.map(m => ({ id: m.id, title: m.original_title || m.title || "", year: yearOf(m), overview: (m.overview || "").slice(0, 300) })); const template = await getPromptTemplate(env, "prompt_template.stage1"); const prompt = template.replace(/\{\{FILTER_SENTENCE\}\}/g, filterSentence).replace(/\{\{FILTER_CONTEXT\}\}/g, filterContext || "(bağlam yok)").replace(/\{\{MOVIES\}\}/g, JSON.stringify(payload)); const raw = await callLLMWithFallback(env, prompt, 800, useSearch, signal, { ...context, method: "stage1", hasSemantic: true, maxAttempts: 3 }); const arr = extractJSONArray(raw) || []; const byId = new Map(); for (const item of arr) { if (!item || item.id == null) continue; const match = String(item.match || "").toLowerCase(); byId.set(String(item.id), { verdict: ["yes","no","unknown"].includes(match) ? match : "unknown", reason: String(item.reason || "").slice(0, 200) }); } return byId; }
 
-async function fillDetailsBatch(env, movies, staleFields, signal, context = {}) {
+async function fillDetailsBatch(env, movies, staleFields, signal, context = {}, outConfidences = null) {
   const out = new Map();
   if (!staleFields.length || !movies.length) return out;
   const template = await getPromptTemplate(env, "prompt_template.stage2");
@@ -52,6 +57,7 @@ async function fillDetailsBatch(env, movies, staleFields, signal, context = {}) 
   for (const item of arr) {
     if (!item || item.id == null) continue;
     const updates = {};
+    const confidences = {};
     for (const f of staleFields) {
       const val = item[f];
       if (val === undefined || val === null) continue;
@@ -60,6 +66,7 @@ async function fillDetailsBatch(env, movies, staleFields, signal, context = {}) 
         const valid = arrVal.map(x => String(x).trim()).filter(x => x.length > 0);
         if (valid.length) {
           updates[f] = valid;
+          confidences[f] = CONFIDENCE.LLM;
           const slugCount = valid.filter(x => VALID_CHARACTER_TRAITS.has(x)).length;
           if (slugCount === 0) console.warn(`[fillDetails] character_traits: hiç slug yok (${valid.join(", ")}) — filtre eşleşmeyebilir, kart yine de gösterecek`);
           else if (slugCount < valid.length) console.log(`[fillDetails] character_traits: ${slugCount} slug + ${valid.length - slugCount} serbest metin`);
@@ -71,20 +78,19 @@ async function fillDetailsBatch(env, movies, staleFields, signal, context = {}) 
         const valid = arrVal.map(x => String(x).trim()).filter(x => x.length > 0);
         if (valid.length) {
           updates[f] = valid;
+          confidences[f] = CONFIDENCE.LLM;
           const slugCount = valid.filter(x => VALID_STORY_DIMENSIONS.has(x)).length;
           if (slugCount === 0) console.warn(`[fillDetails] story_dimensions: hiç slug yok (${valid.join(", ")}) — filtre eşleşmeyebilir, kart yine de gösterecek`);
           else if (slugCount < valid.length) console.log(`[fillDetails] story_dimensions: ${slugCount} slug + ${valid.length - slugCount} serbest metin`);
         }
         continue;
       }
-      // Diğer LLM array alanları için normalize
       if (ARRAY_NORMALIZE_LLM_FIELDS.has(f)) {
         const arrVal = Array.isArray(val) ? val : [val];
         const valid = arrVal.map(x => String(x).trim()).filter(x => x.length > 0);
-        if (valid.length) updates[f] = valid;
+        if (valid.length) { updates[f] = valid; confidences[f] = CONFIDENCE.LLM; }
         continue;
       }
-      // === FAZ 7: Sayısal alan doğrulaması ===
       if (NUMERIC_BOUNDS[f]) {
         const n = Number(val);
         if (!Number.isFinite(n)) {
@@ -97,11 +103,16 @@ async function fillDetailsBatch(env, movies, staleFields, signal, context = {}) 
           console.warn(`[fillDetails] ${f}: ${n} → ${clamped} (${min}-${max} aralığına kırpıldı)`);
         }
         updates[f] = clamped;
+        confidences[f] = CONFIDENCE.LLM;
         continue;
       }
       updates[f] = val;
+      confidences[f] = CONFIDENCE.LLM;
     }
-    if (Object.keys(updates).length) out.set(String(item.id), updates);
+    if (Object.keys(updates).length) {
+      out.set(String(item.id), updates);
+      if (outConfidences) outConfidences.set(String(item.id), confidences);
+    }
   }
   return out;
 }
@@ -135,7 +146,6 @@ export async function handleResearchStream(env, body, controller, signal) {
     const movies = Array.isArray(body.movies) ? body.movies.slice(0, effectiveBatch) : [];
     const total = movies.length;
     if (!total) { send({ type: "done", movies: [] }); return; }
-    // NOT: forceAll bilinçli tercih — useAI'ı zorla açar; amaç cache'de eksik alanları AI ile doldurmak.
     const settings = { useAI: body.useAI === true || body.forceAll === true, useWebResearch: body.useWebResearch === true };
     const forceRefresh = body.refresh === true || body.forceAll === true;
     const forceAll = body.forceAll === true;
@@ -200,13 +210,13 @@ export async function handleResearchStream(env, body, controller, signal) {
       p.staleDeterministic = [...forced];
     }
     const ENRICH_CONCURRENCY = 4; const allCoveredFields = [];
-    for (let i = 0; i < prepared.length; i += ENRICH_CONCURRENCY) { if (signal?.aborted) return; const group = prepared.slice(i, i + ENRICH_CONCURRENCY); await Promise.all(group.map(async (p, j) => { if (signal?.aborted) return; const idx = i + j; send({ type: "step", index: idx, total, title: p.movie.original_title || p.movie.title, stage: p.staleDeterministic.length ? "zenginleştiriliyor" : "önbellekten", fields: p.staleDeterministic.slice(0, 6) }); try { const classic = await enrichClassic(env, p.movie, p.staleDeterministic, signal); Object.assign(p.profile, classic.updates); if (classic.errors?.length) p.sourceErrors.push(...classic.errors); const covered = [...classic.covered].filter(f => p.profile[f] !== undefined && p.profile[f] !== null); if (covered.length) { p.dirty = true; for (const f of covered) allCoveredFields.push({ movieId: p.movieId, field: f, source: FIELD_DEFS[f]?.source || "unknown" }); } } catch (e) { console.warn("enrich fail:", p.movieId, e.message); p.sourceErrors.push({ source: "enrich", error: String(e.message || e) }); } })); }
+    for (let i = 0; i < prepared.length; i += ENRICH_CONCURRENCY) { if (signal?.aborted) return; const group = prepared.slice(i, i + ENRICH_CONCURRENCY); await Promise.all(group.map(async (p, j) => { if (signal?.aborted) return; const idx = i + j; send({ type: "step", index: idx, total, title: p.movie.original_title || p.movie.title, stage: p.staleDeterministic.length ? "zenginleştiriliyor" : "önbellekten", fields: p.staleDeterministic.slice(0, 6) }); try { const classic = await enrichClassic(env, p.movie, p.staleDeterministic, signal); Object.assign(p.profile, classic.updates); if (classic.errors?.length) p.sourceErrors.push(...classic.errors); const covered = [...classic.covered].filter(f => p.profile[f] !== undefined && p.profile[f] !== null); if (covered.length) { p.dirty = true; for (const f of covered) allCoveredFields.push({ movieId: p.movieId, field: f, source: FIELD_DEFS[f]?.source || "unknown", confidence: CONFIDENCE.STATIC }); } } catch (e) { console.warn("enrich fail:", p.movieId, e.message); p.sourceErrors.push({ source: "enrich", error: String(e.message || e) }); } })); }
     if (allCoveredFields.length) await putFieldRowsBatch(env, allCoveredFields);
     for (const p of prepared) { if (p.profile.imdbID && !p.profile.imdb_id) p.profile.imdb_id = p.profile.imdbID; if (p.movie.imdb_id && !p.profile.imdb_id) p.profile.imdb_id = p.movie.imdb_id; }
-    if (filters.dialogueDensityMin != null) { const subtitleTargets = prepared.filter(p => p.profile.dialogue_density == null || !settings.useAI); if (subtitleTargets.length) { const subFields = []; await Promise.all(subtitleTargets.slice(0, 5).map(async (p) => { try { const r = await fetchSubtitleDensity(env, p.movie, signal); if (r && r.density != null) { p.profile.dialogue_density_subtitle = r.density; p.dirty = true; subFields.push({ movieId: p.movieId, field: "dialogue_density_subtitle", source: r.source || "subtitles" }); } } catch (e) { console.warn("subtitle fail:", p.movieId, e.message); p.sourceErrors.push({ source: "subtitles", error: String(e.message || e) }); } })); if (subFields.length) await putFieldRowsBatch(env, subFields); } }
+    if (filters.dialogueDensityMin != null) { const subtitleTargets = prepared.filter(p => p.profile.dialogue_density == null || !settings.useAI); if (subtitleTargets.length) { const subFields = []; await Promise.all(subtitleTargets.slice(0, 5).map(async (p) => { try { const r = await fetchSubtitleDensity(env, p.movie, signal); if (r && r.density != null) { p.profile.dialogue_density_subtitle = r.density; p.dirty = true; subFields.push({ movieId: p.movieId, field: "dialogue_density_subtitle", source: r.source || "subtitles", confidence: CONFIDENCE.SUBTITLES }); } } catch (e) { console.warn("subtitle fail:", p.movieId, e.message); p.sourceErrors.push({ source: "subtitles", error: String(e.message || e) }); } })); if (subFields.length) await putFieldRowsBatch(env, subFields); } }
     for (const p of prepared) { const mg = Array.isArray(p.movie.genre_ids) ? p.movie.genre_ids : []; if (mg.length) { const pg = Array.isArray(p.profile.genres_ids) ? p.profile.genres_ids : []; const combined = new Set([...pg.map(String), ...mg.map(String)]); p.profile.genres_ids = [...combined].map(x => { const n = Number(x); return Number.isFinite(n) ? n : x; }); } }
     const needWiki = !!(filters.original_work?.include?.length || filters.original_work?.exclude?.length || filters.filming_locations?.include?.length || filters.filming_locations?.exclude?.length || filters.award?.include?.length || filters.award?.exclude?.length);
-    if (needWiki) { const wikiNeeded = prepared.filter(p => ["original_work", "filming_locations", "filming_countries", "awards_ids", "nominated_ids"].some(f => p.staleDeterministic.includes(f))); if (wikiNeeded.length) { const wikiResults = await wikidataBatch(env, wikiNeeded.map(p => p.movie), signal); const wikiCovered = []; for (const p of wikiNeeded) { const rec = wikiResults.get(String(p.movie.id)); if (!rec) continue; if (rec.originalWork) { p.profile.original_work = rec.originalWork; wikiCovered.push({ movieId: p.movieId, field: "original_work", source: "wikidata" }); } if (rec.filmingLocations?.length) { p.profile.filming_locations = rec.filmingLocations; wikiCovered.push({ movieId: p.movieId, field: "filming_locations", source: "wikidata" }); } if (rec.filmingCountries?.length) { p.profile.filming_countries = rec.filmingCountries; wikiCovered.push({ movieId: p.movieId, field: "filming_countries", source: "wikidata" }); } if (rec.awards?.length) { p.profile.awards_ids = rec.awards; wikiCovered.push({ movieId: p.movieId, field: "awards_ids", source: "wikidata" }); } if (rec.nominations?.length) { p.profile.nominated_ids = rec.nominations; wikiCovered.push({ movieId: p.movieId, field: "nominated_ids", source: "wikidata" }); } if (wikiCovered.length) p.dirty = true; } if (wikiCovered.length) await putFieldRowsBatch(env, wikiCovered); } }
+    if (needWiki) { const wikiNeeded = prepared.filter(p => ["original_work", "filming_locations", "filming_countries", "awards_ids", "nominated_ids"].some(f => p.staleDeterministic.includes(f))); if (wikiNeeded.length) { const wikiResults = await wikidataBatch(env, wikiNeeded.map(p => p.movie), signal); const wikiCovered = []; for (const p of wikiNeeded) { const rec = wikiResults.get(String(p.movie.id)); if (!rec) continue; if (rec.originalWork) { p.profile.original_work = rec.originalWork; wikiCovered.push({ movieId: p.movieId, field: "original_work", source: "wikidata", confidence: CONFIDENCE.WIKIDATA }); } if (rec.filmingLocations?.length) { p.profile.filming_locations = rec.filmingLocations; wikiCovered.push({ movieId: p.movieId, field: "filming_locations", source: "wikidata", confidence: CONFIDENCE.WIKIDATA }); } if (rec.filmingCountries?.length) { p.profile.filming_countries = rec.filmingCountries; wikiCovered.push({ movieId: p.movieId, field: "filming_countries", source: "wikidata", confidence: CONFIDENCE.WIKIDATA }); } if (rec.awards?.length) { p.profile.awards_ids = rec.awards; wikiCovered.push({ movieId: p.movieId, field: "awards_ids", source: "wikidata", confidence: CONFIDENCE.WIKIDATA }); } if (rec.nominations?.length) { p.profile.nominated_ids = rec.nominations; wikiCovered.push({ movieId: p.movieId, field: "nominated_ids", source: "wikidata", confidence: CONFIDENCE.WIKIDATA }); } if (wikiCovered.length) p.dirty = true; } if (wikiCovered.length) await putFieldRowsBatch(env, wikiCovered); } }
     const afterLocal = prepared.filter(p => evaluateFilters(p.profile, filters, null, null, null).match);
     const stage2bFields = (() => { if (forceAll && settings.useAI) return LLM_FIELDS; const fields = new Set(ratioFieldsNeeded(filters)); for (const f of locationFieldsNeeded(filters)) fields.add(f); if (filters.story_locations && (filters.story_locations.include?.length || filters.story_locations.exclude?.length)) if (afterLocal.some(p => !p.profile.story_locations || !p.profile.story_locations.length)) fields.add("story_locations"); if (filters.related_films && (filters.related_films.include?.length || filters.related_films.exclude?.length)) if (afterLocal.some(p => !p.profile.related_films || !p.profile.related_films.length)) fields.add("related_films"); if (filters.color_style && (filters.color_style.include?.length || filters.color_style.exclude?.length)) if (afterLocal.some(p => !p.profile.color_style || !p.profile.color_style.length)) fields.add("color_style"); return Array.from(fields); })();
     const useStage2b = settings.useAI && stage2bFields.length > 0;
@@ -221,7 +231,6 @@ export async function handleResearchStream(env, body, controller, signal) {
         const need = stage2bFields.filter(f => forceAll || !p.profile[f] || (Array.isArray(p.profile[f]) && p.profile[f].length === 0) || (FIELD_DEFS[f]?.source === "llm" && stale.includes(f)));
         if (need.length) needMap.set(p.movieId, need);
       }
-      // === FAZ 7: Per-movie gruplama — her film kendi ihtiyacını alır ===
       if (needMap.size > 0 && !signal?.aborted) {
         const groupsBySignature = new Map();
         for (const p of afterLocal) {
@@ -236,7 +245,6 @@ export async function handleResearchStream(env, body, controller, signal) {
           groupsToProcess = [...groupsBySignature.values()];
           console.log(`[stage2] ${groupsToProcess.length} grup işlenecek: ${groupsToProcess.map(g => `${g.movies.length}f×${g.fields.length}a`).join(", ")}`);
         } else {
-          // Çok fazla farklı ihtiyaç grubu varsa → tek union gruba indir (mevcut davranış, RPM koruması)
           const allFields = [...new Set([].concat(...[...needMap.values()]))];
           const allMovies = afterLocal.filter(p => needMap.has(p.movieId));
           groupsToProcess = [{ fields: allFields, movies: allMovies }];
@@ -245,15 +253,20 @@ export async function handleResearchStream(env, body, controller, signal) {
         for (const group of groupsToProcess) {
           if (signal?.aborted) break;
           try {
-            const results = await fillDetailsBatch(env, group.movies.map(p => p.movie), group.fields, signal, { method: "stage2" });
+            const llmConf = new Map();
+            const results = await fillDetailsBatch(env, group.movies.map(p => p.movie), group.fields, signal, { method: "stage2" }, llmConf);
             const llmCovered = [];
             for (const p of group.movies) {
               if (signal?.aborted) break;
               const updates = results.get(String(p.movie.id)) || {};
               if (!Object.keys(updates).length) continue;
               Object.assign(p.profile, updates);
+              const confMap = llmConf.get(String(p.movie.id)) || {};
               const covered = Object.keys(updates).filter(f => p.profile[f] !== undefined && p.profile[f] !== null);
-              if (covered.length) { p.dirty = true; for (const f of covered) llmCovered.push({ movieId: p.movieId, field: f, source: "llm" }); }
+              if (covered.length) {
+                p.dirty = true;
+                for (const f of covered) llmCovered.push({ movieId: p.movieId, field: f, source: "llm", confidence: confMap[f] ?? CONFIDENCE.LLM });
+              }
             }
             if (llmCovered.length) await putFieldRowsBatch(env, llmCovered);
           } catch (e) {
@@ -344,10 +357,25 @@ export async function handleMovieDetails(env, body, signal) {
   const staleDet = stale.filter(f => FIELD_DEFS[f]?.source !== "llm");
   const staleLLM = stale.filter(f => FIELD_DEFS[f]?.source === "llm");
   const sourceErrors = [];
-  if (staleDet.length) { const classic = await enrichClassic(env, movie, staleDet, signal); Object.assign(profile, classic.updates); if (classic.errors?.length) sourceErrors.push(...classic.errors); const covered = [...classic.covered].filter(f => profile[f] !== undefined && profile[f] !== null); if (covered.length) dirty = true; await putFieldRows(env, movieId, covered, Object.fromEntries(covered.map(f => [f, FIELD_DEFS[f]?.source || "unknown"]))); }
+  if (staleDet.length) { const classic = await enrichClassic(env, movie, staleDet, signal); Object.assign(profile, classic.updates); if (classic.errors?.length) sourceErrors.push(...classic.errors); const covered = [...classic.covered].filter(f => profile[f] !== undefined && profile[f] !== null); if (covered.length) dirty = true; const confLookup = {}; for (const f of covered) confLookup[f] = CONFIDENCE.STATIC; await putFieldRows(env, movieId, covered, Object.fromEntries(covered.map(f => [f, FIELD_DEFS[f]?.source || "unknown"])), confLookup); }
   if (Array.isArray(movie.genre_ids) && movie.genre_ids.length) { const pg = Array.isArray(profile.genres_ids) ? profile.genres_ids : []; const combined = new Set([...pg.map(String), ...movie.genre_ids.map(String)]); profile.genres_ids = [...combined].map(x => { const n = Number(x); return Number.isFinite(n) ? n : x; }); }
-  if (staleLLM.length || forceAll) { const llmFieldsToFill = forceAll ? LLM_FIELDS : staleLLM; if (llmFieldsToFill.length) { try { const updates = await fillDetailsBatch(env, [movie], llmFieldsToFill, signal, { movie_id: movieId, maxAttempts: 3, timeoutMs: 30000 }); const u = updates.get(String(movie.id)) || {}; Object.assign(profile, u); const covered = Object.keys(u).filter(f => profile[f] !== undefined && profile[f] !== null); if (covered.length) dirty = true; await putFieldRows(env, movieId, covered, Object.fromEntries(covered.map(f => [f, "llm"]))); } catch (e) { console.warn("stage2 details fail:", e.message); sourceErrors.push({ source: "llm", error: String(e.message || e) }); } } }
-  if (profile.dialogue_density_subtitle == null || forceAll) { try { const r = await fetchSubtitleDensity(env, movie, signal); if (r && r.density != null) { profile.dialogue_density_subtitle = r.density; dirty = true; await putFieldRows(env, movieId, ["dialogue_density_subtitle"], { dialogue_density_subtitle: r.source || "subtitles" }); } } catch (e) { console.warn("subtitle details fail:", e.message); } }
+  if (staleLLM.length || forceAll) {
+    const llmFieldsToFill = forceAll ? LLM_FIELDS : staleLLM;
+    if (llmFieldsToFill.length) {
+      try {
+        const llmConf = new Map();
+        const updates = await fillDetailsBatch(env, [movie], llmFieldsToFill, signal, { movie_id: movieId, maxAttempts: 3, timeoutMs: 30000 }, llmConf);
+        const u = updates.get(String(movie.id)) || {};
+        Object.assign(profile, u);
+        const confMap = llmConf.get(String(movie.id)) || {};
+        const covered = Object.keys(u).filter(f => profile[f] !== undefined && profile[f] !== null);
+        if (covered.length) dirty = true;
+        const confLookup = {}; for (const f of covered) confLookup[f] = confMap[f] ?? CONFIDENCE.LLM;
+        await putFieldRows(env, movieId, covered, Object.fromEntries(covered.map(f => [f, "llm"])), confLookup);
+      } catch (e) { console.warn("stage2 details fail:", e.message); sourceErrors.push({ source: "llm", error: String(e.message || e) }); }
+    }
+  }
+  if (profile.dialogue_density_subtitle == null || forceAll) { try { const r = await fetchSubtitleDensity(env, movie, signal); if (r && r.density != null) { profile.dialogue_density_subtitle = r.density; dirty = true; await putFieldRows(env, movieId, ["dialogue_density_subtitle"], { dialogue_density_subtitle: r.source || "subtitles" }, { dialogue_density_subtitle: CONFIDENCE.SUBTITLES }); } } catch (e) { console.warn("subtitle details fail:", e.message); } }
   if (profile.imdbID && !profile.imdb_id) profile.imdb_id = profile.imdbID;
   if (movie.imdb_id && !profile.imdb_id) profile.imdb_id = movie.imdb_id;
   if (dirty || forceAll) await putProfileRow(env, movieId, movie.title || profile.title || profile.original_title, yearOf(movie), profile, forceAll);

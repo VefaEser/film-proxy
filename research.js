@@ -1,4 +1,4 @@
-// research.js — Faz B: taxonomy alanları AI'ya dahil edildi (forceAll HARİÇ)
+// research.js — Faz C fix: handleMovieDetails forceTaxonomy parametresi
 import { FIELD_DEFS, FIELD_RULES, SEMANTIC_FIELDS, LLM_FIELDS, CHARACTER_TRAITS_LIST, STORY_DIMENSIONS_LIST, TAXONOMY_LLM_FIELDS } from "./fields.config.js";
 import { isValidSlugForCategory } from "./taxonomy.config.js";
 import { getProfileRowsBatch, getFieldRowsBatch, getFieldRows, putFieldRowsBatch, putProfileRowsBatch, putFieldRows, putProfileRow, getProfileRow, findStaleFields, movieKey, yearOf, getVerdictsBatch, putVerdictsBatch, getFilmmapCache, getMetatakeExtendedCache, getSiteRatingForMovie, getSiteRatingsBatch } from "./db.js";
@@ -12,7 +12,6 @@ const FILMMAP_LIMIT = 3;
 const VALID_CHARACTER_TRAITS = new Set(CHARACTER_TRAITS_LIST);
 const VALID_STORY_DIMENSIONS = new Set(STORY_DIMENSIONS_LIST);
 
-// === FAZ B: taxonomy alanları eklendi ===
 const ARRAY_NORMALIZE_LLM_FIELDS = new Set([
   "season", "reality",
   "narrative_style", "narrative_pace",
@@ -87,7 +86,6 @@ async function fillDetailsBatch(env, movies, staleFields, signal, context = {}, 
         }
         continue;
       }
-      // === FAZ B: Taxonomy slug validasyonu (whitelist) ===
       if (f === "subgenres" || f === "tropes" || f === "themes") {
         const arrVal = Array.isArray(val) ? val : [val];
         const valid = arrVal.map(x => String(x).trim()).filter(x => x.length > 0 && isValidSlugForCategory(x, f));
@@ -210,7 +208,6 @@ export async function handleResearchStream(env, body, controller, signal) {
     if (needMetatake) await Promise.all(prepared.map(async (p) => { if (signal?.aborted) return; try { const mt = await metatakeExtended(env, p.movie, signal); if (mt) { if (mt.narrative_setting?.length && (!p.profile.story_locations || !p.profile.story_locations.length)) p.profile.story_locations = mt.narrative_setting; if (mt.kindred_films?.length && (!p.profile.related_films || !p.profile.related_films.length)) p.profile.related_films = mt.kindred_films; if (mt.awards?.length) { const s = new Set(p.profile.awards_ids || []); for (const a of mt.awards) s.add(String(a)); p.profile.awards_ids = [...s]; } if (mt.locations?.length) p.metatakeLocations = mt.locations; } } catch (e) { console.warn("metatake fail:", e.message); p.sourceErrors.push({ source: "metatake", error: String(e.message || e) }); } }));
     for (const p of prepared) {
       let stale = findStaleFields(p.profile, p.fieldRows, forceRefresh);
-      // === FAZ B: forceAll taxonomy'yi HARİÇ tutar ===
       if (forceAll) stale = Object.keys(FIELD_DEFS).filter(f => !TAXONOMY_LLM_FIELDS.includes(f));
       p.staleDeterministic = stale.filter(f => FIELD_DEFS[f]?.source !== "llm");
       const forced = new Set(p.staleDeterministic);
@@ -230,7 +227,6 @@ export async function handleResearchStream(env, body, controller, signal) {
     const needWiki = !!(filters.original_work?.include?.length || filters.original_work?.exclude?.length || filters.filming_locations?.include?.length || filters.filming_locations?.exclude?.length || filters.award?.include?.length || filters.award?.exclude?.length);
     if (needWiki) { const wikiNeeded = prepared.filter(p => ["original_work", "filming_locations", "filming_countries", "awards_ids", "nominated_ids"].some(f => p.staleDeterministic.includes(f))); if (wikiNeeded.length) { const wikiResults = await wikidataBatch(env, wikiNeeded.map(p => p.movie), signal); const wikiCovered = []; for (const p of wikiNeeded) { const rec = wikiResults.get(String(p.movie.id)); if (!rec) continue; if (rec.originalWork) { p.profile.original_work = rec.originalWork; wikiCovered.push({ movieId: p.movieId, field: "original_work", source: "wikidata", confidence: CONFIDENCE.WIKIDATA }); } if (rec.filmingLocations?.length) { p.profile.filming_locations = rec.filmingLocations; wikiCovered.push({ movieId: p.movieId, field: "filming_locations", source: "wikidata", confidence: CONFIDENCE.WIKIDATA }); } if (rec.filmingCountries?.length) { p.profile.filming_countries = rec.filmingCountries; wikiCovered.push({ movieId: p.movieId, field: "filming_countries", source: "wikidata", confidence: CONFIDENCE.WIKIDATA }); } if (rec.awards?.length) { p.profile.awards_ids = rec.awards; wikiCovered.push({ movieId: p.movieId, field: "awards_ids", source: "wikidata", confidence: CONFIDENCE.WIKIDATA }); } if (rec.nominations?.length) { p.profile.nominated_ids = rec.nominations; wikiCovered.push({ movieId: p.movieId, field: "nominated_ids", source: "wikidata", confidence: CONFIDENCE.WIKIDATA }); } if (wikiCovered.length) p.dirty = true; } if (wikiCovered.length) await putFieldRowsBatch(env, wikiCovered); } }
     const afterLocal = prepared.filter(p => evaluateFilters(p.profile, filters, null, null, null).match);
-    // === FAZ B: Taxonomy filtreleri (include VEYA exclude) aktifken TTL/stale kontrolüyle ekle ===
     const taxonomyRequested = taxonomyFieldsNeeded(filters);
     const stage2bFields = (() => {
       if (forceAll && settings.useAI) return LLM_FIELDS;
@@ -239,7 +235,6 @@ export async function handleResearchStream(env, body, controller, signal) {
       if (filters.story_locations && (filters.story_locations.include?.length || filters.story_locations.exclude?.length)) if (afterLocal.some(p => !p.profile.story_locations || !p.profile.story_locations.length)) fields.add("story_locations");
       if (filters.related_films && (filters.related_films.include?.length || filters.related_films.exclude?.length)) if (afterLocal.some(p => !p.profile.related_films || !p.profile.related_films.length)) fields.add("related_films");
       if (filters.color_style && (filters.color_style.include?.length || filters.color_style.exclude?.length)) if (afterLocal.some(p => !p.profile.color_style || !p.profile.color_style.length)) fields.add("color_style");
-      // === FAZ B: Taxonomy alanları — sadece aktif olanlar + stale ise ===
       if (taxonomyRequested.length) {
         for (const f of taxonomyRequested) {
           if (afterLocal.some(p => {
@@ -373,6 +368,8 @@ export async function handleResearchStream(env, body, controller, signal) {
 export async function handleMovieDetails(env, body, signal) {
   const movie = body?.movie; if (!movie || !movie.id) throw Object.assign(new Error("movie gerekli"), { status: 400 });
   const forceAll = body.forceAll === true;
+  // ✅ YENİ: forceTaxonomy — manuel yenilemede taxonomy alanlarını doldurur
+  const forceTaxonomy = body.forceTaxonomy === true;
   const movieId = movieKey(movie);
   const existing = await getProfileRow(env, movieId); const fieldRows = await getFieldRows(env, movieId);
   const profile = existing?.data || {};
@@ -400,7 +397,6 @@ export async function handleMovieDetails(env, body, signal) {
   const sourceErrors = [];
   if (staleDet.length) { const classic = await enrichClassic(env, movie, staleDet, signal); Object.assign(profile, classic.updates); if (classic.errors?.length) sourceErrors.push(...classic.errors); const covered = [...classic.covered].filter(f => profile[f] !== undefined && profile[f] !== null); if (covered.length) dirty = true; const confLookup = {}; for (const f of covered) confLookup[f] = CONFIDENCE.STATIC; await putFieldRows(env, movieId, covered, Object.fromEntries(covered.map(f => [f, FIELD_DEFS[f]?.source || "unknown"])), confLookup); }
   if (Array.isArray(movie.genre_ids) && movie.genre_ids.length) { const pg = Array.isArray(profile.genres_ids) ? profile.genres_ids : []; const combined = new Set([...pg.map(String), ...movie.genre_ids.map(String)]); profile.genres_ids = [...combined].map(x => { const n = Number(x); return Number.isFinite(n) ? n : x; }); }
-  // === FAZ B: LLM bloğu — forceAll'da taxonomy HARİÇ (LLM_FIELDS zaten taxonomy'siz) ===
   if (staleLLM.length || forceAll) {
     const llmFieldsToFill = (forceAll ? LLM_FIELDS : staleLLM).filter(f => !TAXONOMY_LLM_FIELDS.includes(f));
     if (llmFieldsToFill.length) {
@@ -417,8 +413,10 @@ export async function handleMovieDetails(env, body, signal) {
       } catch (e) { console.warn("stage2 details fail:", e.message); sourceErrors.push({ source: "llm", error: String(e.message || e) }); }
     }
   }
-  // === FAZ B: Taxonomy alanları — SADECE stale ise doldur, forceAll tetiklemez ===
-  const staleTaxonomy = forceAll ? [] : stale.filter(f => TAXONOMY_LLM_FIELDS.includes(f));
+  // ✅ YENİ: forceTaxonomy veya stale taxonomy varsa doldur
+  const staleTaxonomy = (forceTaxonomy || forceAll)
+    ? stale.filter(f => TAXONOMY_LLM_FIELDS.includes(f))
+    : stale.filter(f => TAXONOMY_LLM_FIELDS.includes(f));
   if (staleTaxonomy.length) {
     try {
       const llmConf = new Map();
@@ -446,4 +444,4 @@ export async function handleMovieDetails(env, body, signal) {
   try { const sr = await getSiteRatingForMovie(env, { movieId, tmdbId: movie.id, imdbId: merged.imdbID || merged.imdb_id }); merged.site_rating = sr.avg; merged.site_rating_count = sr.count; } catch {}
   if (sourceErrors.length) merged._source_errors = sourceErrors;
   return { movie: merged };
-  }
+  } 

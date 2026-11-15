@@ -1,22 +1,24 @@
-// research.js — Faz 8 Phase D: ARRAY_NORMALIZE_LLM_FIELDS taxonomy split
-import { FIELD_DEFS, FIELD_RULES, SEMANTIC_FIELDS, LLM_FIELDS, CHARACTER_TRAITS_LIST, STORY_DIMENSIONS_LIST } from "./fields.config.js";
+// research.js — Faz B: taxonomy alanları AI'ya dahil edildi (forceAll HARİÇ)
+import { FIELD_DEFS, FIELD_RULES, SEMANTIC_FIELDS, LLM_FIELDS, CHARACTER_TRAITS_LIST, STORY_DIMENSIONS_LIST, TAXONOMY_LLM_FIELDS } from "./fields.config.js";
+import { isValidSlugForCategory } from "./taxonomy.config.js";
 import { getProfileRowsBatch, getFieldRowsBatch, getFieldRows, putFieldRowsBatch, putProfileRowsBatch, putFieldRows, putProfileRow, getProfileRow, findStaleFields, movieKey, yearOf, getVerdictsBatch, putVerdictsBatch, getFilmmapCache, getMetatakeExtendedCache, getSiteRatingForMovie, getSiteRatingsBatch } from "./db.js";
 import { callLLMWithFallback, getPromptTemplate } from "./llm.js";
 import { enrichClassic, sanitizePeopleField } from "./enrich.js";
 import { filmmapLocations, metatakeExtended, wikidataBatch, fetchSubtitleDensity } from "./sources.js";
-import { buildFilterSentence, buildFilterContext, semanticSignature, hasSemanticFilters, ratioFieldsNeeded, locationFieldsNeeded, evaluateFilters, getLocationCount } from "./filters.js";
+import { buildFilterSentence, buildFilterContext, semanticSignature, hasSemanticFilters, ratioFieldsNeeded, locationFieldsNeeded, taxonomyFieldsNeeded, evaluateFilters, getLocationCount } from "./filters.js";
 import { getAllConfig, getMovieLists } from "./config.js";
 
 const FILMMAP_LIMIT = 3;
 const VALID_CHARACTER_TRAITS = new Set(CHARACTER_TRAITS_LIST);
 const VALID_STORY_DIMENSIONS = new Set(STORY_DIMENSIONS_LIST);
 
-// === FAZ 8 Phase D: production_process çıkarıldı → 4 yeni alan eklendi ===
+// === FAZ B: taxonomy alanları eklendi ===
 const ARRAY_NORMALIZE_LLM_FIELDS = new Set([
   "season", "reality",
   "narrative_style", "narrative_pace",
   "production_category", "cinema_approach", "technical_style",
-  "sound", "story_geography", "story_period", "color_style", "location_mode", "aspect_ratio"
+  "sound", "story_geography", "story_period", "color_style", "location_mode", "aspect_ratio",
+  "subgenres", "tropes", "themes"
 ]);
 
 const NUMERIC_BOUNDS = {
@@ -83,6 +85,15 @@ async function fillDetailsBatch(env, movies, staleFields, signal, context = {}, 
           if (slugCount === 0) console.warn(`[fillDetails] story_dimensions: hiç slug yok (${valid.join(", ")}) — filtre eşleşmeyebilir, kart yine de gösterecek`);
           else if (slugCount < valid.length) console.log(`[fillDetails] story_dimensions: ${slugCount} slug + ${valid.length - slugCount} serbest metin`);
         }
+        continue;
+      }
+      // === FAZ B: Taxonomy slug validasyonu (whitelist) ===
+      if (f === "subgenres" || f === "tropes" || f === "themes") {
+        const arrVal = Array.isArray(val) ? val : [val];
+        const valid = arrVal.map(x => String(x).trim()).filter(x => x.length > 0 && isValidSlugForCategory(x, f));
+        const rejected = arrVal.length - valid.length;
+        if (rejected > 0) console.warn(`[fillDetails] ${f}: ${rejected} geçersiz slug reddedildi (whitelist dışı)`);
+        if (valid.length) { updates[f] = valid; confidences[f] = CONFIDENCE.LLM; }
         continue;
       }
       if (ARRAY_NORMALIZE_LLM_FIELDS.has(f)) {
@@ -199,7 +210,8 @@ export async function handleResearchStream(env, body, controller, signal) {
     if (needMetatake) await Promise.all(prepared.map(async (p) => { if (signal?.aborted) return; try { const mt = await metatakeExtended(env, p.movie, signal); if (mt) { if (mt.narrative_setting?.length && (!p.profile.story_locations || !p.profile.story_locations.length)) p.profile.story_locations = mt.narrative_setting; if (mt.kindred_films?.length && (!p.profile.related_films || !p.profile.related_films.length)) p.profile.related_films = mt.kindred_films; if (mt.awards?.length) { const s = new Set(p.profile.awards_ids || []); for (const a of mt.awards) s.add(String(a)); p.profile.awards_ids = [...s]; } if (mt.locations?.length) p.metatakeLocations = mt.locations; } } catch (e) { console.warn("metatake fail:", e.message); p.sourceErrors.push({ source: "metatake", error: String(e.message || e) }); } }));
     for (const p of prepared) {
       let stale = findStaleFields(p.profile, p.fieldRows, forceRefresh);
-      if (forceAll) stale = Object.keys(FIELD_DEFS);
+      // === FAZ B: forceAll taxonomy'yi HARİÇ tutar ===
+      if (forceAll) stale = Object.keys(FIELD_DEFS).filter(f => !TAXONOMY_LLM_FIELDS.includes(f));
       p.staleDeterministic = stale.filter(f => FIELD_DEFS[f]?.source !== "llm");
       const forced = new Set(p.staleDeterministic);
       if (filters.company && (!Array.isArray(p.profile.production_companies_ids) || p.profile.production_companies_ids.length === 0)) forced.add("production_companies_ids");
@@ -218,7 +230,29 @@ export async function handleResearchStream(env, body, controller, signal) {
     const needWiki = !!(filters.original_work?.include?.length || filters.original_work?.exclude?.length || filters.filming_locations?.include?.length || filters.filming_locations?.exclude?.length || filters.award?.include?.length || filters.award?.exclude?.length);
     if (needWiki) { const wikiNeeded = prepared.filter(p => ["original_work", "filming_locations", "filming_countries", "awards_ids", "nominated_ids"].some(f => p.staleDeterministic.includes(f))); if (wikiNeeded.length) { const wikiResults = await wikidataBatch(env, wikiNeeded.map(p => p.movie), signal); const wikiCovered = []; for (const p of wikiNeeded) { const rec = wikiResults.get(String(p.movie.id)); if (!rec) continue; if (rec.originalWork) { p.profile.original_work = rec.originalWork; wikiCovered.push({ movieId: p.movieId, field: "original_work", source: "wikidata", confidence: CONFIDENCE.WIKIDATA }); } if (rec.filmingLocations?.length) { p.profile.filming_locations = rec.filmingLocations; wikiCovered.push({ movieId: p.movieId, field: "filming_locations", source: "wikidata", confidence: CONFIDENCE.WIKIDATA }); } if (rec.filmingCountries?.length) { p.profile.filming_countries = rec.filmingCountries; wikiCovered.push({ movieId: p.movieId, field: "filming_countries", source: "wikidata", confidence: CONFIDENCE.WIKIDATA }); } if (rec.awards?.length) { p.profile.awards_ids = rec.awards; wikiCovered.push({ movieId: p.movieId, field: "awards_ids", source: "wikidata", confidence: CONFIDENCE.WIKIDATA }); } if (rec.nominations?.length) { p.profile.nominated_ids = rec.nominations; wikiCovered.push({ movieId: p.movieId, field: "nominated_ids", source: "wikidata", confidence: CONFIDENCE.WIKIDATA }); } if (wikiCovered.length) p.dirty = true; } if (wikiCovered.length) await putFieldRowsBatch(env, wikiCovered); } }
     const afterLocal = prepared.filter(p => evaluateFilters(p.profile, filters, null, null, null).match);
-    const stage2bFields = (() => { if (forceAll && settings.useAI) return LLM_FIELDS; const fields = new Set(ratioFieldsNeeded(filters)); for (const f of locationFieldsNeeded(filters)) fields.add(f); if (filters.story_locations && (filters.story_locations.include?.length || filters.story_locations.exclude?.length)) if (afterLocal.some(p => !p.profile.story_locations || !p.profile.story_locations.length)) fields.add("story_locations"); if (filters.related_films && (filters.related_films.include?.length || filters.related_films.exclude?.length)) if (afterLocal.some(p => !p.profile.related_films || !p.profile.related_films.length)) fields.add("related_films"); if (filters.color_style && (filters.color_style.include?.length || filters.color_style.exclude?.length)) if (afterLocal.some(p => !p.profile.color_style || !p.profile.color_style.length)) fields.add("color_style"); return Array.from(fields); })();
+    // === FAZ B: Taxonomy filtreleri (include VEYA exclude) aktifken TTL/stale kontrolüyle ekle ===
+    const taxonomyRequested = taxonomyFieldsNeeded(filters);
+    const stage2bFields = (() => {
+      if (forceAll && settings.useAI) return LLM_FIELDS;
+      const fields = new Set(ratioFieldsNeeded(filters));
+      for (const f of locationFieldsNeeded(filters)) fields.add(f);
+      if (filters.story_locations && (filters.story_locations.include?.length || filters.story_locations.exclude?.length)) if (afterLocal.some(p => !p.profile.story_locations || !p.profile.story_locations.length)) fields.add("story_locations");
+      if (filters.related_films && (filters.related_films.include?.length || filters.related_films.exclude?.length)) if (afterLocal.some(p => !p.profile.related_films || !p.profile.related_films.length)) fields.add("related_films");
+      if (filters.color_style && (filters.color_style.include?.length || filters.color_style.exclude?.length)) if (afterLocal.some(p => !p.profile.color_style || !p.profile.color_style.length)) fields.add("color_style");
+      // === FAZ B: Taxonomy alanları — sadece aktif olanlar + stale ise ===
+      if (taxonomyRequested.length) {
+        for (const f of taxonomyRequested) {
+          if (afterLocal.some(p => {
+            const val = p.profile[f];
+            const isEmpty = !val || (Array.isArray(val) && !val.length);
+            if (isEmpty) return true;
+            const st = findStaleFields(p.profile, p.fieldRows || [], forceRefresh);
+            return st.includes(f);
+          })) fields.add(f);
+        }
+      }
+      return Array.from(fields);
+    })();
     const useStage2b = settings.useAI && stage2bFields.length > 0;
     const useStage1 = settings.useAI && hasSemanticFilters(filters) && !useStage2b;
     const stage1UseSearch = settings.useWebResearch;
@@ -228,7 +262,14 @@ export async function handleResearchStream(env, body, controller, signal) {
       const needMap = new Map();
       for (const p of afterLocal) {
         const stale = findStaleFields(p.profile, p.fieldRows || [], forceRefresh);
-        const need = stage2bFields.filter(f => forceAll || !p.profile[f] || (Array.isArray(p.profile[f]) && p.profile[f].length === 0) || (FIELD_DEFS[f]?.source === "llm" && stale.includes(f)));
+        const need = stage2bFields.filter(f => {
+          if (forceAll) return true;
+          const val = p.profile[f];
+          const isEmpty = !val || (Array.isArray(val) && !val.length);
+          if (isEmpty) return true;
+          if (FIELD_DEFS[f]?.source === "llm" && stale.includes(f)) return true;
+          return false;
+        });
         if (need.length) needMap.set(p.movieId, need);
       }
       if (needMap.size > 0 && !signal?.aborted) {
@@ -359,8 +400,9 @@ export async function handleMovieDetails(env, body, signal) {
   const sourceErrors = [];
   if (staleDet.length) { const classic = await enrichClassic(env, movie, staleDet, signal); Object.assign(profile, classic.updates); if (classic.errors?.length) sourceErrors.push(...classic.errors); const covered = [...classic.covered].filter(f => profile[f] !== undefined && profile[f] !== null); if (covered.length) dirty = true; const confLookup = {}; for (const f of covered) confLookup[f] = CONFIDENCE.STATIC; await putFieldRows(env, movieId, covered, Object.fromEntries(covered.map(f => [f, FIELD_DEFS[f]?.source || "unknown"])), confLookup); }
   if (Array.isArray(movie.genre_ids) && movie.genre_ids.length) { const pg = Array.isArray(profile.genres_ids) ? profile.genres_ids : []; const combined = new Set([...pg.map(String), ...movie.genre_ids.map(String)]); profile.genres_ids = [...combined].map(x => { const n = Number(x); return Number.isFinite(n) ? n : x; }); }
+  // === FAZ B: LLM bloğu — forceAll'da taxonomy HARİÇ (LLM_FIELDS zaten taxonomy'siz) ===
   if (staleLLM.length || forceAll) {
-    const llmFieldsToFill = forceAll ? LLM_FIELDS : staleLLM;
+    const llmFieldsToFill = (forceAll ? LLM_FIELDS : staleLLM).filter(f => !TAXONOMY_LLM_FIELDS.includes(f));
     if (llmFieldsToFill.length) {
       try {
         const llmConf = new Map();
@@ -374,6 +416,21 @@ export async function handleMovieDetails(env, body, signal) {
         await putFieldRows(env, movieId, covered, Object.fromEntries(covered.map(f => [f, "llm"])), confLookup);
       } catch (e) { console.warn("stage2 details fail:", e.message); sourceErrors.push({ source: "llm", error: String(e.message || e) }); }
     }
+  }
+  // === FAZ B: Taxonomy alanları — SADECE stale ise doldur, forceAll tetiklemez ===
+  const staleTaxonomy = forceAll ? [] : stale.filter(f => TAXONOMY_LLM_FIELDS.includes(f));
+  if (staleTaxonomy.length) {
+    try {
+      const llmConf = new Map();
+      const updates = await fillDetailsBatch(env, [movie], staleTaxonomy, signal, { movie_id: movieId, maxAttempts: 3, timeoutMs: 30000 }, llmConf);
+      const u = updates.get(String(movie.id)) || {};
+      Object.assign(profile, u);
+      const confMap = llmConf.get(String(movie.id)) || {};
+      const covered = Object.keys(u).filter(f => profile[f] !== undefined && profile[f] !== null);
+      if (covered.length) dirty = true;
+      const confLookup = {}; for (const f of covered) confLookup[f] = confMap[f] ?? CONFIDENCE.LLM;
+      await putFieldRows(env, movieId, covered, Object.fromEntries(covered.map(f => [f, "llm"])), confLookup);
+    } catch (e) { console.warn("taxonomy details fail:", e.message); sourceErrors.push({ source: "llm-taxonomy", error: String(e.message || e) }); }
   }
   if (profile.dialogue_density_subtitle == null || forceAll) { try { const r = await fetchSubtitleDensity(env, movie, signal); if (r && r.density != null) { profile.dialogue_density_subtitle = r.density; dirty = true; await putFieldRows(env, movieId, ["dialogue_density_subtitle"], { dialogue_density_subtitle: r.source || "subtitles" }, { dialogue_density_subtitle: CONFIDENCE.SUBTITLES }); } } catch (e) { console.warn("subtitle details fail:", e.message); } }
   if (profile.imdbID && !profile.imdb_id) profile.imdb_id = profile.imdbID;

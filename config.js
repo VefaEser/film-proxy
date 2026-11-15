@@ -1,4 +1,4 @@
-// config.js — Faz 8 Phase D revize: technical_style sadece kamera, sound'a no_music/rare_music
+// config.js — Faz B: taxonomy filter_info eklendi
 import { safeJSON } from "./db.js";
 import { invalidatePromptCache } from "./llm.js";
 
@@ -51,42 +51,41 @@ FİLTRE ADI: Yapım kategorisi ve ideolojik işlev.
 - big: Büyük prodüksiyon, 100M$+ bütçe, geniş ekip.
 - bmovie: Düşük bütçeli tür sineması (B movie).
 - studio: Klasik stüdyo filmi (Hollywood/benzeri).
-- propaganda: İdeolojik/propaganda amaçlı film. Filmin ÜRETİM BİÇİMİ değil, ideolojik ve iletişimsel İŞLEVİ vurgulanır. Politik/ideolojik mesaj iletmek için üretilmiş yapımlar.
-DİKKAT: Sanat filmi, avangart, Dogme 95 gibi sinemasal akımlar/yaklaşımlar buraya DEĞİL, cinema_approach alanına girer. El kamerası, müziksiz film gibi teknikler buraya DEĞİL, technical_style ve sound alanlarına girer.
+- propaganda: İdeolojik/propaganda amaçlı film.
+DİKKAT: Sanat filmi, avangart, Dogme 95 gibi sinemasal akımlar/yaklaşımlar buraya DEĞİL, cinema_approach alanına girer.
 ${TWO_STAGE_NOTE}`,
 
   "filter_info.cinema_approach": `[YZ bağlamı]
 FİLTRE ADI: Sinemasal akım, gelenek veya yaklaşım.
 - art: Sanat filmi, deneysel anlatım, festival odaklı, "art-house" geleneği.
 - avant: Avangart film, deneysel/anti-anlatı, biçimsel yenilik arayışı.
-- dogme: Dogme 95 manifestosuna uygun (Lars von Trier & Thomas Vinterberg, 1995), sade üretim kurallarına bağlı.
-DİKKAT: Film TÜRÜ (dram, komedi) ve yapım BÜYÜKLÜĞÜ (indie, big) buraya DEĞİL. Bir teknik (el kamerası) tek başına bu alana kanıt DEĞİLDİR; belirli bir akıma (Dogme 95) üyelik ayrıca değerlendirilmelidir.
+- dogme: Dogme 95 manifestosuna uygun (Lars von Trier & Thomas Vinterberg, 1995).
+DİKKAT: Film TÜRÜ (dram, komedi) ve yapım BÜYÜKLÜĞÜ (indie, big) buraya DEĞİL.
 ${TWO_STAGE_NOTE}`,
 
   "filter_info.technical_style": `[YZ bağlamı]
 FİLTRE ADI: Teknik ve biçimsel tercihler — KAMERA KULLANIM TEKNİKLERİ.
-- handheld: El kamerası — kameranın operatör tarafından elde taşınması (found footage, cinéma vérité, mockumentary vb.).
-- static_camera: Sabit kamera — kameranın sabit konumda kullanılması, hareket etmemesi.
-- tracking_shot: Takip çekimi — kameranın karakteri veya nesneyi takip etmesi.
-- steadicam: Steadicam — hareket sırasında dengeli ve akıcı görüntü elde edilmesi.
-- crane_shot: Vinç çekimi — kameranın vinç veya jib sistemiyle yükselip alçalması.
-- aerial_shot: Havadan çekim — drone, helikopter veya benzeri araçlarla yapılan çekim.
-- zoom: Zoom kullanımı — optik yakınlaştırma ve uzaklaştırmanın belirgin kullanımı.
-- pan_tilt: Pan / tilt — kameranın yatay veya dikey eksende döndürülmesi.
-SINIFLANDIRMA İLKESİ: Bir tekniğin filmde yalnızca bir defa görülmesi, filmin o teknikle sınıflandırılması için yeterli sayılmamalı. Tekniğin filmin genel görsel anlatımında belirgin ve tekrarlanan bir kullanımının bulunması aranmalı. Gerektiğinde birden fazla teknik aynı filme atanabilir.
+- handheld: El kamerası.
+- static_camera: Sabit kamera.
+- tracking_shot: Takip çekimi.
+- steadicam: Steadicam.
+- crane_shot: Vinç çekimi.
+- aerial_shot: Havadan çekim.
+- zoom: Zoom kullanımı.
+- pan_tilt: Pan / tilt.
 DİKKAT: SADECE KAMERA kullanım teknikleri. Ses/müzik buraya DEĞİL, sound alanına girer.
 ${TWO_STAGE_NOTE}`,
 
   "filter_info.sound": `[YZ bağlamı]
 FİLTRE ADI: Filmde ses ve müzik kullanımı.
 - ambient: Sürekli doğal ortam gürültüsü.
-- music: Yoğun müzik kullanımı — film boyunca belirgin ve sürekli müzik.
+- music: Yoğun müzik kullanımı.
 - rare_music: Nadir/az müzikli film — müzik sadece kritik anlarda kullanılmış.
-- no_music: Müziksiz film — film boyunca hiç müzik kullanılmamış (ses var: diyalog, efekt, ambient).
+- no_music: Müziksiz film — film boyunca hiç müzik yok.
 - effects: Yoğun gürültülü efekt kullanımı.
 - voiceover_ext: Dış ses kullanımı (anlatıcı).
-- voiceover_int: İç ses kullanımı (karakterin düşünceleri).
-- silent: Sessiz film — hiç ses yok (no_music'ten FARKLI; no_music'te ses var ama müzik yok).
+- voiceover_int: İç ses kullanımı.
+- silent: Sessiz film — hiç ses yok.
 - dubbed: Ses dublajı çoğunlukla stüdyoda yapılmış.
 DİKKAT: silent (hiç ses yok) ile no_music (ses var, müzik yok) FARKLIDIR. Kamera teknikleri buraya DEĞİL, technical_style alanına girer.
 ${TWO_STAGE_NOTE}`,
@@ -119,19 +118,19 @@ FİLTRE ADI: Filmin diğer filmlerle ilgisi.
 1) ÖNCE şu 12 slug listesinden en az birini seç — filtre eşleşmesi bunlarla yapılır:
    has_sequel, is_sequel, series_sequel, series_prequel, series_spinoff, concept, reboot, film_franchise, remake, similar_script_version, same_plot_diff_script, same_plot_diff_angle
 TANIMLAR:
-- concept (Konsept filmi): Aynı konseptin farklı dönemlerde, farklı oyuncularla ve birbirinden BAĞIMSIZ hikâyelerle tekrar çekilmesi. James Bond, Godzilla, Sherlock Holmes gibi. Her film kendi başına bir hikâyedir; önceki filmin devamı DEĞİLDİR.
-- is_sequel (Devam filmi): Hikâye bir önceki filmin doğrudan devamıdır; aynı ana karakterler ve genellikle aynı oyuncular vardır. Mission: Impossible 2, The Godfather Part II gibi.
+- concept (Konsept filmi): Aynı konseptin farklı dönemlerde, farklı oyuncularla ve birbirinden BAĞIMSIZ hikâyelerle tekrar çekilmesi.
+- is_sequel (Devam filmi): Hikâye bir önceki filmin doğrudan devamıdır.
 - has_sequel: Bu filmin bir devam filmi çekilmiştir (kendisi ilk filmdir).
-- reboot (Yeniden Başlatma): Bir film serisinin hikâyesini veya evrenini SIFIRDAN başlatan yeni başlangıç. Önceki filmlerin olaylarını görmezden gelir. Batman Begins (2005), Casino Royale (2006), Spider-Man: Homecoming (2017) gibi. DİKKAT: Reboot, devam filmi DEĞİLDİR; remake de DEĞİLDİR (belirli bir filmi değil, bir seriyi sıfırlar).
-- film_franchise (Film Franchise / Film Serisi): Ortak evrende geçen, birbirine bağlı birden fazla filmden oluşan marka/seri. Marvel Cinematic Universe, Star Wars, Harry Potter, Fast & Furious gibi. DİKKAT: Franchise üyesi olmak otomatik olarak reboot, remake veya sequel olduğu anlamına GELMEZ.
-- remake (Yeniden Çevrim): Belirli bir filmin RESMİ yeniden çevrimi. Aynı hikâye, aynı ülke sinemasında, yeni oyuncularla. A Star Is Born (2018), The Magnificent Seven (2016), Psycho (1998) gibi. DİKKAT: Remake, concept'ten farklıdır (concept bağımsız, remake belirli bir eserin resmi yeniden çevrimi); same_plot_diff_script'ten farklıdır (o daha genel bir ifade).
+- reboot (Yeniden Başlatma): Bir film serisinin hikâyesini veya evrenini SIFIRDAN başlatan yeni başlangıç.
+- film_franchise (Film Franchise / Film Serisi): Ortak evrende geçen, birbirine bağlı birden fazla filmden oluşan marka/seri.
+- remake (Yeniden Çevrim): Belirli bir filmin RESMİ yeniden çevrimi.
 - series_sequel: Bir dizideki hikâyenin devamı.
 - series_prequel: Bir dizideki hikâyenin öncesi.
 - series_spinoff: Bir dizideki karakterlerin farklı bir hikâyesi.
 - similar_script_version: Aynı hikâyeyi benzer bir senaryoyla anlatan başka bir film var.
 - same_plot_diff_script: Aynı hikâyeyi farklı bir senaryoyla anlatan başka bir film var.
 - same_plot_diff_angle: Aynı hikâyenin farklı bir yönünü anlatan başka bir film var.
-2) SONRA istediğin kadar serbest açıklama ekleyebilirsin (örn: "üçlemenin ikinci filmi", "yeniden çevrim", "aynı yönetmenin önceki filmiyle bağlantılı") — bunlar filtrelenmez, kartta bilgi olarak gösterilir.`,
+2) SONRA istediğin kadar serbest açıklama ekleyebilirsin — bunlar filtrelenmez, kartta bilgi olarak gösterilir.`,
 
   "filter_info.story_period": `[YZ bağlamı]
 Hikâyenin geçtiği tarihsel dönem.
@@ -196,13 +195,109 @@ ${TWO_STAGE_NOTE}`,
   "filter_info.award_nom": `[YZ bağlamı]
 FİLTRE ADI: Ödüle ADAY GÖSTERİLME. Film bu ödüle aday gösterilmiş olmalı (kazanmış olması gerekmez).
 Kaynak: Wikidata P1411 (nominated for).
-Seçilen ödüle aday gösterilmiş filmler eşleşir. Ödülü kazanan filmler de adaylık listesinde yer alıyorsa eşleşir.
+Seçilen ödüle aday gösterilmiş filmler eşleşir.
 ${TWO_STAGE_NOTE}`,
 
   "filter_info.includeUnknown": `Bilinmeyen veri politikası.
 - Kapalı (varsayılan): Filtre için gerekli alan bilinmiyorsa film listeden çıkarılır (kesin filtre davranışı).
-- Açık: Bilinmeyen veri "bilinmiyor" olarak işaretlenir ama film listeden ÇIKARILMAZ; kullanıcı "bilinmiyor" notu ile birlikte görür.
-Öneri: Yüksek kesinlik gereken filtreler (rated, award, director vb.) için kapalı; gevşek keşif için açık.`
+- Açık: Bilinmeyen veri "bilinmiyor" olarak işaretlenir ama film listeden ÇIKARILMAZ.`,
+
+  // === FAZ B: Taxonomy filter_info ===
+  "filter_info.subgenres": `[YZ bağlamı]
+FİLTRE ADI: Alt tür. TMDB ana türünün daha özel bir alt sınıfı. TMDB ana türünü DEĞİŞTİRMEZ.
+- film_noir: Kara film (1940-50'ler Hollywood, karanlık atmosferli suç).
+- neo_noir: Yeni kara film (modern yorum).
+- heist: Soygun filmi.
+- coming_of_age: Büyüme hikâyesi.
+- road_movie: Yol filmi.
+- buddy_film: Dostluk filmi.
+- gangster: Gangster filmi.
+- detective: Dedektif filmi.
+- police_procedural: Polis soruşturması.
+- courtroom_drama: Mahkeme dramı.
+- political_thriller: Politik gerilim.
+- psychological_thriller: Psikolojik gerilim.
+- conspiracy_thriller: Komplo gerilimi.
+- spy_thriller: Casusluk filmi.
+- revenge_thriller: İntikam gerilimi.
+- survival: Hayatta kalma filmi.
+- prison_drama: Hapishane dramı.
+- serial_killer: Seri katil filmi.
+- slasher: Slasher korku.
+- folk_horror: Halk korkusu.
+- body_horror: Beden korkusu.
+- found_footage_horror: Buluntu görüntü korkusu.
+- supernatural_horror: Doğaüstü korku.
+- dark_comedy: Kara komedi.
+- romantic_comedy: Romantik komedi.
+- absurdist_comedy: Absürt komedi.
+- political_satire: Politik hiciv.
+- mockumentary: Sahte belgesel.
+- dystopian_scifi: Distopik bilim kurgu.
+- post_apocalyptic: Kıyamet sonrası.
+- psychological_drama: Psikolojik dram.
+- period_drama: Tarihî dram.
+- costume_drama: Kostüm dramı.
+- biographical_drama: Biyografik dram.
+- family_drama: Aile dramı.
+- workplace_drama: İş yeri dramı.
+- medical_drama: Tıp dramı.
+- legal_thriller: Hukuk gerilimi.
+- whodunit: Gizemli cinayet.
+- cozy_mystery: Rahat gizem.
+- giallo: Giallo.
+- vampire_horror: Vampir korkusu.
+- zombie_horror: Zombi korkusu.
+- werewolf_horror: Kurt adam korkusu.
+- witch_horror: Cadı korkusu.
+- monster_horror: Canavar korkusu.
+- eco_horror: Doğa/çevre korkusu.
+- disaster_film: Felaket filmi.
+- space_scifi: Uzay bilim kurgusu.
+- cyberpunk: Siberpunk.
+- steampunk: Steampunk.
+- time_travel: Zaman yolculuğu.
+- superhero: Süper kahraman filmi.
+- martial_arts: Dövüş sanatları filmi.
+- kung_fu: Kung fu filmi.
+- samurai: Samuray filmi.
+- spaghetti_western: Spagetti western.
+- contemporary_western: Çağdaş western.
+- music_documentary: Müzik belgeseli.
+- true_crime_documentary: Suç belgeseli.
+${TWO_STAGE_NOTE}`,
+
+  "filter_info.tropes": `[YZ bağlamı]
+FİLTRE ADI: Anlatı motifi / klişe. Tekrar eden olay örgüsü kalıpları, karakter arketipleri, dramatik ilişkiler, anlatı araçları.
+Bir motifin filmde YALNIZCA BİR KEZ geçmesi otomatik olarak o klişenin bulunduğu anlamına GELMEZ. Motifin hikâyede anlamlı bir yeri olmalıdır.
+Örnek slug'lar:
+- one_last_job: Son bir iş.
+- love_triangle: Aşk üçgeni.
+- unreliable_narrator: Güvenilmez anlatıcı.
+- time_loop: Zaman döngüsü.
+- plot_twist: Beklenmedik ters köşe.
+- forbidden_love: Yasak aşk.
+- macguffin: The MacGuffin.
+- hero_turns_villain: İyi karakterin kötüye dönüşmesi.
+- bittersweet_ending: Mutlu sonun bozulması (narrative_form).
+- open_ended_ending: Açık uçlu final (narrative_form).
+Tam liste 100 kavramdır. Tema ile karıştırılmamalıdır: tema düşünsel meseledir, trope anlatı aracıdır.
+${TWO_STAGE_NOTE}`,
+
+  "filter_info.themes": `[YZ bağlamı]
+FİLTRE ADI: Tema. Filmin temel düşüncesi, insani meselesi, toplumsal veya felsefi konusu.
+Örnek slug'lar:
+- family_bonds: Aile bağları.
+- alienation: Yabancılaşma.
+- justice: Adalet.
+- freedom: Özgürlük.
+- meaning_of_life: Hayatın anlamı.
+- love_and_commitment: Aşk ve bağlılık.
+- power: Güç ve iktidar.
+- redemption: Kefaret ve arınma.
+- revenge: İntikam (tema).
+Tam liste 60 kavramdır. Olay örgüsü motifiyle karıştırılmamalıdır. Örn: "Yıllar sonra yeniden buluşan aile üyeleri" bir motif (reunion_after_years); "Aile bağlarının önemi" bir tema (family_bonds).
+${TWO_STAGE_NOTE}`
 };
 
 export async function getAllConfig(env) {
@@ -268,4 +363,4 @@ export async function setConfig(env, key, value) {
     `INSERT INTO app_config (key, value, updated_at) VALUES (?, ?, ?)
      ON CONFLICT(key) DO UPDATE SET value = excluded.value, updated_at = excluded.updated_at`
   ).bind(key, value, Math.floor(Date.now() / 1000)).run();
-}
+  }

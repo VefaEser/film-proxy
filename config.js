@@ -1,4 +1,4 @@
-// config.js — Faz 8 Phase D: taxonomy split (narrative_pace, production_category, cinema_approach, technical_style)
+// config.js — Faz 8 Phase D revize: technical_style sadece kamera, sound'a no_music/rare_music
 import { safeJSON } from "./db.js";
 import { invalidatePromptCache } from "./llm.js";
 
@@ -23,7 +23,6 @@ Hikâyenin gerçeklik düzeyi.
 - utopic: Ütopik/distopik gelecek.
 ${TWO_STAGE_NOTE}`,
 
-  // === FAZ 8 Phase D: narrative_style — sadece YAPI (tempo YOK) ===
   "filter_info.narrative_style": `[YZ bağlamı]
 FİLTRE ADI: Hikâye anlatım tarzı — ANLATI YAPISI.
 - multi: Farklı hikâyelerin ayrı ayrı anlatımı (mozaik/parçalı anlatı).
@@ -38,7 +37,6 @@ FİLTRE ADI: Hikâye anlatım tarzı — ANLATI YAPISI.
 DİKKAT: Anlatının TEMPOSU (hızlı/yavaş) buraya DEĞİL, narrative_pace alanına girer. Anlatı yapısı (linear, flashback) ile tempo (fast, slow) farklı kavramlardır.
 ${TWO_STAGE_NOTE}`,
 
-  // === FAZ 8 Phase D: narrative_pace — sadece TEMPO ===
   "filter_info.narrative_pace": `[YZ bağlamı]
 FİLTRE ADI: Anlatının temposu.
 - fast: Çok fazla olayın olduğu hareketli hikâye. Hızlı kurgu, yüksek olay yoğunluğu, sürekli aksiyon.
@@ -46,7 +44,6 @@ FİLTRE ADI: Anlatının temposu.
 DİKKAT: Anlatının YAPISI (linear, reverse, flashback, multi vb.) buraya DEĞİL, narrative_style alanına girer. Tempo (hız/yavaşlık) ve yapı (kronoloji) farklı kavramlardır. Örn: "Sondan başa anlatılan yavaş bir film" → narrative_style=reverse + narrative_pace=slow.
 ${TWO_STAGE_NOTE}`,
 
-  // === FAZ 8 Phase D: production_category — yapım biçimi + propaganda ===
   "filter_info.production_category": `[YZ bağlamı]
 FİLTRE ADI: Yapım kategorisi ve ideolojik işlev.
 - amateur: Amatör yapım, çok düşük bütçe, öğrenci/amatör ekip.
@@ -55,36 +52,43 @@ FİLTRE ADI: Yapım kategorisi ve ideolojik işlev.
 - bmovie: Düşük bütçeli tür sineması (B movie).
 - studio: Klasik stüdyo filmi (Hollywood/benzeri).
 - propaganda: İdeolojik/propaganda amaçlı film. Filmin ÜRETİM BİÇİMİ değil, ideolojik ve iletişimsel İŞLEVİ vurgulanır. Politik/ideolojik mesaj iletmek için üretilmiş yapımlar.
-DİKKAT: Sanat filmi, avangart, Dogme 95 gibi sinemasal akımlar/yaklaşımlar buraya DEĞİL, cinema_approach alanına girer. El kamerası, müziksiz film gibi teknikler buraya DEĞİL, technical_style alanına girer.
+DİKKAT: Sanat filmi, avangart, Dogme 95 gibi sinemasal akımlar/yaklaşımlar buraya DEĞİL, cinema_approach alanına girer. El kamerası, müziksiz film gibi teknikler buraya DEĞİL, technical_style ve sound alanlarına girer.
 ${TWO_STAGE_NOTE}`,
 
-  // === FAZ 8 Phase D: cinema_approach — sinemasal akım/yaklaşım ===
   "filter_info.cinema_approach": `[YZ bağlamı]
 FİLTRE ADI: Sinemasal akım, gelenek veya yaklaşım.
 - art: Sanat filmi, deneysel anlatım, festival odaklı, "art-house" geleneği.
 - avant: Avangart film, deneysel/anti-anlatı, biçimsel yenilik arayışı.
-- dogme: Dogme 95 manifestosuna uygun (Lars von Trier & Thomas Vinterberg, 1995), sade üretim kurallarına bağlı (doğal ışık, elde kamera, müzik yok vb. — ama bu teknikler tek başına Dogme 95 kanıtı DEĞİLDİR; manifesto üyeliği ayrıca değerlendirilmelidir).
+- dogme: Dogme 95 manifestosuna uygun (Lars von Trier & Thomas Vinterberg, 1995), sade üretim kurallarına bağlı.
 DİKKAT: Film TÜRÜ (dram, komedi) ve yapım BÜYÜKLÜĞÜ (indie, big) buraya DEĞİL. Bir teknik (el kamerası) tek başına bu alana kanıt DEĞİLDİR; belirli bir akıma (Dogme 95) üyelik ayrıca değerlendirilmelidir.
 ${TWO_STAGE_NOTE}`,
 
-  // === FAZ 8 Phase D: technical_style — kamera + ses/müzik ===
   "filter_info.technical_style": `[YZ bağlamı]
-FİLTRE ADI: Teknik ve biçimsel tercihler — kamera ve ses/müzik kullanımı.
-- handheld: El kamerası / hareketli kamera baskın (found footage, cinéma vérité, mockumentary vb.).
-- no_music: Müziksiz film. Film boyunca müzik kullanılmamış.
-- rare_music: Nadir/az müzikli film. Müzik sadece kritik anlarda kullanılmış.
-DİKKAT: Bir teknik kullanım (el kamerası) TEK BAŞINA bir sinema akımına (Dogme 95, found footage) kanıt DEĞİLDİR; akım üyeliği cinema_approach alanında ayrıca değerlendirilir. Ses tasarımı (ambient, voiceover, sessiz film) buraya DEĞİL, sound alanına girer. Yapım büyüklüğü (indie, big) buraya DEĞİL, production_category alanına girer.
+FİLTRE ADI: Teknik ve biçimsel tercihler — KAMERA KULLANIM TEKNİKLERİ.
+- handheld: El kamerası — kameranın operatör tarafından elde taşınması (found footage, cinéma vérité, mockumentary vb.).
+- static_camera: Sabit kamera — kameranın sabit konumda kullanılması, hareket etmemesi.
+- tracking_shot: Takip çekimi — kameranın karakteri veya nesneyi takip etmesi.
+- steadicam: Steadicam — hareket sırasında dengeli ve akıcı görüntü elde edilmesi.
+- crane_shot: Vinç çekimi — kameranın vinç veya jib sistemiyle yükselip alçalması.
+- aerial_shot: Havadan çekim — drone, helikopter veya benzeri araçlarla yapılan çekim.
+- zoom: Zoom kullanımı — optik yakınlaştırma ve uzaklaştırmanın belirgin kullanımı.
+- pan_tilt: Pan / tilt — kameranın yatay veya dikey eksende döndürülmesi.
+SINIFLANDIRMA İLKESİ: Bir tekniğin filmde yalnızca bir defa görülmesi, filmin o teknikle sınıflandırılması için yeterli sayılmamalı. Tekniğin filmin genel görsel anlatımında belirgin ve tekrarlanan bir kullanımının bulunması aranmalı. Gerektiğinde birden fazla teknik aynı filme atanabilir.
+DİKKAT: SADECE KAMERA kullanım teknikleri. Ses/müzik buraya DEĞİL, sound alanına girer.
 ${TWO_STAGE_NOTE}`,
 
   "filter_info.sound": `[YZ bağlamı]
-Filmde ses kullanımı.
+FİLTRE ADI: Filmde ses ve müzik kullanımı.
 - ambient: Sürekli doğal ortam gürültüsü.
-- music: Yoğun müzik kullanımı.
+- music: Yoğun müzik kullanımı — film boyunca belirgin ve sürekli müzik.
+- rare_music: Nadir/az müzikli film — müzik sadece kritik anlarda kullanılmış.
+- no_music: Müziksiz film — film boyunca hiç müzik kullanılmamış (ses var: diyalog, efekt, ambient).
 - effects: Yoğun gürültülü efekt kullanımı.
-- voiceover_ext: Dış ses kullanımı.
-- voiceover_int: İç ses kullanımı.
-- silent: Sessiz film.
+- voiceover_ext: Dış ses kullanımı (anlatıcı).
+- voiceover_int: İç ses kullanımı (karakterin düşünceleri).
+- silent: Sessiz film — hiç ses yok (no_music'ten FARKLI; no_music'te ses var ama müzik yok).
 - dubbed: Ses dublajı çoğunlukla stüdyoda yapılmış.
+DİKKAT: silent (hiç ses yok) ile no_music (ses var, müzik yok) FARKLIDIR. Kamera teknikleri buraya DEĞİL, technical_style alanına girer.
 ${TWO_STAGE_NOTE}`,
 
   "filter_info.story_geography": `[YZ bağlamı]
@@ -162,7 +166,6 @@ Filmin görsel renk stili.
 - mixed_bw_color: Renkli ve siyah beyaz karışık.
 ${TWO_STAGE_NOTE}`,
 
-  // === Phase A'dan: hassas aspect_ratio + tolerans ===
   "filter_info.aspect_ratio": `[YZ bağlamı]
 Filmin gerçek en-boy oranı (sinema oranları).
 - 1:1 (kare format)
@@ -265,4 +268,4 @@ export async function setConfig(env, key, value) {
     `INSERT INTO app_config (key, value, updated_at) VALUES (?, ?, ?)
      ON CONFLICT(key) DO UPDATE SET value = excluded.value, updated_at = excluded.updated_at`
   ).bind(key, value, Math.floor(Date.now() / 1000)).run();
-    }
+}

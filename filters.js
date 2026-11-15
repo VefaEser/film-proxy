@@ -1,4 +1,4 @@
-// filters.js — Faz B: taxonomy filtreleri eklendi
+// filters.js — Faz C fix: includeUnknown kontrolü evaluateFilters'a eklendi
 import { SEMANTIC_FIELDS, FIELD_DEFS, LLM_FIELDS, SCHEMA_VERSION } from "./fields.config.js";
 import { norm, yearOf, safeJSON } from "./db.js";
 
@@ -45,7 +45,6 @@ export function buildFilterSentence(filters) {
   setInclude("story_dimensions", "filmin diğer filmlerle ilgisi"); setExclude("story_dimensions", "filmin diğer filmlerle ilgisi şunlardan olmamalı:");
   setInclude("aspect_ratio", "en-boy oranı"); setExclude("aspect_ratio", "en-boy oranı şunlardan olmamalı:");
   setInclude("color_style", "görsel renk stili"); setExclude("color_style", "görsel renk stili şunlardan olmamalı:");
-  // === FAZ B: Taxonomy alanları ===
   setInclude("subgenres", "alt tür"); setExclude("subgenres", "alt tür şunlardan olmamalı:");
   setInclude("tropes", "anlatı motifi"); setExclude("tropes", "anlatı motifi şunlardan olmamalı:");
   setInclude("themes", "tema"); setExclude("themes", "tema şunlardan olmamalı:");
@@ -104,7 +103,6 @@ export function hasSemanticFilters(filters) { return semanticSignature(filters) 
 export function hasFamilyFilters(filters) { const f = filters || {}; return !!(f.family_content && Object.keys(f.family_content).length); }
 export function ratioFieldsNeeded(filters) { const f = filters || {}; const fields = []; if (f.dayRatioMin != null) fields.push("day_ratio"); if (f.outdoorRatioMin != null) fields.push("indoor_ratio"); if (f.dialogueDensityMin != null) fields.push("dialogue_density"); return fields; }
 export function locationFieldsNeeded(filters) { const f = filters || {}; return (f.locationMin != null || f.locationMax != null) ? ["location_count"] : []; }
-// === FAZ B: Taxonomy filtre alanları gereksinimi (include VEYA exclude) ===
 export function taxonomyFieldsNeeded(filters) {
   const f = filters || {};
   const fields = [];
@@ -301,7 +299,6 @@ export function evaluateFilters(profile, filters, semanticVerdict, metatakeLocat
     ["technical_style", "technical_style", "Kamera kullanım tekniği", null],
     ["sound", "sound", "Ses ve müzik", null], ["reality", "reality", "Gerçeklik", null], ["story_dimensions", "story_dimensions", "Filmin diğer filmlerle ilgisi", null],
     ["color_style", "color_style", "Görsel renk stili", null],
-    // === FAZ B: Taxonomy ===
     ["subgenres", "subgenres", "Alt tür", null],
     ["tropes", "tropes", "Anlatı motifi", null],
     ["themes", "themes", "Tema", null]
@@ -311,25 +308,29 @@ export function evaluateFilters(profile, filters, semanticVerdict, metatakeLocat
     const alt = altField ? profile[altField] : undefined;
     const res = matchSet(profile[pf], f, alt);
     if (!res.match) state.match = false;
-    if (res.unknown) state.unknown = true;
+    if (res.unknown) {
+      state.unknown = true;
+      // ✅ YENİ: includeUnknown false ise "bilinmiyor" filmi de ele
+      if (filters.includeUnknown !== true) state.match = false;
+    }
     if (res.conflict) state.conflicts = true;
     for (const r of res.reasons) state.reasons.push(`${label} ${r}`);
   }
   if (filters.aspect_ratio) {
     const res = matchAspectRatio(profile.aspect_ratio, filters.aspect_ratio);
     if (!res.match) state.match = false;
-    if (res.unknown) state.unknown = true;
+    if (res.unknown) { state.unknown = true; if (filters.includeUnknown !== true) state.match = false; }
     for (const r of res.reasons) state.reasons.push(`En-boy oranı ${r}`);
   }
-  if (filters.keywords) { const res = matchIdSet(profile.keywords_ids, filters.keywords); if (!res.match) state.match = false; if (res.unknown) state.unknown = true; }
-  if (filters.filming_locations) { const res = evalFilmingLocations(profile, filters.filming_locations, metatakeLocations, filmmapLocations); if (!res.match) state.match = false; if (res.unknown) state.unknown = true; if (res.reason) state.reasons.push(res.reason); }
+  if (filters.keywords) { const res = matchIdSet(profile.keywords_ids, filters.keywords); if (!res.match) state.match = false; if (res.unknown) { state.unknown = true; if (filters.includeUnknown !== true) state.match = false; } }
+  if (filters.filming_locations) { const res = evalFilmingLocations(profile, filters.filming_locations, metatakeLocations, filmmapLocations); if (!res.match) state.match = false; if (res.unknown) { state.unknown = true; if (filters.includeUnknown !== true) state.match = false; } if (res.reason) state.reasons.push(res.reason); }
   evalRatioFilters(profile, filters, state);
   evalLocationCount(profile, filters, state, metatakeLocations, filmmapLocations);
   if (filters.characterDensity) { const c = filters.characterDensity; const fc = profile.family_content || {}; evalRange(fc, "main_characters", c.mainMin, c.mainMax, "Ana karakter", state, false); evalRange(fc, "supporting_characters", c.supportMin, c.supportMax, "Yan karakter", state, false); evalRange(fc, "extras", c.extraMin, c.extraMax, "Figüran", state, false); }
   if (semanticVerdict && semanticVerdict.verdict === "no") { state.match = false; state.reasons.push(semanticVerdict.reason || "Semantik filtre uyuşmadı"); }
   else if (semanticVerdict && semanticVerdict.verdict === "unknown") {
     if (hasFamilyFilters(filters)) { state.match = false; state.reasons.push(semanticVerdict.reason || "Aile içeriği: bilinmiyor (elendi)"); }
-    else { state.unknown = true; if (semanticVerdict.reason) state.reasons.push(semanticVerdict.reason); }
+    else { state.unknown = true; if (filters.includeUnknown !== true) state.match = false; if (semanticVerdict.reason) state.reasons.push(semanticVerdict.reason); }
   }
   return state;
     }

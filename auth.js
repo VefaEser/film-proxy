@@ -1,14 +1,15 @@
-// auth.js
-// Kayıt/giriş/şifre sıfırlama + güvenlik + permissions döndürme.
-// Faz 3: CORS temizlendi (index.js son katmanı doğru origin ekler), askıya alınmış kullanıcı oturumu engellendi.
+// auth.js — Kayıt/giriş/şifre sıfırlama + güvenlik + permissions döndürme.
+// Faz 3: CORS temizlendi + askıya alınmış kullanıcı oturumu engellendi.
+// Faz 6: /auth/recover/start ve /auth/recover/verify enumeration düzeltmesi
+//        - Kullanıcı yoksa deterministik fake sorular (ayırt edilemez)
+//        - Verify'da her hata için generic "Güvenlik cevapları eşleşmedi" mesajı
+//        - Verify'da IP rate limit (login_attempts tablosu paylaşılır)
 const PBKDF2_ITER = 100000;
 const SESSION_TTL = 30 * 86400;
 const RECOVER_TTL = 900;
 const MAX_FAILED_ATTEMPTS = 5;
 const LOCK_DURATION_SEC = 900;
 
-// === CORS: sadece method + header. Origin ve Credentials index.js son katmanı tarafından
-// corsHeaders(request) ile eklenir. Yerel "*" + "true" kombinasyonu geçersizdir (tarayıcı reddeder). ===
 const CORS = {
   "Access-Control-Allow-Methods": "GET,POST,PUT,DELETE,OPTIONS",
   "Access-Control-Allow-Headers": "Content-Type,Authorization"
@@ -35,6 +36,29 @@ function getCookie(req, name) {
 function sessionCookieHeader(token, maxAge) { return `sid=${token}; Path=/; HttpOnly; Secure; SameSite=None; Max-Age=${maxAge}`; }
 function clearSessionCookie() { return `sid=; Path=/; HttpOnly; Secure; SameSite=None; Max-Age=0`; }
 function isValidEmail(s) { return /^[^\s@]+@[^\s@]+\.[^\s@]{2,}$/.test(String(s || "").trim()); }
+
+// === FAZ 6: Deterministik fake sorular için sabit soru bankası ===
+// (app-defs.js'teki SECURITY_QUESTIONS ile aynı set, backend bağımsız)
+const SECURITY_QUESTIONS_BANK = [
+  "favorite_movie", "favorite_color", "watched_count", "avg_rating", "first_movie",
+  "favorite_genre", "favorite_country", "favorite_city", "favorite_director",
+  "most_hated_movie", "most_watched_year", "most_watched_day", "most_watched_hour"
+];
+function deterministicQuestions(login) {
+  // Aynı kullanıcı adı için her zaman aynı 3 soru döner (saldırgan ayırt edemez)
+  let h = 0;
+  for (let i = 0; i < login.length; i++) h = ((h << 5) - h + login.charCodeAt(i)) | 0;
+  h = Math.abs(h);
+  const indices = new Set();
+  const out = [];
+  for (let i = 0; out.length < 3 && i < 100; i++) {
+    const idx = (h + i * 7) % SECURITY_QUESTIONS_BANK.length;
+    if (indices.has(idx)) continue;
+    indices.add(idx);
+    out.push({ key: SECURITY_QUESTIONS_BANK[idx] });
+  }
+  return out;
+}
 
 export function timingSafeEqualStr(a, b) {
   if (typeof a !== "string" || typeof b !== "string") return false;
@@ -275,7 +299,6 @@ export async function handleAuth(request, env, ctx) {
     const token = getCookie(request, "sid");
     const sess = await getSession(env, token);
     if (sess) {
-      // === YENİ: askıya alınmış kullanıcı oturumu geçersiz ===
       if (sess.is_suspended) return jsonRes({ ok: false, user: null, permissions: [] });
       const permissions = await fetchPermissions(env, sess.user_id);
       return jsonRes({
@@ -299,30 +322,48 @@ export async function handleAuth(request, env, ctx) {
     return jsonRes({ ok: false, user: null, permissions: [] });
   }
 
+  // === FAZ 6: /recover/start — enumeration önleme ===
   if (path === "/recover/start" && request.method === "POST") {
     let body; try { body = await request.json(); } catch { return jsonErr("Geçersiz JSON", 400); }
     const login = String(body.login || "").trim();
     const user = await findUserByLogin(env, login);
-    if (!user) return jsonErr("Kullanıcı bulunamadı", 404);
+    // Kullanıcı yoksa veya güvenlik sorusu tanımlamamışsa deterministik fake sorular
+    // (aynı login için her zaman aynı 3 soru döner — saldırgan kullanıcı var mı yok mu ayırt edemez)
+    if (!user) return jsonRes({ ok: true, questions: deterministicQuestions(login) });
     const questions = user.security_questions_json ? JSON.parse(user.security_questions_json) : [];
-    if (!questions.length) return jsonErr("Bu hesap için güvenlik sorusu tanımlanmamış", 400);
+    if (!questions.length) return jsonRes({ ok: true, questions: deterministicQuestions(login) });
     return jsonRes({ ok: true, questions: questions.map(q => ({ key: q.key })) });
   }
 
+  // === FAZ 6: /recover/verify — generic hata + IP rate limit ===
   if (path === "/recover/verify" && request.method === "POST") {
+    const ip = request.headers.get("CF-Connecting-IP") || "";
+    const ipLock = await checkIpLock(env, ip);
+    if (ipLock.locked) return jsonErr(`Çok fazla başarısız deneme. ${Math.ceil((ipLock.until - Math.floor(Date.now() / 1000)) / 60)} dk sonra tekrar deneyin.`, 429);
     let body; try { body = await request.json(); } catch { return jsonErr("Geçersiz JSON", 400); }
     const login = String(body.login || "").trim();
     const answers = Array.isArray(body.answers) ? body.answers : [];
+    const GENERIC_FAIL = "Güvenlik cevapları eşleşmedi";
     const user = await findUserByLogin(env, login);
-    if (!user) return jsonErr("Kullanıcı bulunamadı", 404);
+    if (!user) {
+      await recordIpFailure(env, ip);
+      return jsonErr(GENERIC_FAIL, 401);
+    }
     const questions = user.security_questions_json ? JSON.parse(user.security_questions_json) : [];
-    if (answers.length !== questions.length) return jsonErr("Cevap sayısı eşleşmiyor", 400);
+    if (answers.length !== questions.length) {
+      await recordIpFailure(env, ip);
+      return jsonErr(GENERIC_FAIL, 401);
+    }
     for (let i = 0; i < questions.length; i++) {
       const normAns = String(answers[i] || "").trim().toLowerCase();
       const salt = questions[i].answerSalt || user.password_salt;
       const h = await hashPassword(normAns, salt);
-      if (!timingSafeEqualStr(h, questions[i].answerHash)) return jsonErr("Güvenlik cevabı yanlış", 401);
+      if (!timingSafeEqualStr(h, questions[i].answerHash)) {
+        await recordIpFailure(env, ip);
+        return jsonErr(GENERIC_FAIL, 401);
+      }
     }
+    await resetIpFailures(env, ip);
     const token = randomHex(32);
     const hash = await sha256Hex(token);
     const now = Math.floor(Date.now() / 1000);
@@ -388,7 +429,6 @@ export async function getCurrentUser(env, request) {
 }
 export async function getCurrentUserWithAdminBridge(env, request) {
   const sess = await getCurrentUser(env, request);
-  // === YENİ: askıya alınmış kullanıcı oturumu geçersiz sayılır ===
   if (sess && sess.is_suspended) return null;
   if (sess) return sess;
   const auth = request.headers.get("Authorization") || "";
@@ -397,4 +437,4 @@ export async function getCurrentUserWithAdminBridge(env, request) {
     if (admin) return { user_id: admin.id, username: admin.username, is_admin: 1, is_public: admin.is_public, register_number: admin.register_number, is_approved: 1, is_email_verified: 1 };
   }
   return null;
-                                } 
+    }

@@ -1,16 +1,18 @@
 // social.js — Yorumlar, mesajlar, öneriler + girişsiz admin iletişim formu.
-// Faz 3: CORS temizlendi + /contact-admin IP bazlı rate limit (1 saatte max 5 mesaj)
+// Faz 3: CORS temizlendi + /contact-admin IP bazlı rate limit
+// Faz 6: /social/messages POST → kullanıcı başına saatte 20 mesaj limiti (spam engelleme)
 import { getCurrentUserWithAdminBridge } from "./auth.js";
 
-// === CORS: sadece method + header. Origin ve Credentials index.js son katmanı tarafından eklenir. ===
 const CORS = { "Access-Control-Allow-Methods": "GET,POST,PUT,DELETE,OPTIONS", "Access-Control-Allow-Headers": "Content-Type,Authorization" };
 function jsonRes(data, status = 200) { return new Response(JSON.stringify(data), { status, headers: { ...CORS, "Content-Type": "application/json; charset=utf-8" } }); }
 function jsonErr(msg, status = 500) { return jsonRes({ error: String(msg) }, status); }
 function safeJSON(t, fb = null) { try { return JSON.parse(t); } catch { return fb; } }
 
-// === YENİ: Contact-admin rate limit sabitleri ===
-const CONTACT_ADMIN_WINDOW_SEC = 3600;   // 1 saat pencere
-const CONTACT_ADMIN_MAX_PER_WINDOW = 5;  // aynı IP'den max 5 mesaj
+const CONTACT_ADMIN_WINDOW_SEC = 3600;
+const CONTACT_ADMIN_MAX_PER_WINDOW = 5;
+// === FAZ 6: Mesaj rate limit sabitleri ===
+const MESSAGES_WINDOW_SEC = 3600;
+const MESSAGES_MAX_PER_WINDOW = 20;
 
 export async function handleSocial(request, env, ctx) {
   if (request.method === "OPTIONS") return new Response(null, { status: 204, headers: CORS });
@@ -22,7 +24,6 @@ export async function handleSocial(request, env, ctx) {
   // Girişsiz admin iletişim formu
   if (path === "/contact-admin" && request.method === "POST") {
     const ip = request.headers.get("CF-Connecting-IP") || "";
-    // === YENİ: IP bazlı rate limit (son 1 saatte 5+ mesaj) ===
     if (ip && env.DB) {
       try {
         const since = now() - CONTACT_ADMIN_WINDOW_SEC;
@@ -93,6 +94,14 @@ export async function handleSocial(request, env, ctx) {
   }
   if (path === "/messages" && request.method === "POST") {
     if (!sess) return jsonErr("Giriş gerekli", 401);
+    // === FAZ 6: Rate limit — aynı kullanıcı son 1 saatte 20+ mesaj gönderdiyse 429 ===
+    try {
+      const since = now() - MESSAGES_WINDOW_SEC;
+      const row = await env.DB.prepare("SELECT COUNT(*) AS c FROM messages WHERE from_user_id = ? AND created_at > ?").bind(sess.user_id, since).first();
+      if (Number(row?.c || 0) >= MESSAGES_MAX_PER_WINDOW) {
+        return jsonErr("Çok fazla mesaj gönderdiniz. Lütfen 1 saat sonra tekrar deneyin.", 429);
+      }
+    } catch (e) { console.warn("messages rate limit check:", e.message); }
     let body; try { body = await request.json(); } catch { return jsonErr("Geçersiz JSON", 400); }
     const toUsername = String(body.toUsername || "").trim();
     const content = String(body.content || "").trim();
@@ -127,4 +136,4 @@ export async function handleSocial(request, env, ctx) {
     return jsonRes({ movieId, suggestions: map });
   }
   return jsonErr("Social route bulunamadı", 404);
-    }
+            }

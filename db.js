@@ -1,4 +1,5 @@
-// db.js — Faz 8 Phase D: arrayFields güncel (taxonomy split)
+// db.js — Faz B: taxonomy alanları arrayFields'a eklendi
+// SCHEMA_VERSION 12 → DEĞİŞMEDİ (ek rapor kararı).
 import { FIELD_DEFS } from "./fields.config.js";
 
 export const VERDICT_TTL = 86400;
@@ -201,7 +202,7 @@ export function findStaleFields(profile, fieldRows, forceRefresh) {
   const fetched = new Map(fieldRows.map(r => [r.field, Number(r.fetched_at)]));
   const stale = [];
   const detailFields = new Set(["writers", "writers_ids", "cast", "cast_ids", "director", "director_ids", "producers", "actors", "omdb_directors"]);
-  // === FAZ 8 Phase D: production_process → production_category, yeni 3 alan ===
+  // === FAZ B: subgenres, tropes, themes arrayFields'a eklendi ===
   const arrayFields = new Set([
     "genres", "genres_ids", "spoken_languages", "spoken_languages_ids",
     "production_countries", "production_countries_ids", "production_companies", "production_companies_ids",
@@ -214,7 +215,8 @@ export function findStaleFields(profile, fieldRows, forceRefresh) {
     "sound", "reality", "story_dimensions",
     "related_films", "related_films_detail",
     "filming_locations", "filming_countries", "awards_ids", "nominated_ids",
-    "color_style", "aspect_ratio", "location_mode"
+    "color_style", "aspect_ratio", "location_mode",
+    "subgenres", "tropes", "themes"
   ]);
   for (const [field, def] of Object.entries(FIELD_DEFS)) {
     const raw = profile[field];

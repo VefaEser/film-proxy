@@ -1,4 +1,4 @@
-// filters.js — Faz C fix: includeUnknown kontrolü evaluateFilters'a eklendi
+// filters.js — Faz D fix: evaluateFilters skipTaxonomy
 import { SEMANTIC_FIELDS, FIELD_DEFS, LLM_FIELDS, SCHEMA_VERSION } from "./fields.config.js";
 import { norm, yearOf, safeJSON } from "./db.js";
 
@@ -19,6 +19,8 @@ const TRAIT_TR = {
   disturbing: "ürkütücü, rahatsız edici, mide bulandırıcı veya travmatik sahneler",
   racism: "ırkçılık, ayrımcılık, dini değerlere hakaret, nefret söylemi ve nefret suçu"
 };
+
+const TAXONOMY_FIELDS = new Set(["subgenres", "tropes", "themes"]);
 
 export function buildFilterSentence(filters) {
   const f = filters || {}; const parts = [];
@@ -283,8 +285,9 @@ export function getLocationCount(profile, metatakeLocations, filmmapLocations) {
   return { count: null, estimated: true, source: null };
 }
 function evalLocationCount(profile, filters, state, metatakeLocations, filmmapLocations) { if (filters.locationMin == null && filters.locationMax == null) return; const info = getLocationCount(profile, metatakeLocations, filmmapLocations); if (info.count === null) { state.unknown = true; state.reasons.push("Mekân sayısı: bilinmiyor"); return; } if (filters.locationMin != null && info.count < filters.locationMin) { state.match = false; state.reasons.push(`Mekân sayısı ${info.count} < ${filters.locationMin}`); } if (filters.locationMax != null && info.count > filters.locationMax) { state.match = false; state.reasons.push(`Mekân sayısı ${info.count} > ${filters.locationMax}`); } }
-export function evaluateFilters(profile, filters, semanticVerdict, metatakeLocations, filmmapLocations) {
+export function evaluateFilters(profile, filters, semanticVerdict, metatakeLocations, filmmapLocations, opts = {}) {
   const state = { match: true, reasons: [], unknown: false, conflicts: false };
+  const skipTaxonomy = opts.skipTaxonomy === true;
   if (!passesLocalFilters(profile, filters)) { state.match = false; state.reasons.push("Kesin filtre uyuşmadı"); return state; }
   const setChecks = [
     ["genres_ids", "genres", "Tür", "genres"],
@@ -305,12 +308,13 @@ export function evaluateFilters(profile, filters, semanticVerdict, metatakeLocat
   ];
   for (const [pf, ff, label, altField] of setChecks) {
     const f = filters[ff]; if (!f) continue;
+    // ✅ FAZ D: pre-flight aşamasında taxonomy atlanır (henüz AI'dan doldurulmadı)
+    if (skipTaxonomy && TAXONOMY_FIELDS.has(ff)) continue;
     const alt = altField ? profile[altField] : undefined;
     const res = matchSet(profile[pf], f, alt);
     if (!res.match) state.match = false;
     if (res.unknown) {
       state.unknown = true;
-      // ✅ YENİ: includeUnknown false ise "bilinmiyor" filmi de ele
       if (filters.includeUnknown !== true) state.match = false;
     }
     if (res.conflict) state.conflicts = true;
@@ -333,4 +337,4 @@ export function evaluateFilters(profile, filters, semanticVerdict, metatakeLocat
     else { state.unknown = true; if (filters.includeUnknown !== true) state.match = false; if (semanticVerdict.reason) state.reasons.push(semanticVerdict.reason); }
   }
   return state;
-    }
+             }

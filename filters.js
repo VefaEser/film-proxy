@@ -1,8 +1,5 @@
-// filters.js — Dil filtresi hem original_language hem spoken_languages (languageOnlyOriginal bayrağına saygılı),
-// passesLocalFilters unknown da ELE (rated, award, director, writers, cast, company), family_content unknown da ELE.
-// semanticSignature: story_locations, filming_locations, oranlar, mekan sayısı da imzaya dahil.
-// Faz 4: color → color_style rename (köprü kaldırıldı, tam tutarlılık)
-import { SEMANTIC_FIELDS, FIELD_DEFS, LLM_FIELDS } from "./fields.config.js";
+// filters.js — semanticSignature artık SCHEMA_VERSION içeriyor (model/prompt/schema değişince cache invalidate)
+import { SEMANTIC_FIELDS, FIELD_DEFS, LLM_FIELDS, SCHEMA_VERSION } from "./fields.config.js";
 import { norm, yearOf, safeJSON } from "./db.js";
 
 const DEFAULT_MIN_IMDB_VOTES = 100;
@@ -44,7 +41,6 @@ export function buildFilterSentence(filters) {
   setInclude("character_traits", "karakter özellikleri"); setExclude("character_traits", "karakter özellikleri şunlardan olmamalı:");
   setInclude("story_dimensions", "filmin diğer filmlerle ilgisi"); setExclude("story_dimensions", "filmin diğer filmlerle ilgisi şunlardan olmamalı:");
   setInclude("aspect_ratio", "en-boy oranı"); setExclude("aspect_ratio", "en-boy oranı şunlardan olmamalı:");
-  // === FAZ 4: color → color_style ===
   setInclude("color_style", "görsel renk stili"); setExclude("color_style", "görsel renk stili şunlardan olmamalı:");
   if (f.family_content) for (const [key, val] of Object.entries(f.family_content)) {
     if (!val) continue;
@@ -81,6 +77,7 @@ export function buildFilterContext(filters, configAll) {
   }
   return lines.join("\n\n");
 }
+// === FAZ 7: SCHEMA_VERSION imzaya dahil → model/prompt/schema değişince cache invalidate ===
 export function semanticSignature(filters) {
   const f = filters || {}; const active = {};
   for (const field of SEMANTIC_FIELDS) if (f[field] && (f[field].include?.length || f[field].exclude?.length)) active[field] = f[field];
@@ -95,9 +92,10 @@ export function semanticSignature(filters) {
   if (f.locationMin != null) active.locationMin = f.locationMin;
   if (f.locationMax != null) active.locationMax = f.locationMax;
   const sorted = Object.keys(active).sort().reduce((o, k) => { o[k] = active[k]; return o; }, {});
-  return JSON.stringify(sorted);
+  // === FAZ 7: SCHEMA_VERSION ile model/prompt değişikliği cache'i invalidate eder ===
+  return JSON.stringify({ v: SCHEMA_VERSION, f: sorted });
 }
-export function hasSemanticFilters(filters) { return semanticSignature(filters) !== "{}"; }
+export function hasSemanticFilters(filters) { return semanticSignature(filters) !== JSON.stringify({ v: SCHEMA_VERSION, f: {} }); }
 export function hasFamilyFilters(filters) { const f = filters || {}; return !!(f.family_content && Object.keys(f.family_content).length); }
 export function ratioFieldsNeeded(filters) { const f = filters || {}; const fields = []; if (f.dayRatioMin != null) fields.push("day_ratio"); if (f.outdoorRatioMin != null) fields.push("indoor_ratio"); if (f.dialogueDensityMin != null) fields.push("dialogue_density"); return fields; }
 export function locationFieldsNeeded(filters) { const f = filters || {}; return (f.locationMin != null || f.locationMax != null) ? ["location_count"] : []; }
@@ -210,7 +208,6 @@ export function evaluateFilters(profile, filters, semanticVerdict, metatakeLocat
     ["character_traits", "character_traits", "Karakter niteliği", null], ["aspect_ratio", "aspect_ratio", "En-boy oranı", null],
     ["narrative_style", "narrative_style", "Anlatım tarzı", null], ["production_process", "production_process", "Filmin sanatsal veya sektörel konumu", null],
     ["sound", "sound", "Ses", null], ["reality", "reality", "Gerçeklik", null], ["story_dimensions", "story_dimensions", "Filmin diğer filmlerle ilgisi", null],
-    // === FAZ 4: color → color_style (köprü kaldırıldı, pf ve ff aynı) ===
     ["color_style", "color_style", "Görsel renk stili", null]
   ];
   for (const [pf, ff, label, altField] of setChecks) {
@@ -233,4 +230,4 @@ export function evaluateFilters(profile, filters, semanticVerdict, metatakeLocat
     else { state.unknown = true; if (semanticVerdict.reason) state.reasons.push(semanticVerdict.reason); }
   }
   return state;
-} 
+    }

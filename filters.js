@@ -1,4 +1,4 @@
-// filters.js — Faz 8 Phase D revize: technical_style kamera label güncellendi
+// filters.js — Faz B: taxonomy filtreleri eklendi
 import { SEMANTIC_FIELDS, FIELD_DEFS, LLM_FIELDS, SCHEMA_VERSION } from "./fields.config.js";
 import { norm, yearOf, safeJSON } from "./db.js";
 
@@ -36,7 +36,6 @@ export function buildFilterSentence(filters) {
   setInclude("production_category", "filmin yapım kategorisi"); setExclude("production_category", "filmin yapım kategorisi şunlardan olmamalı:");
   setInclude("narrative_pace", "anlatım temposu"); setExclude("narrative_pace", "anlatım temposu şunlardan olmamalı:");
   setInclude("cinema_approach", "sinemasal akım/yaklaşım"); setExclude("cinema_approach", "sinemasal akım/yaklaşım şunlardan olmamalı:");
-  // === FAZ 8 Phase D revize: technical_style artık sadece kamera ===
   setInclude("technical_style", "kamera kullanım tekniği"); setExclude("technical_style", "kamera kullanım tekniği şunlardan olmamalı:");
   setInclude("narrative_style", "anlatım tarzı (yapı)"); setExclude("narrative_style", "anlatım tarzı şunlardan olmamalı:");
   setInclude("sound", "ses ve müzik özelliği"); setExclude("sound", "ses ve müzik özelliği şunlardan olmamalı:");
@@ -46,6 +45,10 @@ export function buildFilterSentence(filters) {
   setInclude("story_dimensions", "filmin diğer filmlerle ilgisi"); setExclude("story_dimensions", "filmin diğer filmlerle ilgisi şunlardan olmamalı:");
   setInclude("aspect_ratio", "en-boy oranı"); setExclude("aspect_ratio", "en-boy oranı şunlardan olmamalı:");
   setInclude("color_style", "görsel renk stili"); setExclude("color_style", "görsel renk stili şunlardan olmamalı:");
+  // === FAZ B: Taxonomy alanları ===
+  setInclude("subgenres", "alt tür"); setExclude("subgenres", "alt tür şunlardan olmamalı:");
+  setInclude("tropes", "anlatı motifi"); setExclude("tropes", "anlatı motifi şunlardan olmamalı:");
+  setInclude("themes", "tema"); setExclude("themes", "tema şunlardan olmamalı:");
   if (f.family_content) for (const [key, val] of Object.entries(f.family_content)) {
     if (!val) continue;
     const label = TRAIT_TR[key] || key;
@@ -101,6 +104,17 @@ export function hasSemanticFilters(filters) { return semanticSignature(filters) 
 export function hasFamilyFilters(filters) { const f = filters || {}; return !!(f.family_content && Object.keys(f.family_content).length); }
 export function ratioFieldsNeeded(filters) { const f = filters || {}; const fields = []; if (f.dayRatioMin != null) fields.push("day_ratio"); if (f.outdoorRatioMin != null) fields.push("indoor_ratio"); if (f.dialogueDensityMin != null) fields.push("dialogue_density"); return fields; }
 export function locationFieldsNeeded(filters) { const f = filters || {}; return (f.locationMin != null || f.locationMax != null) ? ["location_count"] : []; }
+// === FAZ B: Taxonomy filtre alanları gereksinimi (include VEYA exclude) ===
+export function taxonomyFieldsNeeded(filters) {
+  const f = filters || {};
+  const fields = [];
+  const hasSel = (v) => !!(v?.include?.length || v?.exclude?.length);
+  if (hasSel(f.subgenres)) fields.push("subgenres");
+  if (hasSel(f.tropes)) fields.push("tropes");
+  if (hasSel(f.themes)) fields.push("themes");
+  return fields;
+}
+export function hasTaxonomyFilters(filters) { return taxonomyFieldsNeeded(filters).length > 0; }
 
 function toNum(v) { if (v === null || v === undefined || v === "") return null; if (typeof v === "string" && /^n\/?a$/i.test(v.trim())) return null; const n = Number(String(v).replace(/[^\d.-]/g, "")); return Number.isFinite(n) ? n : null; }
 
@@ -286,7 +300,11 @@ export function evaluateFilters(profile, filters, semanticVerdict, metatakeLocat
     ["cinema_approach", "cinema_approach", "Sinemasal akım/yaklaşım", null],
     ["technical_style", "technical_style", "Kamera kullanım tekniği", null],
     ["sound", "sound", "Ses ve müzik", null], ["reality", "reality", "Gerçeklik", null], ["story_dimensions", "story_dimensions", "Filmin diğer filmlerle ilgisi", null],
-    ["color_style", "color_style", "Görsel renk stili", null]
+    ["color_style", "color_style", "Görsel renk stili", null],
+    // === FAZ B: Taxonomy ===
+    ["subgenres", "subgenres", "Alt tür", null],
+    ["tropes", "tropes", "Anlatı motifi", null],
+    ["themes", "themes", "Tema", null]
   ];
   for (const [pf, ff, label, altField] of setChecks) {
     const f = filters[ff]; if (!f) continue;
@@ -314,4 +332,4 @@ export function evaluateFilters(profile, filters, semanticVerdict, metatakeLocat
     else { state.unknown = true; if (semanticVerdict.reason) state.reasons.push(semanticVerdict.reason); }
   }
   return state;
-  }
+    }

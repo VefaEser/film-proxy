@@ -1,6 +1,12 @@
 // taxonomy.config.js — Birleştirici modül (TAXONOMY_VERSION 2.0.0)
 // 76 alt tür + 155 klişe + 75 tema = 306 kavram
 // 4 alt modülden beslenir, dışarıya tek bir API sunar.
+//
+// ✅ FAZ H: validateTaxonomy() düzenlendi.
+//    - errors: kritik hatalar (kullanıcı/AI davranışını etkiler)
+//    - warnings: veri hijyeni uyarıları (ilişki referansları; davranışı etkilemez)
+//    - Startup'ta OTOMATİK ÇALIŞMAZ (CPU bütçesi). Sadece /admin/taxonomy/validate
+//      endpoint'i veya CI workflow üzerinden manuel çağrılır.
 import { SUBGENRES } from "./taxonomy.subgenres.js";
 import { TROPES, TROPE_SUBTYPES } from "./taxonomy.tropes.js";
 import { THEMES } from "./taxonomy.themes.js";
@@ -104,9 +110,16 @@ export function getTaxonomyEntry(slug) {
   return arr.find(e => e.slug === s) || null;
 }
 
-// Sözlük bütünlüğü doğrulaması — startup'ta opsiyonel çağrılabilir.
+// ✅ FAZ H: Sözlük bütünlüğü doğrulaması.
+// - errors   : kritik hatalar (kullanıcıya/AI'ya etki eder)
+// - warnings : veri hijyeni uyarıları (ilişki referansları; davranışı etkilemez)
+// Startup'ta OTOMATİK ÇALIŞMAZ. Manuel çağrı:
+//   - GET /admin/taxonomy/validate
+//   - CI workflow (d1-migrate.yml içinde ayrı adım)
+//   - Lokal: node -e "import('./taxonomy.config.js').then(m => console.log(m.validateTaxonomy()))"
 export function validateTaxonomy() {
   const errors = [];
+  const warnings = [];
   const seenSlugs = new Set();
   const all = [...SUBGENRES, ...TROPES, ...THEMES];
   for (const e of all) {
@@ -118,9 +131,11 @@ export function validateTaxonomy() {
     if (e.subtype && !TROPE_SUBTYPES.has(e.subtype)) errors.push(`Geçersiz subtype: ${e.slug} → ${e.subtype}`);
   }
   for (const t of TROPES) if (!t.subtype) errors.push(`Subtype eksik: ${t.slug}`);
+  // ✅ FAZ H: related_slugs artık warnings'a düşüyor.
+  // Geçersiz referanslar kullanıcı davranışını etkilemez, sadece veri hijyeni sorunudur.
   for (const e of all) {
     for (const rel of (e.related_slugs || [])) {
-      if (!seenSlugs.has(rel)) errors.push(`Geçersiz related_slug: ${e.slug} → ${rel}`);
+      if (!seenSlugs.has(rel)) warnings.push(`Geçersiz related_slug: ${e.slug} → ${rel}`);
     }
   }
   return {
@@ -131,6 +146,7 @@ export function validateTaxonomy() {
     total: all.length,
     keywordMapped: Object.keys(TMDB_KEYWORD_MAP).length,
     keywordCandidates: Object.keys(TMDB_KEYWORD_CANDIDATES).length,
-    errors
+    errors,
+    warnings
   };
-         }
+  }

@@ -1,4 +1,6 @@
 // fields.config.js — Faz A: taxonomy alanları eklendi
+// ✅ FAZ H: FAMILY_TRAITS + PROPAGANDA_TYPES_LIST sabitleri; FIELD_RULES.family_content
+//           (propaganda ayrım notuyla).
 // SCHEMA_VERSION 12 → DEĞİŞMEDİ (ek rapor kararı).
 // TAXONOMY_VERSION ayrı yönetilir (taxonomy.config.js).
 import { TAXONOMY_VERSION } from "./taxonomy.config.js";
@@ -17,6 +19,15 @@ export const STORY_DIMENSIONS_LIST = [
   "concept", "reboot", "film_franchise", "remake",
   "similar_script_version", "same_plot_diff_script", "same_plot_diff_angle"
 ];
+
+// ✅ FAZ H: Aile rehberi trait listesi (frontend app-defs.js FAMILY_TRAITS ile uyumlu)
+export const FAMILY_TRAITS_LIST = [
+  "tobacco", "alcohol", "drugs", "sex_nudity", "violence",
+  "crimes_against_humanity", "terror", "illegal", "lgbt", "pedophilia",
+  "unmarried", "profanity", "disturbing", "racism", "propaganda"
+];
+// ✅ FAZ H: Propaganda türleri (frontend app-defs.js PROPAGANDA_TYPES ile uyumlu)
+export const PROPAGANDA_TYPES_LIST = ["lifestyle", "religious", "political", "ideological", "advertising"];
 
 export const FIELD_DEFS = {
   genres:                 { source: "tmdb", ttl: days(90), required: true },
@@ -64,7 +75,6 @@ export const FIELD_DEFS = {
   aspect_ratio:       { source: "llm", ttl: days(90) },
   season:             { source: "llm", ttl: days(90) },
   color_style:        { source: "llm", ttl: days(90) },
-  // === FAZ A: Taxonomy alanları — source "llm" olarak KALIR (forceAll'dan ayrı kontrol) ===
   subgenres:          { source: "llm", ttl: days(90) },
   tropes:             { source: "llm", ttl: days(90) },
   themes:             { source: "llm", ttl: days(90) },
@@ -111,6 +121,8 @@ export { TAXONOMY_VERSION };
 
 const _CHAR_TRAITS_JSON = CHARACTER_TRAITS_LIST.map(x => `"${x}"`).join(",");
 const _STORY_DIMS_JSON = STORY_DIMENSIONS_LIST.map(x => `"${x}"`).join(",");
+const _FAMILY_TRAITS_JSON = FAMILY_TRAITS_LIST.map(x => `"${x}"`).join(",");
+const _PROPAGANDA_TYPES_JSON = PROPAGANDA_TYPES_LIST.map(x => `"${x}"`).join(",");
 
 export const FIELD_RULES = {
   narrative_style: `narrative_style: string[] — İKİ AŞAMALI:
@@ -217,7 +229,18 @@ TANIMLAR:
 1) ÖNCE şu slug listesinden en az birini seç (filtre eşleşmesi bunlarla yapılır): ["1:1","1.33:1","1.37:1","1.66:1","1.78:1","1.85:1","2.00:1","2.20:1","2.35:1","2.39:1","2.76:1"]
 2) SONRA istediğin kadar serbest açıklama ekleyebilirsin — bunlar filtrelenmez, kartta bilgi olarak gösterilir.`,
 
-  // === FAZ A: Taxonomy alanları ===
+  // ✅ FAZ H: Aile rehberi — propaganda ayrım notu eklendi.
+  family_content: `family_content: nesne — her trait için {"intensity": "none|few|side|main", "approach": "bad|neutral|legit"}.
+Geçerli trait anahtarları: [${_FAMILY_TRAITS_JSON}]
+- intensity: none=hiç yok, few=birkaç sahne, side=yan konu (yoğun), main=ana konu (çok yoğun).
+- approach: bad=kötü gösteriyor, neutral=tarafsız kalıyor, legit=meşrulaştırıyor.
+PROPAGANDA ÖZEL KURALI:
+- propaganda trait'i için ek olarak "details": {"include": ["lifestyle"|"religious"|"political"|"ideological"|"advertising", ...]} ve isteğe bağlı "freeText": "serbest açıklama" eklenir.
+- Geçerli propaganda türleri: [${_PROPAGANDA_TYPES_LIST}]
+- ÖNEMLİ AYRIM: "Propaganda" = bir görüşü, ideolojiyi, ürünü veya yaşam tarzını SİSTEMATİK olarak teşvik eden film. Siyasi/politik film, eleştirel film, tarihî olay anlatan film PROPAGANDA DEĞİLDİR.
+- Propaganda tespiti için 3 soru: (1) Film bir görüşü sistematik olarak teşvik ediyor mu, yoksa sadece tasvir mi ediyor? (2) Karşıt görüşe yer veriyor mu? (Veriyorsa propaganda değildir.) (3) İzleyiciyi belirli bir eyleme/yönelime teşvik etmeyi amaçlıyor mu?
+- Emin değilsen "none" yaz, uydurma.`,
+
   subgenres: `subgenres: string[] — Filmin TMDB ana türünün daha özel bir alt kategorisi (ör: Heist, Neo-Noir, Folk Horror, Cyberpunk).
 İKİ AŞAMALI:
 1) ÖNCE geçerli subgenre slug listesinden en az birini seç (filtre eşleşmesi bunlarla yapılır). Örnek slug'lar: "heist", "neo_noir", "cyberpunk", "folk_horror", "time_travel".
@@ -241,7 +264,6 @@ export const SEMANTIC_FIELDS = [
   "sound", "reality",
   "story_dimensions", "family_content", "season", "aspect_ratio",
   "original_work", "color_style", "location_mode",
-  // === FAZ A: Taxonomy ===
   "subgenres", "tropes", "themes"
 ];
 export const RATIO_FIELDS = ["day_ratio", "indoor_ratio", "dialogue_density"];

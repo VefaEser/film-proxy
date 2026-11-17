@@ -1,4 +1,5 @@
 // filters.js — Faz D fix: evaluateFilters skipTaxonomy
+// ✅ FAZ H: TRAIT_TR.propaganda + buildFilterSentence'da propaganda detayları + serbest keyword'ler.
 import { SEMANTIC_FIELDS, FIELD_DEFS, LLM_FIELDS, SCHEMA_VERSION } from "./fields.config.js";
 import { norm, yearOf, safeJSON } from "./db.js";
 
@@ -17,7 +18,8 @@ const TRAIT_TR = {
   unmarried: "nikahsız ilişkiler, evlilik dışı birliktelik",
   profanity: "argo, küfür, hakaret ve kaba dil",
   disturbing: "ürkütücü, rahatsız edici, mide bulandırıcı veya travmatik sahneler",
-  racism: "ırkçılık, ayrımcılık, dini değerlere hakaret, nefret söylemi ve nefret suçu"
+  racism: "ırkçılık, ayrımcılık, dini değerlere hakaret, nefret söylemi ve nefret suçu",
+  propaganda: "propaganda ve reklam içeriği"
 };
 
 const TAXONOMY_FIELDS = new Set(["subgenres", "tropes", "themes"]);
@@ -50,12 +52,18 @@ export function buildFilterSentence(filters) {
   setInclude("subgenres", "alt tür"); setExclude("subgenres", "alt tür şunlardan olmamalı:");
   setInclude("tropes", "anlatı motifi"); setExclude("tropes", "anlatı motifi şunlardan olmamalı:");
   setInclude("themes", "tema"); setExclude("themes", "tema şunlardan olmamalı:");
+  // ✅ FAZ H: family_content döngüsüne propaganda details + freeText eklendi
   if (f.family_content) for (const [key, val] of Object.entries(f.family_content)) {
     if (!val) continue;
     const label = TRAIT_TR[key] || key;
     const intensity = INTENSITY_TR[val.intensity];
     if (intensity) parts.push(`${label} içeriği ${intensity}`);
     if (val.approach && APPROACH_TR[val.approach]) parts.push(`${label} yaklaşımı ${APPROACH_TR[val.approach]}`);
+    if (key === "propaganda") {
+      const typeLabels = (val.details?.include || []).map(d => d.label || d.id).filter(Boolean);
+      if (typeLabels.length) parts.push(`propaganda türü: ${typeLabels.join(", ")}`);
+      if (val.freeText) parts.push(`propaganda serbest açıklaması: "${val.freeText}"`);
+    }
   }
   if (f.characterDensity) {
     const c = f.characterDensity; const clauses = [];
@@ -65,6 +73,8 @@ export function buildFilterSentence(filters) {
     if (clauses.length) parts.push(clauses.join(", "));
   }
   if (f.locationMin != null || f.locationMax != null) parts.push(`mekân sayısı ${f.locationMin ?? "?"}-${f.locationMax ?? "?"}`);
+  // ✅ FAZ H: Serbest anahtar kelimeler (AI tarafından yorumlanır)
+  if (f.keywords?.__unresolved?.length) parts.push(`serbest anahtar kelimeler (anlamca uyum aranıyor): ${f.keywords.__unresolved.join(", ")}`);
   return parts.length ? parts.join(". ") + "." : "";
 }
 export function buildFilterContext(filters, configAll) {
@@ -308,7 +318,6 @@ export function evaluateFilters(profile, filters, semanticVerdict, metatakeLocat
   ];
   for (const [pf, ff, label, altField] of setChecks) {
     const f = filters[ff]; if (!f) continue;
-    // ✅ FAZ D: pre-flight aşamasında taxonomy atlanır (henüz AI'dan doldurulmadı)
     if (skipTaxonomy && TAXONOMY_FIELDS.has(ff)) continue;
     const alt = altField ? profile[altField] : undefined;
     const res = matchSet(profile[pf], f, alt);
@@ -337,4 +346,4 @@ export function evaluateFilters(profile, filters, semanticVerdict, metatakeLocat
     else { state.unknown = true; if (filters.includeUnknown !== true) state.match = false; if (semanticVerdict.reason) state.reasons.push(semanticVerdict.reason); }
   }
   return state;
-             }
+    }

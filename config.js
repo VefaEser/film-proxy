@@ -1,4 +1,5 @@
 // config.js — Faz B: taxonomy filter_info eklendi
+// ✅ FAZ H: filter_info.family_propaganda eklendi; taxonomy sayıları düzeltildi (76/155/75).
 import { safeJSON } from "./db.js";
 import { invalidatePromptCache } from "./llm.js";
 
@@ -148,6 +149,31 @@ Aile rehberi. Her içerik türü için intensity ve approach.
 - intensity: none=hiç yok, few=birkaç sahne, side=yan konu, main=ana konu.
 - approach: bad=kötü gösteriyor, neutral=tarafsız kalıyor, legit=meşrulaştırıyor.`,
 
+  // ✅ FAZ H: Propaganda ve Reklam filtresi bağlamı
+  "filter_info.family_propaganda": `[YZ bağlamı]
+FİLTRE ADI: Propaganda ve Reklam içeriği.
+Bir film "propaganda" sayılır eğer bir görüşü, ideolojiyi, yaşam tarzını veya ürünü SİSTEMATİK OLARAK TEŞVİK ediyorsa.
+
+PROPAGANDA TÜRLERİ (çoklu seçim):
+- lifestyle: Yaşam tarzı propagandası (belirli bir hayat tarzını, tüketim alışkanlığını veya değerler sistemini yüceltici/teşvik edici).
+- religious: Dini propaganda (belirli bir inancı, dini pratiği veya dini kurumu sistematik olarak yüceltici veya karşıt görüşü bastırıcı).
+- political: Siyasi propaganda (belirli bir siyasi görüşü, partiyi, rejimi veya ideolojiyi sistematik olarak destekleyici veya karşıtını karalayıcı).
+- ideological: İdeolojik propaganda (belirli bir dünya görüşünü — komünizm, kapitalizm, milliyetçilik, liberalizm, muhafazakârlık vb. — sistematik olarak teşvik edici).
+- advertising: Reklam (belirli bir ürün, marka veya hizmeti film içinde belirgin biçimde tanıtıcı, product placement).
+
+KRİTİK AYRIMLAR:
+- Siyasi/politik film, eleştirel film, tarihî olay anlatan film PROPAGANDA DEĞİLDİR.
+- Bir görüşü SADECE TASVİR eden (anlatan, gösteren) film propaganda değildir. Propaganda, o görüşü TEŞVİK eder.
+- Karşıt görüşe belirgin biçimde yer veren film propaganda değildir (dengeli/eleştirel anlatı).
+- İzleyiciyi belirli bir eyleme (oy verme, satın alma, inanma, katılma) yönlendirmeyi amaçlayan film propagandadır.
+
+KARAR İÇİN 3 SORU:
+1. Film bir görüşü sistematik olarak teşvik ediyor mu, yoksa sadece tasvir mi ediyor?
+2. Karşıt görüşe yer veriyor mu? (Veriyorsa propaganda değildir.)
+3. İzleyiciyi belirli bir eyleme/yönelime teşvik etmeyi amaçlıyor mu?
+
+Emin değilsen "none" yaz, uydurma.`,
+
   "filter_info.color_style": `[YZ bağlamı]
 Filmin görsel renk stili.
 - black_white: Tamamen siyah beyaz.
@@ -265,6 +291,7 @@ FİLTRE ADI: Alt tür. TMDB ana türünün daha özel bir alt sınıfı. TMDB an
 - contemporary_western: Çağdaş western.
 - music_documentary: Müzik belgeseli.
 - true_crime_documentary: Suç belgeseli.
+Tam liste 76 kavramdır.
 ${TWO_STAGE_NOTE}`,
 
   "filter_info.tropes": `[YZ bağlamı]
@@ -281,7 +308,7 @@ Bir motifin filmde YALNIZCA BİR KEZ geçmesi otomatik olarak o klişenin bulund
 - hero_turns_villain: İyi karakterin kötüye dönüşmesi.
 - bittersweet_ending: Mutlu sonun bozulması (narrative_form).
 - open_ended_ending: Açık uçlu final (narrative_form).
-Tam liste 100 kavramdır. Tema ile karıştırılmamalıdır: tema düşünsel meseledir, trope anlatı aracıdır.
+Tam liste 155 kavramdır. Tema ile karıştırılmamalıdır: tema düşünsel meseledir, trope anlatı aracıdır.
 ${TWO_STAGE_NOTE}`,
 
   "filter_info.themes": `[YZ bağlamı]
@@ -296,7 +323,7 @@ FİLTRE ADI: Tema. Filmin temel düşüncesi, insani meselesi, toplumsal veya fe
 - power: Güç ve iktidar.
 - redemption: Kefaret ve arınma.
 - revenge: İntikam (tema).
-Tam liste 60 kavramdır. Olay örgüsü motifiyle karıştırılmamalıdır. Örn: "Yıllar sonra yeniden buluşan aile üyeleri" bir motif (reunion_after_years); "Aile bağlarının önemi" bir tema (family_bonds).
+Tam liste 75 kavramdır. Olay örgüsü motifiyle karıştırılmamalıdır. Örn: "Yıllar sonra yeniden buluşan aile üyeleri" bir motif (reunion_after_years); "Aile bağlarının önemi" bir tema (family_bonds).
 ${TWO_STAGE_NOTE}`
 };
 
@@ -363,4 +390,4 @@ export async function setConfig(env, key, value) {
     `INSERT INTO app_config (key, value, updated_at) VALUES (?, ?, ?)
      ON CONFLICT(key) DO UPDATE SET value = excluded.value, updated_at = excluded.updated_at`
   ).bind(key, value, Math.floor(Date.now() / 1000)).run();
-  }
+      }

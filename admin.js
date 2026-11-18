@@ -17,6 +17,64 @@ async function requireAdmin(env, request) {
 
 const ALLOWED_PERMS = new Set(["refresh_movie","edit_suggestions_approve","comment_approve","user_manage","field_unlock","csv_import_cards","view_private"]);
 
+function _globalRowHash(s) {
+  let h = 0;
+  const str = String(s || "");
+  for (let i = 0; i < str.length; i++) h = ((h << 5) - h + str.charCodeAt(i)) | 0;
+  return (h >>> 0).toString(36);
+}
+function _cleanImdb(v) { return String(v || "").replace(/^tt/i, "").trim(); }
+function _globalMovieId(row) {
+  const imdb = _cleanImdb(row.imdb_id || row.Const || row.imdbId);
+  if (imdb) return "imdb:" + imdb;
+  const tmdb = parseInt(row.tmdb_id || row.tmdbId);
+  if (Number.isFinite(tmdb)) return "tmdb:" + tmdb;
+  return "row:" + _globalRowHash(String(row.title_original || row.title || "") + "|" + String(row.year || ""));
+}
+async function _upsertGlobalRows(env, rows, dataset, revision) {
+  const now = Math.floor(Date.now() / 1000);
+  const stmts = [];
+  for (const row of rows) {
+    const imdb = _cleanImdb(row.imdb_id || row.Const || row.imdbId);
+    const tmdb = parseInt(row.tmdb_id || row.tmdbId);
+    const movieId = _globalMovieId(row);
+    const titleOriginal = String(row.title_original || row.original_title || row.title || "").trim();
+    const titleTr = String(row.title_tr || row.title || "").trim();
+    const year = parseInt(row.year) || null;
+    const runtime = parseInt(row.runtime) || null;
+    const imdbRating = row.imdb_rating != null ? Number(row.imdb_rating) : (row.imdbRating != null ? Number(row.imdbRating) : null);
+    const imdbVotes = parseInt(String(row.imdb_votes || row.imdbVotes || "").replace(/[^\d]/g, "")) || null;
+    const genres = Array.isArray(row.genres) ? row.genres.join(", ") : String(row.genres || "");
+    const directors = Array.isArray(row.directors) ? row.directors.join(", ") : String(row.directors || "");
+    const dataJson = JSON.stringify({ ...row, _raw_csv: row._raw_csv || row });
+    const rowHash = _globalRowHash(`${imdb}|${titleOriginal}|${year}|${dataset}|${revision || ""}`);
+    stmts.push(env.DB.prepare(
+      `INSERT INTO global_movies (movie_id, imdb_id, tmdb_id, title_original, title_tr, year, runtime, imdb_rating, imdb_votes, genres, directors, source_dataset, source_revision, source_row_hash, data_json, created_at, updated_at)
+       VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+       ON CONFLICT(movie_id) DO UPDATE SET
+         imdb_id = excluded.imdb_id,
+         tmdb_id = excluded.tmdb_id,
+         title_original = excluded.title_original,
+         title_tr = excluded.title_tr,
+         year = excluded.year,
+         runtime = excluded.runtime,
+         imdb_rating = excluded.imdb_rating,
+         imdb_votes = excluded.imdb_votes,
+         genres = excluded.genres,
+         directors = excluded.directors,
+         source_dataset = excluded.source_dataset,
+         source_revision = excluded.source_revision,
+         source_row_hash = excluded.source_row_hash,
+         data_json = excluded.data_json,
+         updated_at = excluded.updated_at`
+    ).bind(movieId, imdb || null, Number.isFinite(tmdb) ? tmdb : null, titleOriginal || null, titleTr || null, year, runtime, imdbRating, imdbVotes, genres || null, directors || null, dataset, revision || null, rowHash, dataJson, now, now));
+  }
+  for (let i = 0; i < stmts.length; i += 50) {
+    await env.DB.batch(stmts.slice(i, i + 50));
+  }
+  return { inserted: rows.length, updated: 0, skipped: 0 };
+}
+
 export async function handleAdmin(request, env, ctx) {
   if (request.method === "OPTIONS") return new Response(null, { status: 204, headers: CORS });
   const url = new URL(request.url);
@@ -101,6 +159,54 @@ export async function handleAdmin(request, env, ctx) {
       await env.DB.prepare("UPDATE edit_suggestions SET status = ?, reviewed_by = ?, reviewed_at = ? WHERE id = ?").bind(newStatus, sess.user_id, now(), id).run();
       return jsonRes({ ok: true });
     }
+    if (path === "/hf-import/start" && request.method === "POST") {
+      let body; try { body = await request.json(); } catch { return jsonErr("Geçersiz JSON", 400); }
+      const sourceDataset = String(body.sourceDataset || "").trim();
+      if (!sourceDataset) return jsonErr("sourceDataset gerekli", 400);
+      const jobId = `job_${Date.now()}_${Math.random().toString(36).slice(2, 8)}`;
+      const nowTs = now();
+      await env.DB.prepare(
+        `INSERT INTO import_jobs (id, admin_user_id, source_dataset, source_revision, source_total_rows, source_total_chunks, status, created_at, updated_at)
+         VALUES (?, ?, ?, ?, ?, ?, 'pending', ?, ?)`
+      ).bind(
+        jobId, sess.user_id, sourceDataset, String(body.sourceRevision || "").trim() || null,
+        Number.isFinite(parseInt(body.totalRows)) ? parseInt(body.totalRows) : null,
+        Number.isFinite(parseInt(body.totalChunks)) ? parseInt(body.totalChunks) : null,
+        nowTs, nowTs
+      ).run();
+      return jsonRes({ ok: true, jobId });
+    }
+    if (path === "/hf-import/chunk" && request.method === "POST") {
+      let body; try { body = await request.json(); } catch { return jsonErr("Geçersiz JSON", 400); }
+      const jobId = String(body.jobId || "").trim();
+      const rows = Array.isArray(body.rows) ? body.rows : [];
+      if (!jobId) return jsonErr("jobId gerekli", 400);
+      if (!rows.length) return jsonErr("rows boş", 400);
+      if (rows.length > 250) return jsonErr("Tek chunk en fazla 250 satır olabilir", 400);
+      const job = await env.DB.prepare("SELECT * FROM import_jobs WHERE id = ?").bind(jobId).first();
+      if (!job) return jsonErr("Import job bulunamadı", 404);
+      if (job.status === "completed" || job.status === "cancelled") return jsonErr("Bu job artık kapalı", 409);
+      const res = await _upsertGlobalRows(env, rows, job.source_dataset, job.source_revision);
+      const newCompleted = (job.completed_chunks || 0) + 1;
+      const status = job.source_total_chunks && newCompleted >= job.source_total_chunks ? "completed" : "running";
+      const finishedAt = status === "completed" ? now() : null;
+      await env.DB.prepare(
+        `UPDATE import_jobs SET completed_chunks = ?, inserted_rows = inserted_rows + ?, status = ?, updated_at = ?, finished_at = COALESCE(?, finished_at) WHERE id = ?`
+      ).bind(newCompleted, res.inserted, status, now(), finishedAt, jobId).run();
+      return jsonRes({ ok: true, jobId, completedChunks: newCompleted, insertedRows: res.inserted, status });
+    }
+    if (path === "/hf-import/status" && request.method === "GET") {
+      const jobId = String(url.searchParams.get("id") || "").trim();
+      if (!jobId && url.searchParams.get("list") === "1") {
+        const { results } = await env.DB.prepare("SELECT * FROM import_jobs ORDER BY created_at DESC LIMIT 20").all();
+        return jsonRes({ ok: true, jobs: results || [] });
+      }
+      if (!jobId) return jsonErr("id veya list=1 gerekli", 400);
+      const job = await env.DB.prepare("SELECT * FROM import_jobs WHERE id = ?").bind(jobId).first();
+      if (!job) return jsonErr("Import job bulunamadı", 404);
+      return jsonRes({ ok: true, job });
+    }
+
     return jsonErr("Admin route bulunamadı", 404);
   } catch (e) { return jsonErr(e.message, e.status || 500); }
         } 

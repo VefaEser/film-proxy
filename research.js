@@ -56,7 +56,7 @@ function buildMoviePayload(m) {
   };
 }
 
-function buildStage2Rules(fields) { const rules = []; for (const f of fields) { if (FIELD_RULES[f]) rules.push(FIELD_RULES[f]); else if (f === "day_ratio") rules.push(`day_ratio: 0-100 tam sayı`); else if (f === "night_ratio") rules.push(`night_ratio: 0-100 tam sayı`); else if (f === "indoor_ratio") rules.push(`indoor_ratio: 0-100 tam sayı`); else if (f === "dialogue_density") rules.push(`dialogue_density: 0-100 tam sayı`); else if (f === "family_content") rules.push(`family_content: {"main_characters": <int>, "supporting_characters": <int>, "extras": <int>, "<trait>": {"intensity": "none|few|side|main", "approach": "bad|neutral|legit"}}`); else if (f === "story_period") rules.push(`story_period: string[]`); else if (f === "story_locations") rules.push(`story_locations: string[]`); else if (f === "aspect_ratio") rules.push(`aspect_ratio: string[]`); else if (f === "color_style") rules.push(`color_style: string[]`); else if (f === "dialogue_density_subtitle") rules.push(`dialogue_density_subtitle: 0-100 tam sayı`); else if (f === "location_count") rules.push(`location_count: 1-100 tam sayı`); else rules.push(`${f}: uygun değer`); } return rules.join("\n"); }
+function buildStage2Rules(fields) { const rules = []; for (const f of fields) { if (FIELD_RULES[f]) rules.push(FIELD_RULES[f]); else if (f === "day_ratio") rules.push(`day_ratio: 0-100 tam sayı`); else if (f === "night_ratio") rules.push(`night_ratio: 0-100 tam sayı`); else if (f === "indoor_ratio") rules.push(`indoor_ratio: 0-100 tam sayı`); else if (f === "dialogue_density") rules.push(`dialogue_density: 0-100 tam sayı`); else if (f === "family_content") rules.push(FIELD_RULES[f] || `family_content: {"main_characters": <int>, "supporting_characters": <int>, "extras": <int>, "<trait>": {"intensity": "none|few|side|main", "approach": "bad|neutral|legit"}}`); else if (f === "story_period") rules.push(`story_period: string[]`); else if (f === "story_locations") rules.push(`story_locations: string[]`); else if (f === "aspect_ratio") rules.push(`aspect_ratio: string[]`); else if (f === "color_style") rules.push(`color_style: string[]`); else if (f === "dialogue_density_subtitle") rules.push(`dialogue_density_subtitle: 0-100 tam sayı`); else if (f === "location_count") rules.push(`location_count: 1-100 tam sayı`); else rules.push(`${f}: uygun değer`); } return rules.join("\n"); }
 function extractJSONArray(text) { const clean = String(text).replace(/^```(?:json)?\s*/i, "").replace(/\s*```\s*$/, "").trim(); const start = clean.indexOf("["), end = clean.lastIndexOf("]"); if (start < 0 || end < start) return null; try { return JSON.parse(clean.slice(start, end + 1)); } catch { return null; } }
 function extractJSON(text) { const clean = String(text).replace(/^```(?:json)?\s*/i, "").replace(/\s*```\s*$/, "").trim(); const start = clean.indexOf("{"), end = clean.lastIndexOf("}"); if (start < 0 || end < start) throw new Error("LLM geçerli JSON döndürmedi."); return JSON.parse(clean.slice(start, end + 1)); }
 
@@ -171,6 +171,9 @@ export async function handleResearchStream(env, body, controller, signal) {
     const forceRefresh = body.refresh === true || body.forceAll === true;
     const forceAll = body.forceAll === true;
     send({ type: "start", total });
+    if (body.poolInfo && typeof body.poolInfo === "object") {
+      send({ type: "poolInfo", poolA: Number(body.poolInfo.a || 0), poolB: Number(body.poolInfo.b || 0) });
+    }
     const allMovieIds = movies.map(m => movieKey(m)).filter(Boolean);
     const profilesMap = await getProfileRowsBatch(env, allMovieIds);
     const fieldsMap = await getFieldRowsBatch(env, allMovieIds);
@@ -262,7 +265,8 @@ export async function handleResearchStream(env, body, controller, signal) {
       return Array.from(fields);
     })();
     const useStage2b = settings.useAI && stage2bFields.length > 0;
-    const useStage1 = settings.useAI && hasSemanticFilters(filters) && !useStage2b;
+    const hasUnresolvedKeywords = Array.isArray(filters.keywords?.__unresolved) && filters.keywords.__unresolved.length > 0;
+    const useStage1 = settings.useAI && (hasSemanticFilters(filters) || hasUnresolvedKeywords) && !useStage2b;
     const stage1UseSearch = settings.useWebResearch;
     let semanticVerdicts = new Map(); let stage1Error = null;
     if (useStage2b) {

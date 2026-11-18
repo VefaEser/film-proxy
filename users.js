@@ -556,5 +556,48 @@ export async function handleUser(request, env, ctx) {
     for (const [field, counts] of Object.entries(fieldMap)) { let bestKey = null, bestCount = 0; for (const [k, c] of counts) if (c > bestCount) { bestKey = k; bestCount = c; } aggregated[field] = { value: safeJSON(bestKey, null), count: bestCount, total: totalVotes }; }
     return jsonRes({ movieId, aggregated });
   }
+  if (path === "/global-search" && request.method === "POST") {
+    let body; try { body = await request.json(); } catch { return jsonErr("Geçersiz JSON", 400); }
+    const filters = body.filters && typeof body.filters === "object" ? body.filters : {};
+    const limit = Math.min(50, Math.max(1, parseInt(body.limit) || 10));
+    const query = String(body.query || "").trim();
+    try {
+      const clauses = [];
+      const params = [];
+      if (filters.yearMin != null) { clauses.push("year >= ?"); params.push(parseInt(filters.yearMin)); }
+      if (filters.yearMax != null) { clauses.push("year <= ?"); params.push(parseInt(filters.yearMax)); }
+      if (filters.runtimeMin != null) { clauses.push("runtime >= ?"); params.push(parseInt(filters.runtimeMin)); }
+      if (filters.runtimeMax != null) { clauses.push("runtime <= ?"); params.push(parseInt(filters.runtimeMax)); }
+      if (filters.imdbMin > 0) { clauses.push("imdb_rating >= ?"); params.push(Number(filters.imdbMin)); }
+      if (filters.imdbMax < 10) { clauses.push("imdb_rating <= ?"); params.push(Number(filters.imdbMax)); }
+      if (filters.imdbVotesMin != null) { clauses.push("imdb_votes >= ?"); params.push(parseInt(filters.imdbVotesMin)); }
+      const genreLabels = (filters.genres?.include || []).map(x => x.label || x).filter(Boolean);
+      for (const g of genreLabels.slice(0, 3)) { clauses.push("genres LIKE ?"); params.push(`%${g}%`); }
+      const directorLabels = (filters.director?.include || []).map(x => x.label || x).filter(Boolean);
+      for (const d of directorLabels.slice(0, 2)) { clauses.push("directors LIKE ?"); params.push(`%${d}%`); }
+      if (query) { clauses.push("(title_original LIKE ? OR title_tr LIKE ?)"); params.push(`%${query}%`, `%${query}%`); }
+      const where = clauses.length ? `WHERE ${clauses.join(" AND ")}` : "";
+      const { results } = await env.DB.prepare(`SELECT movie_id, imdb_id, tmdb_id, title_original, title_tr, year, runtime, imdb_rating, imdb_votes, genres, directors, data_json FROM global_movies ${where} ORDER BY imdb_votes DESC, imdb_rating DESC LIMIT ?`).bind(...params, limit).all();
+      const movies = (results || []).map(r => {
+        const d = safeJSON(r.data_json, {}) || {};
+        return {
+          ...d,
+          id: r.tmdb_id != null ? r.tmdb_id : (d.id != null ? d.id : "global:" + r.movie_id),
+          global_movie_id: r.movie_id,
+          title_original: r.title_original || d.original_title || d.title || null,
+          title: r.title_tr || d.title || r.title_original || null,
+          release_date: r.year ? String(r.year) : d.release_date || null,
+          runtime: r.runtime || d.runtime || null,
+          imdbRating: r.imdb_rating || d.imdbRating || null,
+          imdbVotes: r.imdb_votes != null ? String(r.imdb_votes) : d.imdbVotes || null,
+          genres: r.genres ? String(r.genres).split(",").map(s => s.trim()).filter(Boolean) : d.genres || null,
+          director: r.directors ? String(r.directors).split(",").map(n => ({ name: n.trim(), profile_path: null })).filter(p => p.name) : d.director || null,
+          _global_movie: true
+        };
+      });
+      return jsonRes({ ok: true, movies, total: movies.length });
+    } catch (e) { return jsonErr(e.message, 500); }
+  }
+
   return jsonErr("Kullanıcı route bulunamadı", 404);
 }

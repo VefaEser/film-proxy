@@ -50,7 +50,8 @@ async function handleRequest(request, env, ctx) {
   if (_u.pathname.startsWith("/social/")) return await handleSocial(request, env, ctx);
   if (_u.pathname.startsWith("/admin/users") || _u.pathname.startsWith("/admin/comments") ||
       _u.pathname.startsWith("/admin/locks") || _u.pathname.startsWith("/admin/suggestions") ||
-      _u.pathname.startsWith("/admin/unlock") || _u.pathname.startsWith("/admin/messages")) {
+      _u.pathname.startsWith("/admin/unlock") || _u.pathname.startsWith("/admin/messages") ||
+      _u.pathname.startsWith("/admin/hf-import/")) {
     return await handleAdmin(request, env, ctx);
   }
   const url = _u;
@@ -77,6 +78,12 @@ async function handleRequest(request, env, ctx) {
     if (url.pathname === "/movie/lists" && request.method === "POST") { let body; try { body = await request.json(); } catch { return jsonError("Geçersiz JSON.", 400); } const ids = Array.isArray(body.movie_ids) ? body.movie_ids.map(String) : []; const lists = await getMovieLists(env, ids); const obj = {}; for (const [k, v] of lists) obj[k] = v; return response({ lists: obj }); }
 
     if (url.pathname === "/admin/ping" && request.method === "GET") { const auth = await requireAdminEither(env, request); if (!auth) return jsonError("Yetkisiz.", 401); return response({ ok: true, via: auth.via }); }
+    if (url.pathname === "/admin/taxonomy/validate" && request.method === "GET") {
+      const auth = await requireAdminEither(env, request);
+      if (!auth) return jsonError("Yetkisiz.", 401);
+      const { validateTaxonomy } = await import("./taxonomy.config.js");
+      return response(validateTaxonomy());
+    }
     // === FAZ 6: /admin/config GET → auth varsa tüm config, yoksa sadece filter_info.* ===
     if (url.pathname === "/admin/config" && request.method === "GET") {
       const auth = await requireAdminEither(env, request);

@@ -1,0 +1,37 @@
+name: Turso Migration
+
+on:
+  workflow_dispatch:
+    inputs:
+      apply:
+        description: "Gerçek SQL uygulamasını başlat"
+        required: false
+        default: false
+        type: boolean
+
+permissions:
+  contents: read
+
+jobs:
+  migrate:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+        with:
+          ref: main
+
+      - name: Setup Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: 20
+
+      - name: Install migration dependency
+        run: npm install --no-save @libsql/client@^0.15.15
+
+      - name: Run migration checks
+        env:
+          TURSO_DATABASE_URL: ${{ secrets.TURSO_DATABASE_URL }}
+          TURSO_AUTH_TOKEN: ${{ secrets.TURSO_AUTH_TOKEN }}
+          APPLY_MIGRATIONS: ${{ inputs.apply }}
+        run: node scripts/turso-migrate.mjs

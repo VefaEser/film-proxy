@@ -236,7 +236,7 @@ Geçerli trait anahtarları: [${_FAMILY_TRAITS_JSON}]
 - approach: bad=kötü gösteriyor, neutral=tarafsız kalıyor, legit=meşrulaştırıyor.
 PROPAGANDA ÖZEL KURALI:
 - propaganda trait'i için ek olarak "details": {"include": ["lifestyle"|"religious"|"political"|"ideological"|"advertising", ...]} ve isteğe bağlı "freeText": "serbest açıklama" eklenir.
-- Geçerli propaganda türleri: [${_PROPAGANDA_TYPES_LIST}]
+- Geçerli propaganda türleri: [${_PROPAGANDA_TYPES_JSON}]
 - ÖNEMLİ AYRIM: "Propaganda" = bir görüşü, ideolojiyi, ürünü veya yaşam tarzını SİSTEMATİK olarak teşvik eden film. Siyasi/politik film, eleştirel film, tarihî olay anlatan film PROPAGANDA DEĞİLDİR.
 - Propaganda tespiti için 3 soru: (1) Film bir görüşü sistematik olarak teşvik ediyor mu, yoksa sadece tasvir mi ediyor? (2) Karşıt görüşe yer veriyor mu? (Veriyorsa propaganda değildir.) (3) İzleyiciyi belirli bir eyleme/yönelime teşvik etmeyi amaçlıyor mu?
 - Emin değilsen "none" yaz, uydurma.`,

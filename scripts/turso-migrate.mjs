@@ -1,229 +1,288 @@
+
 import { createClient } from "@libsql/client";
-import { readFile } from "node:fs/promises";
+import { readFile, readdir } from "node:fs/promises";
 import { createHash } from "node:crypto";
+import { join } from "node:path";
 
 const url = process.env.TURSO_DATABASE_URL;
 const authToken = process.env.TURSO_AUTH_TOKEN;
 const apply = process.env.APPLY_MIGRATIONS === "true";
+const MIGRATIONS_DIR = "migrations";
+
+const BASELINE = [
+  {
+    version: "0043",
+    filename: "migrations/0043_admin_tasks.sql",
+    checksum: "ba0674a65fbcf8808d4b04586e2f4a129446daa65ccc779b23a994506a612cc1"
+  },
+  {
+    version: "0044",
+    filename: "migrations/0044_rating_only.sql",
+    checksum: "7570220eca55fbe735cabea064282a35e2b076535a7e9177416c6fe680276f19"
+  }
+];
 
 if (!url || !authToken) {
   throw new Error("TURSO_DATABASE_URL veya TURSO_AUTH_TOKEN eksik.");
 }
 
-// Açık izin listesi.
-// Eski 42 migration ve 0044 burada bulunmuyor.
-const ALLOWED = [
-  {
-    version: "0043",
-    file: "migrations/0043_admin_tasks.sql"
-  }
-];
-
 const client = createClient({ url, authToken });
 
-function hash(content) {
-  return createHash("sha256")
-    .update(content, "utf8")
-    .digest("hex");
-}
+const hash = value =>
+  createHash("sha256").update(value, "utf8").digest("hex");
 
 function splitSql(sql) {
-  return sql
-    .split(";")
-    .map(x => x.trim())
-    .filter(Boolean);
+  const out = [];
+  let start = 0;
+  let quote = null;
+  let lineComment = false;
+  let blockComment = false;
+
+  for (let i = 0; i < sql.length; i++) {
+    const c = sql[i];
+    const n = sql[i + 1];
+
+    if (lineComment) {
+      if (c === "\n") lineComment = false;
+      continue;
+    }
+
+    if (blockComment) {
+      if (c === "*" && n === "/") {
+        blockComment = false;
+        i++;
+      }
+      continue;
+    }
+
+    if (quote) {
+      if (c === quote) {
+        if (n === quote) {
+          i++;
+          continue;
+        }
+        quote = null;
+      } else if (c === "\\" && quote === "'") {
+        i++;
+      }
+      continue;
+    }
+
+    if (c === "-" && n === "-") {
+      lineComment = true;
+      i++;
+      continue;
+    }
+
+    if (c === "/" && n === "*") {
+      blockComment = true;
+      i++;
+      continue;
+    }
+
+    if (c === "'" || c === '"' || c === "`") {
+      quote = c;
+      continue;
+    }
+
+    if (c === ";") {
+      const part = sql.slice(start, i).trim();
+      if (part) out.push(part);
+      start = i + 1;
+    }
+  }
+
+  if (quote || blockComment) {
+    throw new Error("SQL içinde kapanmamış tırnak veya yorum var.");
+  }
+
+  const last = sql.slice(start).trim();
+  if (last) out.push(last);
+
+  return out;
 }
 
 async function tableExists(name) {
-  const result = await client.execute({
-    sql: `
-      SELECT name
-      FROM sqlite_master
-      WHERE type = 'table' AND name = ?
-    `,
+  const r = await client.execute({
+    sql: "SELECT name FROM sqlite_master WHERE type='table' AND name=?",
     args: [name]
   });
 
-  return result.rows.length > 0;
+  return r.rows.length > 0;
 }
 
-async function validateAdminTasks() {
-  if (!(await tableExists("admin_tasks"))) {
-    console.log("admin_tasks tablosu henüz bulunmuyor.");
-    return;
-  }
+async function readRegistry(version) {
+  const r = await client.execute({
+    sql: "SELECT version, filename, checksum FROM schema_migrations WHERE version=?",
+    args: [version]
+  });
 
-  const result = await client.execute(
-    "PRAGMA table_info(admin_tasks)"
-  );
-
-  const actual = new Set(result.rows.map(row => row.name));
-
-  const required = [
-    "id",
-    "admin_user_id",
-    "task_type",
-    "target",
-    "list_type",
-    "status",
-    "total",
-    "done",
-    "failed",
-    "result_json",
-    "error_log",
-    "created_at",
-    "updated_at",
-    "finished_at"
-  ];
-
-  const missing = required.filter(name => !actual.has(name));
-
-  if (missing.length) {
-    throw new Error(
-      "Mevcut admin_tasks tablosu uyumsuz. Eksik sütunlar: " +
-      missing.join(", ") +
-      ". Otomatik değişiklik yapılmadı."
-    );
-  }
-
-  console.log("Mevcut admin_tasks sütun kontrolü başarılı.");
+  return r.rows[0] || null;
 }
 
 async function main() {
   console.log("======================================");
   console.log("TURSO MIGRATION KONTROLÜ");
   console.log("Mod:", apply ? "APPLY" : "DRY-RUN");
+  console.log("Korunan sürümler: 0001–0044");
+  console.log("İzin verilen yeni sürümler: 0045+");
   console.log("======================================");
 
-  // İzin listesi dışındaki dosyalar asla okunmaz.
-  for (const item of ALLOWED) {
-    if (item.version !== "0043") {
-      throw new Error("İzin verilmeyen migration: " + item.version);
-    }
-
-    if (item.file !== "migrations/0043_admin_tasks.sql") {
-      throw new Error("Beklenmeyen migration dosya yolu.");
-    }
+  if (!(await tableExists("schema_migrations"))) {
+    throw new Error(
+      "schema_migrations bulunamadı. Baseline doğrulanmadan işlem yapılamaz."
+    );
   }
 
-  const migration = ALLOWED[0];
-  const sql = await readFile(migration.file, "utf8");
-  const checksum = hash(sql);
-  const statements = splitSql(sql);
+  for (const expected of BASELINE) {
+    const row = await readRegistry(expected.version);
 
-  if (!statements.length) {
-    throw new Error("Migration dosyası boş.");
-  }
-
-  await validateAdminTasks();
-
-  const registryExists = await tableExists("schema_migrations");
-
-  if (!registryExists) {
-    console.log("schema_migrations henüz oluşturulmamış.");
-  }
-
-  let existing = null;
-
-  if (registryExists) {
-    const result = await client.execute({
-      sql: `
-        SELECT version, filename, checksum
-        FROM schema_migrations
-        WHERE version = ?
-      `,
-      args: [migration.version]
-    });
-
-    existing = result.rows[0] || null;
-  }
-
-  if (existing) {
-    if (
-      existing.filename !== migration.file ||
-      existing.checksum !== checksum
-    ) {
+    if (!row) {
       throw new Error(
-        "CHECKSUM UYUŞMAZLIĞI: 0043 dosyası uygulanmış kayıttan farklı. " +
-        "İşlem durduruldu."
+        `${expected.version} kayıtlı değil; işlem durduruldu.`
       );
     }
 
-    console.log("0043 zaten uygulanmış ve checksum eşleşiyor.");
-    console.log("İşlem gerekmiyor.");
-    return;
-  }
-
-  console.log("Migration:", migration.file);
-  console.log("SHA-256:", checksum);
-  console.log("SQL komut sayısı:", statements.length);
-
-  if (!apply) {
-    console.log("--------------------------------------");
-    console.log("DRY-RUN TAMAMLANDI.");
-    console.log("Hiçbir tablo oluşturulmadı.");
-    console.log("Hiçbir migration uygulanmadı.");
-    console.log("0043 uygulanmaya hazır görünüyor.");
-    console.log("0001–0042 çalıştırılmadı.");
-    return;
-  }
-
-  // Kayıt tablosu yalnızca açık APPLY onayıyla oluşturulur.
-  await client.execute(`
-    CREATE TABLE IF NOT EXISTS schema_migrations (
-      version TEXT PRIMARY KEY,
-      filename TEXT NOT NULL,
-      checksum TEXT NOT NULL,
-      applied_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP
-    )
-  `);
-
-  // Başka bir işlem arada 0043 kaydetmiş olabilir.
-  const recheck = await client.execute({
-    sql: `
-      SELECT filename, checksum
-      FROM schema_migrations
-      WHERE version = ?
-    `,
-    args: [migration.version]
-  });
-
-  if (recheck.rows.length) {
-    const row = recheck.rows[0];
-
-    if (
-      row.filename !== migration.file ||
-      row.checksum !== checksum
-    ) {
-      throw new Error("0043 checksum çakışması. İşlem durduruldu.");
+    if (row.checksum !== expected.checksum) {
+      throw new Error(
+        `${expected.version} checksum uyuşmazlığı; işlem durduruldu.`
+      );
     }
 
-    console.log("0043 başka bir işlem tarafından kaydedilmiş; atlandı.");
+    if (
+      expected.version === "0043" &&
+      row.filename !== expected.filename
+    ) {
+      throw new Error(
+        "0043 dosya adı uyuşmazlığı; işlem durduruldu."
+      );
+    }
+
+    console.log(
+      `${expected.version} doğrulandı; yeniden çalıştırılmayacak.`
+    );
+  }
+
+  const names = await readdir(MIGRATIONS_DIR);
+
+  const items = names
+    .map(name => {
+      const m = /^(\d{4})_[a-z0-9_-]+\.sql$/i.exec(name);
+
+      return m
+        ? {
+            version: m[1],
+            filename: `${MIGRATIONS_DIR}/${name}`
+          }
+        : null;
+    })
+    .filter(x => x && Number(x.version) >= 45)
+    .sort(
+      (a, b) => Number(a.version) - Number(b.version)
+    );
+
+  if (!items.length) {
+    console.log(
+      "0045+ migration dosyası bulunamadı; değişiklik yok."
+    );
     return;
   }
 
-  const batch = statements.map(statement => ({
-    sql: statement,
-    args: []
-  }));
+  for (let i = 0; i < items.length; i++) {
+    const expectedVersion = String(45 + i).padStart(4, "0");
 
-  // Migration ve kayıt aynı batch içinde yürütülür.
-  batch.push({
-    sql: `
-      INSERT INTO schema_migrations
-        (version, filename, checksum)
-      VALUES (?, ?, ?)
-    `,
-    args: [migration.version, migration.file, checksum]
-  });
+    if (items[i].version !== expectedVersion) {
+      throw new Error(
+        `Migration sıra boşluğu: ${expectedVersion} beklenirken ${items[i].version} bulundu.`
+      );
+    }
+  }
 
-  await client.batch(batch, "write");
+  for (const item of items) {
+    const sql = await readFile(
+      join(
+        MIGRATIONS_DIR,
+        item.filename.split("/").at(-1)
+      ),
+      "utf8"
+    );
 
-  console.log("0043 başarıyla uygulandı ve kaydedildi.");
+    const checksum = hash(sql);
+    const statements = splitSql(sql);
 
-  await validateAdminTasks();
+    if (!statements.length) {
+      throw new Error(`${item.filename} boş.`);
+    }
 
-  console.log("Migration işlemi tamamlandı.");
+    const existing = await readRegistry(item.version);
+
+    if (existing) {
+      if (
+        existing.filename !== item.filename ||
+        existing.checksum !== checksum
+      ) {
+        throw new Error(
+          `${item.version} kayıt/checksum uyuşmazlığı; işlem durduruldu.`
+        );
+      }
+
+      console.log(
+        `${item.version} zaten uygulanmış; checksum eşleşiyor, atlandı.`
+      );
+      continue;
+    }
+
+    console.log(`Hazır: ${item.filename}`);
+    console.log(
+      "SHA-256:",
+      checksum,
+      "| SQL komutu:",
+      statements.length
+    );
+
+    if (!apply) {
+      console.log("DRY-RUN: uygulanmadı.");
+      continue;
+    }
+
+    const recheck = await readRegistry(item.version);
+
+    if (recheck) {
+      if (
+        recheck.filename !== item.filename ||
+        recheck.checksum !== checksum
+      ) {
+        throw new Error(
+          `${item.version} eşzamanlı kayıt çakışması; işlem durduruldu.`
+        );
+      }
+
+      console.log(
+        `${item.version} başka işlemce uygulanmış; atlandı.`
+      );
+      continue;
+    }
+
+    const batch = statements.map(statement => ({
+      sql: statement,
+      args: []
+    }));
+
+    batch.push({
+      sql: "INSERT INTO schema_migrations (version, filename, checksum) VALUES (?, ?, ?)",
+      args: [item.version, item.filename, checksum]
+    });
+
+    await client.batch(batch, "write");
+
+    console.log(
+      `${item.version} başarıyla uygulandı ve kaydedildi.`
+    );
+  }
+
+  console.log(
+    "Migration kontrolü tamamlandı. 0001–0044 çalıştırılmadı."
+  );
 }
 
 try {

@@ -159,7 +159,348 @@ export async function handleAdmin(request, env, ctx) {
       await env.DB.prepare("UPDATE edit_suggestions SET status = ?, reviewed_by = ?, reviewed_at = ? WHERE id = ?").bind(newStatus, sess.user_id, now(), id).run();
       return jsonRes({ ok: true });
     }
-    if (path === "/hf-import/start" && request.method === "POST") {
+    
+// ============================================================
+// TURSO: ADMIN TOPLU GÖREVLERİ
+// ============================================================
+
+if (path === "/bulk/task" && request.method === "POST") {
+    let body;
+    try {
+        body = await request.json();
+    } catch {
+        return jsonErr("Geçersiz JSON", 400);
+    }
+
+    const taskType = String(body.taskType || "").trim();
+    const target = String(body.target || "").trim();
+    const listType = String(body.listType || "").trim();
+
+    const allowed = [
+        "refresh_cards",
+        "delete_cards",
+        "create_cards",
+        "delete_list"
+    ];
+
+    if (!allowed.includes(taskType)) {
+        return jsonErr("Geçersiz taskType", 400);
+    }
+
+    if (taskType === "delete_list" && !target) {
+        return jsonErr("Liste silme için target user_id gereklidir", 400);
+    }
+
+    if (taskType === "delete_cards") {
+        let ids;
+        try {
+            ids = JSON.parse(target || "[]");
+        } catch {
+            return jsonErr("delete_cards target geçerli JSON dizisi olmalı", 400);
+        }
+
+        if (!Array.isArray(ids) || !ids.length) {
+            return jsonErr("Silinecek film ID listesi boş", 400);
+        }
+    }
+
+    const taskId =
+        "task_" + Date.now() + "_" +
+        Math.random().toString(36).slice(2, 8);
+
+    const timestamp = Math.floor(Date.now() / 1000);
+
+    await env.DB.prepare(`
+        INSERT INTO admin_tasks (
+            id, admin_user_id, task_type, target, list_type,
+            status, total, done, failed, created_at, updated_at
+        )
+        VALUES (?, ?, ?, ?, ?, 'pending', 0, 0, 0, ?, ?)
+    `).bind(
+        taskId,
+        sess.user_id,
+        taskType,
+        target || null,
+        listType || null,
+        timestamp,
+        timestamp
+    ).run();
+
+    return jsonRes({ ok: true, taskId });
+}
+
+if (path.startsWith("/bulk/task/") && request.method === "GET") {
+    const taskId = decodeURIComponent(
+        path.replace("/bulk/task/", "")
+    );
+
+    const row = await env.DB.prepare(`
+        SELECT * FROM admin_tasks
+        WHERE id = ? AND admin_user_id = ?
+    `).bind(taskId, sess.user_id).first();
+
+    if (!row) {
+        return jsonErr("Görev bulunamadı", 404);
+    }
+
+    return jsonRes({ ok: true, task: row });
+}
+
+if (path === "/bulk/tasks" && request.method === "GET") {
+    const { results } = await env.DB.prepare(`
+        SELECT * FROM admin_tasks
+        WHERE admin_user_id = ?
+        ORDER BY created_at DESC
+        LIMIT 50
+    `).bind(sess.user_id).all();
+
+    return jsonRes({
+        ok: true,
+        tasks: results || []
+    });
+}
+
+if (path === "/bulk/task/cancel" && request.method === "POST") {
+    let body;
+    try {
+        body = await request.json();
+    } catch {
+        return jsonErr("Geçersiz JSON", 400);
+    }
+
+    const taskId = String(body.taskId || "").trim();
+
+    if (!taskId) {
+        return jsonErr("taskId gerekli", 400);
+    }
+
+    await env.DB.prepare(`
+        UPDATE admin_tasks
+        SET status = 'cancelled', updated_at = ?
+        WHERE id = ?
+          AND admin_user_id = ?
+          AND status IN ('pending', 'running')
+    `).bind(
+        Math.floor(Date.now() / 1000),
+        taskId,
+        sess.user_id
+    ).run();
+
+    return jsonRes({ ok: true });
+}
+
+if (path === "/bulk/run" && request.method === "POST") {
+    let body;
+    try {
+        body = await request.json();
+    } catch {
+        return jsonErr("Geçersiz JSON", 400);
+    }
+
+    const taskId = String(body.taskId || "").trim();
+
+    if (!taskId) {
+        return jsonErr("taskId gerekli", 400);
+    }
+
+    const task = await env.DB.prepare(`
+        SELECT * FROM admin_tasks
+        WHERE id = ? AND admin_user_id = ?
+    `).bind(taskId, sess.user_id).first();
+
+    if (!task) {
+        return jsonErr("Görev bulunamadı", 404);
+    }
+
+    if (task.status !== "pending") {
+        return jsonErr("Görev zaten başlatılmış", 409);
+    }
+
+    const started = await env.DB.prepare(`
+        UPDATE admin_tasks
+        SET status = 'running', updated_at = ?
+        WHERE id = ?
+          AND admin_user_id = ?
+          AND status = 'pending'
+    `).bind(
+        Math.floor(Date.now() / 1000),
+        taskId,
+        sess.user_id
+    ).run();
+
+    if (Number(started?.meta?.changes ?? 1) === 0) {
+        return jsonErr("Görev başka bir işlem tarafından başlatılmış", 409);
+    }
+
+    const runTask = async () => {
+        let done = 0;
+        let failed = 0;
+
+        const now = () => Math.floor(Date.now() / 1000);
+
+        const checkCancel = async () => {
+            const row = await env.DB.prepare(`
+                SELECT status FROM admin_tasks WHERE id = ?
+            `).bind(taskId).first();
+
+            return row?.status === "cancelled";
+        };
+
+        const saveProgress = async () => {
+            await env.DB.prepare(`
+                UPDATE admin_tasks
+                SET done = ?, failed = ?, updated_at = ?
+                WHERE id = ?
+            `).bind(done, failed, now(), taskId).run();
+        };
+
+        try {
+            if (
+                task.task_type === "refresh_cards" ||
+                task.task_type === "create_cards"
+            ) {
+                const { results } = await env.DB.prepare(`
+                    SELECT movie_id
+                    FROM movie_profiles
+                    ORDER BY movie_id
+                    LIMIT 200
+                `).all();
+
+                const { handleMovieDetails } =
+                    await import("./research.js");
+
+                for (const row of results || []) {
+                    if (await checkCancel()) break;
+
+                    try {
+                        const movie = {
+                            id: parseInt(row.movie_id, 10) || row.movie_id
+                        };
+
+                        await handleMovieDetails(
+                            env,
+                            { movie, forceAll: true },
+                            null
+                        );
+
+                        done++;
+                    } catch (e) {
+                        failed++;
+                        console.error(
+                            "[bulk refresh card]",
+                            row.movie_id,
+                            e.message
+                        );
+                    }
+
+                    await saveProgress();
+                }
+
+            } else if (task.task_type === "delete_list") {
+                const targetUser = parseInt(task.target, 10);
+
+                if (!Number.isSafeInteger(targetUser) || targetUser <= 0) {
+                    throw new Error("Geçersiz target user_id");
+                }
+
+                const listType = task.list_type || "watched";
+
+                const result = await env.DB.prepare(`
+                    DELETE FROM user_movies
+                    WHERE user_id = ? AND list_type = ?
+                `).bind(targetUser, listType).run();
+
+                done = Number(result?.meta?.changes ?? 0);
+                await saveProgress();
+
+            } else if (task.task_type === "delete_cards") {
+                const ids = JSON.parse(task.target || "[]");
+
+                if (!Array.isArray(ids)) {
+                    throw new Error("Film ID listesi geçersiz");
+                }
+
+                for (const id of ids) {
+                    if (await checkCancel()) break;
+
+                    try {
+                        await env.DB.prepare(`
+                            DELETE FROM movie_profiles
+                            WHERE movie_id = ?
+                        `).bind(String(id)).run();
+
+                        done++;
+                    } catch (e) {
+                        failed++;
+                        console.error("[bulk delete card]", id, e.message);
+                    }
+
+                    await saveProgress();
+                }
+            }
+
+            const current = await env.DB.prepare(`
+                SELECT status FROM admin_tasks WHERE id = ?
+            `).bind(taskId).first();
+
+            const finalStatus =
+                current?.status === "cancelled"
+                    ? "cancelled"
+                    : "completed";
+
+            await env.DB.prepare(`
+                UPDATE admin_tasks
+                SET status = ?,
+                    done = ?,
+                    failed = ?,
+                    finished_at = ?,
+                    updated_at = ?
+                WHERE id = ?
+            `).bind(
+                finalStatus,
+                done,
+                failed,
+                now(),
+                now(),
+                taskId
+            ).run();
+
+        } catch (e) {
+            console.error("[bulk task failed]", taskId, e);
+
+            await env.DB.prepare(`
+                UPDATE admin_tasks
+                SET status = 'failed',
+                    error_log = ?,
+                    updated_at = ?
+                WHERE id = ?
+            `).bind(
+                String(e.message || e).slice(0, 500),
+                now(),
+                taskId
+            ).run();
+        }
+    };
+
+    if (ctx?.waitUntil) {
+        ctx.waitUntil(runTask());
+    } else {
+        await runTask();
+    }
+
+    return jsonRes({
+        ok: true,
+        taskId,
+        message: "Görev başlatıldı."
+    });
+}
+
+// ============================================================
+// TURSO TOPLU GÖREVLERİ SONU
+// ============================================================
+
+
+if (path === "/hf-import/start" && request.method === "POST") {
       let body; try { body = await request.json(); } catch { return jsonErr("Geçersiz JSON", 400); }
       const sourceDataset = String(body.sourceDataset || "").trim();
       if (!sourceDataset) return jsonErr("sourceDataset gerekli", 400);

@@ -30,8 +30,8 @@ function normalizeResult(result) {
 }
 
 export function createTursoAdapter(env) {
-  const url = env.TURSO_DATABASE_URL;
-  const authToken = env.TURSO_AUTH_TOKEN;
+  const url = typeof env.TURSO_DATABASE_URL === "string" ? env.TURSO_DATABASE_URL.trim() : "";
+  const authToken = typeof env.TURSO_AUTH_TOKEN === "string" ? env.TURSO_AUTH_TOKEN.trim() : "";
 
   if (!url || !authToken) {
     throw new Error("Turso credentials are missing.");

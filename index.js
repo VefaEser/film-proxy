@@ -2,6 +2,7 @@
 // Yeni /movie/rating-* ve /admin/user-* route'ları handleUser'a yönlendirildi
 // Faz 6: /admin/config GET → auth varsa tüm config, yoksa sadece filter_info.*
 import { corsHeaders } from "./cors.js";
+import { createTursoAdapter } from "./turso-adapter.js";
 import { handleAuth, getCurrentUserWithAdminBridge } from "./auth.js";
 import { handleUser } from "./users.js";
 import { handleSocial } from "./social.js";
@@ -69,7 +70,8 @@ async function handleRequest(request, env, ctx) {
         turnstile: !!env.TURNSTILE_SECRET_KEY,
         groqKeys: [!!env.GROQ_API_KEY_1, !!env.GROQ_API_KEY_2, !!env.GROQ_API_KEY_3],
         geminiKeys: [!!env.GEMINI_API_KEY_1, !!env.GEMINI_API_KEY_2, !!env.GEMINI_API_KEY_3],
-        adminToken: !!env.ADMIN_TOKEN, metatake: true, filmmap: true, staticOptions: true, d1: !!env.DB, defaultMinImdbVotes: 100, keyHealth
+        adminToken: !!env.ADMIN_TOKEN, metatake: true, filmmap: true, staticOptions: true, db: !!env.TURSO_DATABASE_URL && !!env.TURSO_AUTH_TOKEN,
+      dbType: "turso", defaultMinImdbVotes: 100, keyHealth
       });
     }
     if (url.pathname === "/static/options" && request.method === "GET") return response({ options: await getAllStaticOptions(env) });
@@ -286,7 +288,11 @@ async function handleRequest(request, env, ctx) {
 export default {
   async fetch(request, env, ctx) {
     let response;
-    try { response = await handleRequest(request, env, ctx); }
+    try {
+      const appEnv = Object.assign({}, env);
+      appEnv.DB = createTursoAdapter(env);
+      response = await handleRequest(request, appEnv, ctx);
+    }
     catch (e) { console.error("[fetch-fatal]", e.stack || e); response = new Response(JSON.stringify({ error: String(e.message || e) }), { status: 500, headers: { "Content-Type": "application/json; charset=utf-8" } }); }
     const newHeaders = new Headers(response.headers);
     for (const [k, v] of Object.entries(corsHeaders(request))) newHeaders.set(k, v);

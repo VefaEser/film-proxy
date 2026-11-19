@@ -106,7 +106,7 @@ function movieIdFromImdb(imdbId) { return "imdb:" + String(imdbId || "").replace
 async function importCsv(env, userId, listType, items) {
   if (!env.DB) throw new Error("DB yok");
   const now = Math.floor(Date.now() / 1000); let added = 0, skipped = 0, conflicts = 0, withRating = 0;
-  const allExisting = await env.DB.prepare("SELECT list_type, imdb_id FROM user_movies WHERE user_id = ?").bind(userId).all();
+  const allExisting = await env.DB.prepare("SELECT list_type, imdb_id FROM user_movies WHERE user_id = ? AND list_type IN ('watched','want','wont')").bind(userId).all();
   const byImdb = new Map();
   for (const r of allExisting.results || []) { if (!r.imdb_id) continue; const key = cleanImdb(r.imdb_id); if (!byImdb.has(key)) byImdb.set(key, new Set()); byImdb.get(key).add(r.list_type); }
   const stmts = [];
@@ -205,7 +205,7 @@ async function getList(env, userId, listType, page = 1, pageSize = 10, sort = "y
   return { items: enriched, total: countRows?.[0]?.c || 0, page, pageSize };
 }
 
-async function getMovieCounts(env, movieId) { if (!env.DB) return { watched: 0, want: 0, wont: 0 }; const { results } = await env.DB.prepare(`SELECT list_type, COUNT(*) AS c FROM user_movies WHERE movie_id = ? GROUP BY list_type`).bind(movieId).all(); const out = { watched: 0, want: 0, wont: 0 }; for (const r of results || []) out[r.list_type] = r.c; return out; }
+async function getMovieCounts(env, movieId) { if (!env.DB) return { watched: 0, want: 0, wont: 0 }; const { results } = await env.DB.prepare(`SELECT list_type, COUNT(*) AS c FROM user_movies WHERE movie_id = ? AND list_type IN ('watched','want','wont') GROUP BY list_type`).bind(movieId).all(); const out = { watched: 0, want: 0, wont: 0 }; for (const r of results || []) out[r.list_type] = r.c; return out; }
 
 // === FAZ 8 C-2: refreshCardForImdb — meta parametresi + disambiguation ===
 async function refreshCardForImdb(env, imdbId, signal, meta = {}) {
@@ -314,7 +314,21 @@ export async function handleUser(request, env, ctx) {
     if (imdbId) { clauses.push("(imdb_id = ? OR imdb_id = ? OR movie_id = ?)"); params.push(imdbId, `tt${imdbId}`, `imdb:${imdbId}`); }
     if (movieIdParam) { clauses.push("movie_id = ?"); params.push(movieIdParam); }
     if (!clauses.length) return jsonErr("movieId gerekli", 400);
-    const { results } = await env.DB.prepare(`SELECT user_rating, COUNT(*) AS c FROM user_movies WHERE user_rating IS NOT NULL AND (${clauses.join(" OR ")}) GROUP BY user_rating`).bind(...params).all();
+    const { results } = await env.DB.prepare(`
+      WITH matched AS (
+        SELECT user_id, user_rating,
+          ROW_NUMBER() OVER (
+            PARTITION BY user_id
+            ORDER BY CASE WHEN list_type IN ('watched','want','wont') THEN 0 ELSE 1 END,
+                     updated_at DESC
+          ) AS rn
+        FROM user_movies
+        WHERE user_rating IS NOT NULL AND (${clauses.join(" OR ")})
+      )
+      SELECT user_rating, COUNT(*) AS c
+      FROM matched WHERE rn = 1
+      GROUP BY user_rating
+    `).bind(...params).all();
     const distribution = { 1:0,2:0,3:0,4:0,5:0,6:0,7:0,8:0,9:0,10:0 };
     let totalVotes = 0, sum = 0;
     for (const r of results || []) {
@@ -340,7 +354,22 @@ export async function handleUser(request, env, ctx) {
     if (imdbId) { clauses.push("(um.imdb_id = ? OR um.imdb_id = ? OR um.movie_id = ?)"); params.push(imdbId, `tt${imdbId}`, `imdb:${imdbId}`); }
     if (movieIdParam) { clauses.push("um.movie_id = ?"); params.push(movieIdParam); }
     if (!clauses.length) return jsonErr("movieId gerekli", 400);
-    const { results } = await env.DB.prepare(`SELECT um.user_id, u.username, u.rating_visibility FROM user_movies um JOIN users u ON u.id = um.user_id WHERE um.user_rating = ? AND (${clauses.join(" OR ")})`).bind(ratingQ, ...params).all();
+    const { results } = await env.DB.prepare(`
+      WITH matched AS (
+        SELECT um.user_id, um.user_rating,
+          ROW_NUMBER() OVER (
+            PARTITION BY um.user_id
+            ORDER BY CASE WHEN um.list_type IN ('watched','want','wont') THEN 0 ELSE 1 END,
+                     um.updated_at DESC
+          ) AS rn
+        FROM user_movies um
+        WHERE um.user_rating IS NOT NULL AND (${clauses.join(" OR ")})
+      )
+      SELECT m.user_id, u.username, u.rating_visibility
+      FROM matched m
+      JOIN users u ON u.id = m.user_id
+      WHERE m.rn = 1 AND m.user_rating = ?
+    `).bind(...params, ratingQ).all();
     const adminCheck = isAuth && sess.is_admin;
     const list = []; let hiddenCount = 0;
     for (const r of results || []) {
@@ -388,8 +417,14 @@ export async function handleUser(request, env, ctx) {
       if (ids.length) { const placeholders = ids.map(() => "?").join(","); clauses.push(`movie_id IN (${placeholders})`); params.push(...ids); }
       if (tmdbId) { clauses.push("tmdb_id = ?"); params.push(parseInt(tmdbId, 10) || tmdbId); }
       if (imdbIdRaw) { clauses.push("(imdb_id = ? OR imdb_id = ?)"); params.push(imdbIdRaw, `tt${imdbIdRaw}`); }
-      const { results } = await env.DB.prepare(`SELECT list_type, user_rating FROM user_movies WHERE user_id = ? AND (${clauses.join(" OR ")}) LIMIT 1`).bind(sess.user_id, ...params).all();
-      return jsonRes({ listType: results?.[0]?.list_type || null, userRating: results?.[0]?.user_rating ?? null });
+      const { results } = await env.DB.prepare(`SELECT list_type, user_rating FROM user_movies WHERE user_id = ? AND (${clauses.join(" OR ")}) ORDER BY CASE WHEN list_type IN ('watched','want','wont') THEN 0 ELSE 1 END, user_rating IS NOT NULL DESC`).bind(sess.user_id, ...params).all();
+      const rows = results || [];
+      const normal = rows.find(r => ["watched", "want", "wont"].includes(r.list_type));
+      const savedRating = rows.find(r => r.user_rating != null);
+      return jsonRes({
+        listType: normal?.list_type || null,
+        userRating: normal?.user_rating ?? savedRating?.user_rating ?? null
+      });
     } catch (e) { return jsonRes({ listType: null }); }
   }
   if (path.startsWith("/public/") && request.method === "GET") {
@@ -426,7 +461,8 @@ export async function handleUser(request, env, ctx) {
   }
 
   if (path === "/excluded-imdbs" && request.method === "GET") {
-    const lt = (url.searchParams.get("listType") || "").split(",").map(x => x.trim()).filter(Boolean);
+    const allowedLists = new Set(["watched", "want", "wont"]);
+    const lt = [...new Set((url.searchParams.get("listType") || "").split(",").map(x => x.trim()).filter(x => allowedLists.has(x)))];
     if (!lt.length) return jsonRes({ imdbs: [], tmdbIds: [] });
     try { const placeholders = lt.map(() => "?").join(","); const { results } = await env.DB.prepare(`SELECT imdb_id, tmdb_id FROM user_movies WHERE user_id = ? AND list_type IN (${placeholders})`).bind(sess.user_id, ...lt).all(); const imdbs = [], tmdbIds = []; for (const r of results || []) { if (r.imdb_id) imdbs.push(cleanImdb(r.imdb_id)); if (r.tmdb_id) tmdbIds.push(String(r.tmdb_id)); } return jsonRes({ imdbs, tmdbIds }); }
     catch (e) { return jsonErr(e.message, 500); }
@@ -474,11 +510,52 @@ export async function handleUser(request, env, ctx) {
     if (!movieId) return jsonErr("movieId veya imdbId gerekli", 400);
     let tmdbId = null; if (movieId.startsWith("tmdb:")) { const n = parseInt(movieId.slice(5)); if (Number.isFinite(n)) tmdbId = n; } else if (body.tmdbId) { const n = parseInt(body.tmdbId); if (Number.isFinite(n)) tmdbId = n; }
     const now = Math.floor(Date.now() / 1000);
-    if (imdbId) await env.DB.prepare("DELETE FROM user_movies WHERE user_id = ? AND (imdb_id = ? OR imdb_id = ? OR movie_id = ?)").bind(sess.user_id, imdbId, `tt${imdbId}`, movieId).run();
-    else await env.DB.prepare("DELETE FROM user_movies WHERE user_id = ? AND movie_id = ?").bind(sess.user_id, movieId).run();
-    const userRating = normalizeRatingValue(body.userRating);
-    await env.DB.prepare(`INSERT INTO user_movies (user_id, list_type, movie_id, imdb_id, tmdb_id, title_original, title_tr, url, year, imdb_rating, imdb_votes, runtime, genres, directors, user_rating, source, created_at, updated_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 'manual', ?, ?) ON CONFLICT(user_id, list_type, movie_id) DO UPDATE SET updated_at = excluded.updated_at, tmdb_id = COALESCE(excluded.tmdb_id, user_movies.tmdb_id), user_rating = COALESCE(excluded.user_rating, user_movies.user_rating)`).bind(sess.user_id, lt, movieId, imdbId || null, tmdbId, body.titleOriginal || null, body.titleTr || null, body.url || null, body.year || null, body.imdbRating || null, body.imdbVotes || null, body.runtime || null, body.genres || null, body.directors || null, userRating, now, now).run();
+    let saved = null;
+    if (imdbId) saved = await env.DB.prepare("SELECT * FROM user_movies WHERE user_id = ? AND list_type = 'rating_only' AND (imdb_id = ? OR imdb_id = ?) ORDER BY updated_at DESC LIMIT 1").bind(sess.user_id, imdbId, `tt${imdbId}`).first();
+    if (!saved && tmdbId != null) saved = await env.DB.prepare("SELECT * FROM user_movies WHERE user_id = ? AND list_type = 'rating_only' AND (tmdb_id = ? OR movie_id = ?) ORDER BY updated_at DESC LIMIT 1").bind(sess.user_id, tmdbId, `tmdb:${tmdbId}`).first();
+    if (!saved) saved = await env.DB.prepare("SELECT * FROM user_movies WHERE user_id = ? AND list_type = 'rating_only' AND movie_id = ? LIMIT 1").bind(sess.user_id, movieId).first();
+
+    const userRating = normalizeRatingValue(body.userRating) ?? saved?.user_rating ?? null;
+    await env.DB.prepare(`INSERT INTO user_movies (user_id, list_type, movie_id, imdb_id, tmdb_id, title_original, title_tr, url, year, imdb_rating, imdb_votes, runtime, genres, directors, user_rating, source_meta_json, source, created_at, updated_at)
+      VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 'manual', ?, ?)
+      ON CONFLICT(user_id, list_type, movie_id) DO UPDATE SET
+      updated_at = excluded.updated_at,
+      tmdb_id = COALESCE(excluded.tmdb_id, user_movies.tmdb_id),
+      imdb_id = COALESCE(excluded.imdb_id, user_movies.imdb_id),
+      title_original = COALESCE(excluded.title_original, user_movies.title_original),
+      title_tr = COALESCE(excluded.title_tr, user_movies.title_tr),
+      url = COALESCE(excluded.url, user_movies.url),
+      year = COALESCE(excluded.year, user_movies.year),
+      imdb_rating = COALESCE(excluded.imdb_rating, user_movies.imdb_rating),
+      imdb_votes = COALESCE(excluded.imdb_votes, user_movies.imdb_votes),
+      runtime = COALESCE(excluded.runtime, user_movies.runtime),
+      genres = COALESCE(excluded.genres, user_movies.genres),
+      directors = COALESCE(excluded.directors, user_movies.directors),
+      user_rating = COALESCE(excluded.user_rating, user_movies.user_rating),
+      source_meta_json = COALESCE(excluded.source_meta_json, user_movies.source_meta_json)`)
+      .bind(sess.user_id, lt, movieId, imdbId || saved?.imdb_id || null,
+        tmdbId ?? saved?.tmdb_id ?? null,
+        body.titleOriginal || saved?.title_original || null,
+        body.titleTr || saved?.title_tr || null,
+        body.url || saved?.url || null,
+        body.year || saved?.year || null,
+        body.imdbRating || saved?.imdb_rating || null,
+        body.imdbVotes || saved?.imdb_votes || null,
+        body.runtime || saved?.runtime || null,
+        body.genres || saved?.genres || null,
+        body.directors || saved?.directors || null,
+        userRating, saved?.source_meta_json || null, now, now).run();
+
+    if (imdbId) await env.DB.prepare("DELETE FROM user_movies WHERE user_id = ? AND list_type IN ('watched','want','wont') AND (imdb_id = ? OR imdb_id = ? OR movie_id = ?) AND NOT (list_type = ? AND movie_id = ?)").bind(sess.user_id, imdbId, `tt${imdbId}`, movieId, lt, movieId).run();
+    else await env.DB.prepare("DELETE FROM user_movies WHERE user_id = ? AND list_type IN ('watched','want','wont') AND movie_id = ? AND list_type <> ?").bind(sess.user_id, movieId, lt).run();
+
+    if (saved) await env.DB.prepare("DELETE FROM user_movies WHERE user_id = ? AND list_type = 'rating_only' AND movie_id = ?").bind(sess.user_id, saved.movie_id).run();
     invalidateRatingStatsCache({ tmdbId, imdbId, movieId });
+    invalidateRatingStatsCache({
+      tmdbId: saved?.tmdb_id,
+      imdbId: saved?.imdb_id,
+      movieId: saved?.movie_id
+    });
     return jsonRes({ ok: true });
   }
   if (path === "/rating" && request.method === "PUT") {
@@ -494,17 +571,67 @@ export async function handleUser(request, env, ctx) {
     if (!effMovieId && tmdbId) effMovieId = "tmdb:" + tmdbId;
     try {
       let existing = null;
-      if (imdbId) existing = await env.DB.prepare("SELECT list_type FROM user_movies WHERE user_id = ? AND (imdb_id = ? OR imdb_id = ? OR movie_id = ?) LIMIT 1").bind(sess.user_id, imdbId, `tt${imdbId}`, `imdb:${imdbId}`).first();
-      if (!existing && tmdbId) existing = await env.DB.prepare("SELECT list_type FROM user_movies WHERE user_id = ? AND (tmdb_id = ? OR movie_id = ?) LIMIT 1").bind(sess.user_id, tmdbId, `tmdb:${tmdbId}`).first();
-      if (!existing && effMovieId) existing = await env.DB.prepare("SELECT list_type FROM user_movies WHERE user_id = ? AND movie_id = ? LIMIT 1").bind(sess.user_id, effMovieId).first();
-      if (existing) {
-        if (imdbId) await env.DB.prepare("UPDATE user_movies SET user_rating = ?, updated_at = ? WHERE user_id = ? AND (imdb_id = ? OR imdb_id = ? OR movie_id = ?)").bind(val, now, sess.user_id, imdbId, `tt${imdbId}`, `imdb:${imdbId}`).run();
-        if (tmdbId) await env.DB.prepare("UPDATE user_movies SET user_rating = ?, updated_at = ? WHERE user_id = ? AND (tmdb_id = ? OR movie_id = ?)").bind(val, now, sess.user_id, tmdbId, `tmdb:${tmdbId}`).run();
-        if (effMovieId) await env.DB.prepare("UPDATE user_movies SET user_rating = ?, updated_at = ? WHERE user_id = ? AND movie_id = ?").bind(val, now, sess.user_id, effMovieId).run();
-      } else if (val != null) {
-        await env.DB.prepare(`INSERT INTO user_movies (user_id, list_type, movie_id, imdb_id, tmdb_id, title_original, title_tr, year, imdb_rating, user_rating, source, created_at, updated_at) VALUES (?, 'watched', ?, ?, ?, ?, ?, ?, ?, ?, 'manual', ?, ?) ON CONFLICT(user_id, list_type, movie_id) DO UPDATE SET user_rating = excluded.user_rating, updated_at = excluded.updated_at`).bind(sess.user_id, effMovieId, imdbId || null, tmdbId, body.titleOriginal || null, body.titleTr || null, body.year || null, body.imdbRating || null, val, now, now).run();
+      const identity = [];
+      const identityParams = [];
+      if (imdbId) {
+        identity.push("(imdb_id = ? OR imdb_id = ? OR movie_id = ?)");
+        identityParams.push(imdbId, `tt${imdbId}`, `imdb:${imdbId}`);
       }
-      invalidateRatingStatsCache({ tmdbId, imdbId, movieId: effMovieId });
+      if (tmdbId != null) {
+        identity.push("(tmdb_id = ? OR movie_id = ?)");
+        identityParams.push(tmdbId, `tmdb:${tmdbId}`);
+      }
+      if (effMovieId) {
+        identity.push("movie_id = ?");
+        identityParams.push(effMovieId);
+      }
+      if (identity.length) {
+        existing = await env.DB.prepare(
+          `SELECT list_type, tmdb_id, imdb_id, movie_id FROM user_movies
+           WHERE user_id = ? AND (${identity.join(" OR ")})
+           ORDER BY CASE WHEN list_type IN ('watched','want','wont') THEN 0 ELSE 1 END,
+                    updated_at DESC
+           LIMIT 1`
+        ).bind(sess.user_id, ...identityParams).first();
+      }
+
+      if (existing && existing.list_type !== "rating_only") {
+      await env.DB.prepare(
+        `UPDATE user_movies SET user_rating = ?, updated_at = ?
+         WHERE user_id = ? AND list_type = ? AND (${identity.join(" OR ")})`
+      ).bind(val, now, sess.user_id, existing.list_type, ...identityParams).run();
+
+      await env.DB.prepare(
+        `DELETE FROM user_movies WHERE user_id = ? AND list_type = 'rating_only' AND (${identity.join(" OR ")})`
+      ).bind(sess.user_id, ...identityParams).run();
+
+    } else if (existing?.list_type === "rating_only" && val != null) {
+      await env.DB.prepare(
+        `UPDATE user_movies SET user_rating = ?, updated_at = ?
+         WHERE user_id = ? AND list_type = 'rating_only' AND (${identity.join(" OR ")})`
+      ).bind(val, now, sess.user_id, ...identityParams).run();
+
+    } else if (existing?.list_type === "rating_only" && val == null) {
+      await env.DB.prepare(
+        `DELETE FROM user_movies WHERE user_id = ? AND list_type = 'rating_only' AND (${identity.join(" OR ")})`
+      ).bind(sess.user_id, ...identityParams).run();
+
+    } else if (!existing && val != null) {
+      await env.DB.prepare(`INSERT INTO user_movies
+        (user_id, list_type, movie_id, imdb_id, tmdb_id, title_original, title_tr, year, imdb_rating, user_rating, source, created_at, updated_at)
+        VALUES (?, 'rating_only', ?, ?, ?, ?, ?, ?, ?, ?, 'manual', ?, ?)
+        ON CONFLICT(user_id, list_type, movie_id)
+        DO UPDATE SET user_rating = excluded.user_rating, updated_at = excluded.updated_at`
+      ).bind(sess.user_id, effMovieId, imdbId || null, tmdbId,
+        body.titleOriginal || null, body.titleTr || null, body.year || null,
+        body.imdbRating || null, val, now, now).run();
+    }
+    invalidateRatingStatsCache({ tmdbId, imdbId, movieId: effMovieId });
+    invalidateRatingStatsCache({
+      tmdbId: existing?.tmdb_id,
+      imdbId: existing?.imdb_id,
+      movieId: existing?.movie_id
+    });
       return jsonRes({ ok: true });
     } catch (e) { return jsonErr(e.message, 500); }
   }
@@ -526,7 +653,7 @@ export async function handleUser(request, env, ctx) {
     const clearMarks = body.clearMarks === true;
 
     const existing = await env.DB.prepare(`
-        SELECT user_rating
+        SELECT user_rating, tmdb_id, imdb_id
         FROM user_movies
         WHERE user_id = ? AND list_type = ? AND movie_id = ?
     `).bind(sess.user_id, lt, movieId).first();
@@ -538,21 +665,35 @@ export async function handleUser(request, env, ctx) {
     if (keepRating && rating != null) {
         await env.DB.prepare(`
             INSERT INTO user_movies (
-                user_id, list_type, movie_id,
-                user_rating, source, created_at, updated_at
+                user_id, list_type, movie_id, imdb_id, tmdb_id,
+                title_original, title_tr, url, year, imdb_rating,
+                imdb_votes, runtime, genres, directors, user_rating,
+                source_meta_json, source, created_at, updated_at
             )
-            VALUES (?, 'rating_only', ?, ?, 'manual', ?, ?)
+            SELECT
+                user_id, 'rating_only', movie_id, imdb_id, tmdb_id,
+                title_original, title_tr, url, year, imdb_rating,
+                imdb_votes, runtime, genres, directors, user_rating,
+                source_meta_json, source, created_at, ?
+            FROM user_movies
+            WHERE user_id = ? AND list_type = ? AND movie_id = ?
             ON CONFLICT(user_id, list_type, movie_id)
             DO UPDATE SET
-                user_rating = excluded.user_rating,
+                imdb_id = COALESCE(excluded.imdb_id, user_movies.imdb_id),
+                tmdb_id = COALESCE(excluded.tmdb_id, user_movies.tmdb_id),
+                title_original = COALESCE(excluded.title_original, user_movies.title_original),
+                title_tr = COALESCE(excluded.title_tr, user_movies.title_tr),
+                url = COALESCE(excluded.url, user_movies.url),
+                year = COALESCE(excluded.year, user_movies.year),
+                imdb_rating = COALESCE(excluded.imdb_rating, user_movies.imdb_rating),
+                imdb_votes = COALESCE(excluded.imdb_votes, user_movies.imdb_votes),
+                runtime = COALESCE(excluded.runtime, user_movies.runtime),
+                genres = COALESCE(excluded.genres, user_movies.genres),
+                directors = COALESCE(excluded.directors, user_movies.directors),
+                user_rating = COALESCE(excluded.user_rating, user_movies.user_rating),
+                source_meta_json = COALESCE(excluded.source_meta_json, user_movies.source_meta_json),
                 updated_at = excluded.updated_at
-        `).bind(
-            sess.user_id,
-            movieId,
-            rating,
-            now,
-            now
-        ).run();
+        `).bind(now, sess.user_id, lt, movieId).run();
     }
 
     // Asıl listedeki kaydı kaldır.
@@ -574,6 +715,11 @@ export async function handleUser(request, env, ctx) {
     }
 
     invalidateRatingStatsCache({ movieId });
+    invalidateRatingStatsCache({
+      tmdbId: existing?.tmdb_id,
+      imdbId: existing?.imdb_id,
+      movieId
+    });
     return jsonRes({ ok: true, ratingPreserved: keepRating && rating != null });
 }
   if (path === "/lists/refresh" && request.method === "POST") { let body; try { body = await request.json(); } catch { return jsonErr("Geçersiz JSON", 400); } const listType = String(body.listType || ""); const page = Math.max(1, parseInt(body.page || "1")); if (!["watched", "want", "wont"].includes(listType)) return jsonErr("Geçersiz liste", 400); const { items } = await getList(env, sess.user_id, listType, page, 10, "year_desc"); return jsonRes({ ok: true, items }); }

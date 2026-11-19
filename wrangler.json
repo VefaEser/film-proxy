@@ -3,18 +3,17 @@
   "main": "index.js",
   "compatibility_date": "2026-10-14",
   "keep_vars": true,
-  "placement": { "mode": "smart" },
+  "placement": {
+    "mode": "smart"
+  },
   "observability": {
     "enabled": true,
     "head_sampling_rate": 1,
-    "logs": { "invocation_logs": true }
-  },
-  "d1_databases": [
-    {
-      "binding": "DB",
-      "database_name": "film-kesif-db",
-      "database_id": "4664d41f-1fd4-4b90-b151-a96e537307e6",
-      "migrations_dir": "migrations"
+    "logs": {
+      "invocation_logs": true
     }
+  },
+  "compatibility_flags": [
+    "nodejs_compat"
   ]
 }

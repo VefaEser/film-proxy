@@ -174,6 +174,7 @@ export async function handleResearchStream(env, body, controller, signal) {
     if (body.poolInfo && typeof body.poolInfo === "object") {
       send({ type: "poolInfo", poolA: Number(body.poolInfo.a || 0), poolB: Number(body.poolInfo.b || 0) });
     }
+    send({ type: "rule", minMovies: 10, maxSeconds: 30 });
     const allMovieIds = movies.map(m => movieKey(m)).filter(Boolean);
     const profilesMap = await getProfileRowsBatch(env, allMovieIds);
     const fieldsMap = await getFieldRowsBatch(env, allMovieIds);

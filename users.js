@@ -459,9 +459,13 @@ export async function handleUser(request, env, ctx) {
     const lt = path.split("/")[2];
     if (!["watched", "want", "wont"].includes(lt)) return jsonErr("Geçersiz liste", 400);
     const page = Math.max(1, parseInt(url.searchParams.get("page") || "1"));
+ const requestedPageSize = parseInt(url.searchParams.get("pageSize") || "10");
+ const pageSize = Number.isFinite(requestedPageSize)
+   ? Math.min(100, Math.max(10, requestedPageSize))
+   : 10;
     const sortParam = url.searchParams.get("sort");
     const sort = sortParam === "imdb" ? "imdb_desc" : sortParam === "user" ? "user_desc" : "year_desc";
-    try { return jsonRes(await getList(env, sess.user_id, lt, page, 10, sort)); } catch (e) { return jsonErr(e.message, 500); }
+    try { return jsonRes(await getList(env, sess.user_id, lt, page, pageSize, sort)); } catch (e) { return jsonErr(e.message, 500); }
   }
   if (path === "/lists/add" && request.method === "POST") {
     let body; try { body = await request.json(); } catch { return jsonErr("Geçersiz JSON", 400); }
@@ -504,7 +508,74 @@ export async function handleUser(request, env, ctx) {
       return jsonRes({ ok: true });
     } catch (e) { return jsonErr(e.message, 500); }
   }
-  if (path.startsWith("/lists/remove/") && request.method === "DELETE") { const parts = path.replace("/lists/remove/", "").split("/"); const lt = parts[0], movieId = decodeURIComponent(parts.slice(1).join("/")); if (!["watched", "want", "wont"].includes(lt)) return jsonErr("Geçersiz liste", 400); await env.DB.prepare("DELETE FROM user_movies WHERE user_id = ? AND list_type = ? AND movie_id = ?").bind(sess.user_id, lt, movieId).run(); invalidateRatingStatsCache({ movieId }); return jsonRes({ ok: true }); }
+  if (path.startsWith("/lists/remove/") && request.method === "DELETE") {
+    const parts = path.replace("/lists/remove/", "").split("/");
+    const lt = parts[0];
+    const movieId = decodeURIComponent(parts.slice(1).join("/"));
+
+    if (!["watched", "want", "wont"].includes(lt)) {
+        return jsonErr("Geçersiz liste", 400);
+    }
+
+    let body = {};
+    try {
+        body = await request.json();
+    } catch {}
+
+    const keepRating = body.keepRating !== false;
+    const clearMarks = body.clearMarks === true;
+
+    const existing = await env.DB.prepare(`
+        SELECT user_rating
+        FROM user_movies
+        WHERE user_id = ? AND list_type = ? AND movie_id = ?
+    `).bind(sess.user_id, lt, movieId).first();
+
+    const rating = existing?.user_rating ?? null;
+    const now = Math.floor(Date.now() / 1000);
+
+    // Kullanıcı puanı varsa rating_only listesinde koru.
+    if (keepRating && rating != null) {
+        await env.DB.prepare(`
+            INSERT INTO user_movies (
+                user_id, list_type, movie_id,
+                user_rating, source, created_at, updated_at
+            )
+            VALUES (?, 'rating_only', ?, ?, 'manual', ?, ?)
+            ON CONFLICT(user_id, list_type, movie_id)
+            DO UPDATE SET
+                user_rating = excluded.user_rating,
+                updated_at = excluded.updated_at
+        `).bind(
+            sess.user_id,
+            movieId,
+            rating,
+            now,
+            now
+        ).run();
+    }
+
+    // Asıl listedeki kaydı kaldır.
+    await env.DB.prepare(`
+        DELETE FROM user_movies
+        WHERE user_id = ? AND list_type = ? AND movie_id = ?
+    `).bind(sess.user_id, lt, movieId).run();
+
+    // İstenmişse oy/işaret kayıtlarını da sil.
+    if (clearMarks) {
+        try {
+            await env.DB.prepare(`
+                DELETE FROM user_votes
+                WHERE user_id = ? AND movie_id = ?
+            `).bind(sess.user_id, movieId).run();
+        } catch (e) {
+            console.warn("user_votes temizleme:", e.message);
+        }
+    }
+
+    invalidateRatingStatsCache({ movieId });
+    return jsonRes({ ok: true, ratingPreserved: keepRating && rating != null });
+}
   if (path === "/lists/refresh" && request.method === "POST") { let body; try { body = await request.json(); } catch { return jsonErr("Geçersiz JSON", 400); } const listType = String(body.listType || ""); const page = Math.max(1, parseInt(body.page || "1")); if (!["watched", "want", "wont"].includes(listType)) return jsonErr("Geçersiz liste", 400); const { items } = await getList(env, sess.user_id, listType, page, 10, "year_desc"); return jsonRes({ ok: true, items }); }
   if (path.startsWith("/refresh-card/") && request.method === "POST") {
     const allowed = await userHasAnyPermission(env, sess, ["refresh_movie", "csv_import_cards"]);
